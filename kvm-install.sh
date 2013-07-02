@@ -14,7 +14,7 @@ function usage {
 }
 
 # constants
-WEBROOT="http://192.168.1.243/centos"
+WEBROOT="http://192.168.32.39/centos"
 VMDIR=/san/virtual-machines
 
 # settings
@@ -57,7 +57,7 @@ centos5)
     --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
     --network=bridge:br3 --location=${WEBROOT}/5/os/i386/ \
     --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-5.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.2.30 gateway=192.168.32.10 \
+    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
     console=ttyS0"
   else
     virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
@@ -65,7 +65,7 @@ centos5)
     --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
     --network=bridge:br3 --location=${WEBROOT}/5/os/x86_64/ \
     --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-5x86_64.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.2.30 gateway=192.168.32.10 \
+    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
     console=ttyS0"
   fi
   ;;
@@ -77,7 +77,7 @@ centos6)
   --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
   --network=bridge:br3 --location=${WEBROOT}/6/os/x86_64/ \
   --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6.cfg ksdevice=br3 \
-  ip=${VMIP} netmask=255.255.254.0 dns=192.168.2.30 gateway=192.168.32.10 \
+  ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
   console=ttyS0"
   ;;
  *)
