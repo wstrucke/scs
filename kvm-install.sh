@@ -48,6 +48,7 @@ if [ -f ${VMDIR}/${VMNAME}.img ]; then echo "VM Already Exists"; exit 1; fi
 qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
 if [ $? -ne 0 ]; then echo "Error creating disk!"; exit 1; fi
 
+
 # create the virtual machine
 case ${OS} in
 centos5)
@@ -70,15 +71,24 @@ centos5)
   fi
   ;;
 centos6)
-  if [ $VMARCH != "x86_64" ]; then echo "CentOS 6 requires 64-bit architecture"; fi
   if [ $VMRAM -lt 1024 ]; then VMRAM=1024; fi
-  virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
-  --arch=x86_64 --os-type=linux --os-variant=rhel6 --accelerate --hvm \
-  --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
-  --network=bridge:br3 --location=${WEBROOT}/6/os/x86_64/ \
-  --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6.cfg ksdevice=br3 \
-  ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
-  console=ttyS0"
+  if [ $VMARCH == "i386" ]; then
+    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
+    --arch=i686 --os-type=linux --os-variant=rhel6 --accelerate --hvm \
+    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
+    --network=bridge:br3 --location=${WEBROOT}/6/os/i386/ \
+    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6.cfg ksdevice=br3 \
+    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
+    console=ttyS0"
+  else
+    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
+    --arch=x86_64 --os-type=linux --os-variant=rhel6 --accelerate --hvm \
+    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
+    --network=bridge:br3 --location=${WEBROOT}/6/os/x86_64/ \
+    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6-64.cfg ksdevice=br3 \
+    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
+    console=ttyS0"
+  fi
   ;;
  *)
   echo "VM Type Error"; exit 1;;
