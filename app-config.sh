@@ -86,7 +86,11 @@ function start_modify {
 # merge changes back into master and remove the branch
 #
 function stop_modify {
-  err
+  # check for modifications
+  
+  # check the current branch
+  git branch |grep -E '^\*' |grep -q master
+  
 }
 
 # input functions
@@ -115,6 +119,7 @@ function get_yn {
 }
 
 function application_create {
+  start_modify
   # get user input and validate
   get_input NAME "Name: "
   get_input ALIAS "Alias: "
@@ -250,6 +255,9 @@ function resource_update {
 
 function usage {
   echo "Usage $0 subject verb [--option1] [--option2] [...]
+              $0 commit
+
+Run commit when complete to finalize changes.
 
 Subject:
   application
@@ -295,11 +303,14 @@ if ! [ -d $CONF ]; then
   P=$( echo "$P" |tr 'A-Z' 'a-z' )
   test "$P" == "y" && initialize_configuration || exit 1
 fi
-test $# -ge 2 || usage
+test $# -ge 1 || usage
 
 # get subject and verb
-SUBJ="$1"; shift
-VERB="$1"; shift
+SUBJ="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
+VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
+
+# intercept non subject/verb commands
+if [ "$SUBJ" == "commit" ]; then stop_modify; exit 0; fi
 
 # validate subject and verb
 printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
