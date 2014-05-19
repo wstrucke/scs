@@ -597,7 +597,23 @@ function network_create {
 }
 
 function network_delete {
-  err
+  start_modify
+  if [ -z "$1" ]; then
+    network_list
+    printf -- "\n"
+    get_input C "Network to Delete (loc-zone-alias)"
+  else
+    C="$1"
+  fi
+  grep -qE '^'${C//-/,}',' ${CONF}/network || err "Unknown network"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then
+    read LOC ZONE ALIAS DISC <<< $( grep -E '^'${C//-/,}',' ${CONF}/network |tr ',' ' ' )
+    sed -i '/^'${C//-/,}',/d' ${CONF}/network
+    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
+  fi
+  commit_file network ${CONF}/${LOC}/network
+  refresh_dirs
 }
 
 function network_list {
