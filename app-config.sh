@@ -41,9 +41,9 @@
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF
+  mkdir -p $CONF/template
   git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file,location,network,resource,template}
+  touch $CONF/{application,constant,environment,file,location,network,resource}
   cd $CONF || err
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
@@ -204,7 +204,8 @@ function get_yn {
 # refresh the directory structure to add/remove location/environment/application paths
 #
 function refresh_dirs {
-  echo "Refresh not implemented" >&2
+  #echo "Refresh not implemented" >&2
+  return
 }
 
 function application_create {
@@ -394,6 +395,11 @@ function file_create {
   grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
   # add
   printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
+  # create base file
+  pushd $CONF >/dev/null 2>&1
+  touch ${CONF}/template/${NAME}
+  git add ${CONF}/template/${NAME} >/dev/null 2>&1
+  popd >/dev/null 2>&1
   return
 }
 
@@ -405,12 +411,22 @@ function file_delete {
   grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
   get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/file; fi
-  refresh_dirs
+  if [ "$RL" == "y" ]; then
+    sed -i '/^'$C',/d' ${CONF}/file
+    pushd $CONF >/dev/null 2>&1
+    git rm ${CONF}/template/${NAME} >/dev/null 2>&1
+    refresh_dirs
+  fi
 }
 
 function file_edit {
-  err
+  start_modify
+  file_list
+  printf -- "\n"
+  get_input C "File to Edit"
+  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  vim ${CONF}/template/${C}
+  wait
 }
 
 function file_list {
