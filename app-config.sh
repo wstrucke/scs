@@ -131,7 +131,6 @@ function stop_modify {
   git commit -a -m"$USERNAME completed modifications at `date`" >/dev/null 2>&1
   git branch -d $USERNAME >/dev/null 2>&1
   popd >/dev/null 2>&1
-  return
 }
 
 # cancel changes and switch back to master
@@ -158,7 +157,6 @@ function cancel_modify {
     git branch -d $USERNAME >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
-  return
 }
 
 # input functions
@@ -256,7 +254,6 @@ function application_create {
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
   refresh_dirs
-  return
 }
 
 function application_delete {
@@ -311,7 +308,6 @@ function constant_create {
   # add
   printf -- "${NAME},${DESC//,/ }\n" >>$CONF/constant
   commit_file constant
-  return
 }
 
 function constant_delete {
@@ -368,7 +364,6 @@ function environment_create {
   printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
   commit_file environment
   refresh_dirs
-  return
 }
 
 function environment_delete {
@@ -399,7 +394,7 @@ function environment_update {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/environment || err "Unknown constant"
+  grep -qE '^'$C',' ${CONF}/environment || err "Unknown environment"
   printf -- "\n"
   read NAME ALIAS DESC <<< $( grep -E '^'$C',' ${CONF}/environment |tr ',' ' ' )
   get_input NAME "Name" --default $NAME
@@ -407,7 +402,7 @@ function environment_update {
   get_input DESC "Description" --default "$DESC" --null --nc
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
-  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/constant
+  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/environment
   commit_file environment
 }
 
@@ -428,7 +423,6 @@ function file_create {
   git add template/${NAME} >/dev/null 2>&1
   git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
   popd >/dev/null 2>&1
-  return
 }
 
 function file_delete {
@@ -525,7 +519,6 @@ function location_create {
   printf -- "${CODE},${NAME//,/ },${DESC//,/ }\n" >>$CONF/location
   commit_file location
   refresh_dirs
-  return
 }
 
 function location_delete {
@@ -541,11 +534,30 @@ function location_list {
 }
 
 function location_show {
-  err
+  test $# -eq 1 || err "Provide the location name"
+  grep -qE '^'$1',' ${CONF}/location || err "Unknown location" 
+  read CODE NAME DESC <<< $( grep -E '^'$1',' ${CONF}/location |tr ',' ' ' )
+  printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC"
 }
 
 function location_update {
-  err
+  start_modify
+  if [ -z "$1" ]; then
+    location_list
+    printf -- "\n"
+    get_input C "Location to Modify"
+  else
+    C="$1"
+  fi
+  grep -qE '^'$C',' ${CONF}/location || err "Unknown location"
+  printf -- "\n"
+  read CODE NAME DESC <<< $( grep -E '^'$C',' ${CONF}/location |tr ',' ' ' )
+  get_input CODE "Location Code (three characters)" --default $CODE
+  test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
+  get_input NAME "Name" --nc --default $NAME
+  get_input DESC "Description" --nc --null --default "$DESC"
+  sed -i 's/^'$C',.*/'${CODE}','${NAME}','"${DESC//,/ }"'/' ${CONF}/location
+  commit_file location
 }
 
 function network_create {
