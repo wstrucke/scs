@@ -59,26 +59,38 @@ function cleanup_and_exit {
 # error / exit function
 #
 function err {
+  popd >/dev/null 2>&1
   test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
   test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
+}
+
+# get the user name of the administrator running this script
+#
+# sets the variable USERNAME
+#
+function get_user {
+  if ! [ -z "$USERNAME" ]; then return; fi
+  if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
+    read -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
+    U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
+  fi
+  test -z "$U" && err "A user name is required to make modifications."
+  USERNAME="$U"
 }
 
 # manage changes and locking with branches
 #
 function start_modify {
   # get the running user
-  if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
-    read -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
-    U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
-  fi
-  test -z "$U" && err "A user name is required to make modifications."
+  get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
   git branch |grep -E '^\*' |grep -q master
   if [ $? -eq 0 ]; then
-    git branch $U
+    git branch $USERNAME
+    git checkout $USERNAME >/dev/null 2>&1
   else
-    git branch |grep -E '^\*' |grep -q $U || err "Another change is in progress, aborting."
+    git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
   fi
   return 0
 }
@@ -86,11 +98,65 @@ function start_modify {
 # merge changes back into master and remove the branch
 #
 function stop_modify {
+  # get the running user
+  get_user
+  # switch directories
+  pushd $CONF >/dev/null 2>&1 || err
   # check for modifications
-  
-  # check the current branch
+  L=`git status -s |wc -l 2>/dev/null`
+  # check if the current branch is master
   git branch |grep -E '^\*' |grep -q master
-  
+  test $? -eq 0 && M=1 || M=0
+  # return if there are no modifications and we are on the master branch
+  if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
+  # error if master was modified
+  if [[ $L -ne 0 && $M -eq 1 ]]; then err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."; fi
+  if [ $L -gt 0 ]; then
+    # there are modifictions on a branch
+    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)? "
+    test "$DF" == "y" && git diff
+    get_yn DF "Do you want to commit the changes (y/n)? "
+    if [ "$DF" != "y" ]; then return 0; fi
+    git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
+  fi
+  git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
+  if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
+    git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
+  fi
+  git checkout master >/dev/null 2>&1 || err "Error switching to master"
+  git merge $USERNAME >/dev/null 2>&1
+  if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
+  git commit -a -m"$USERNAME completed modifications at `date`" >/dev/null 2>&1
+  git branch -d $USERNAME >/dev/null 2>&1
+  popd >/dev/null 2>&1
+  return
+}
+
+# cancel changes and switch back to master
+#
+function cancel_modify {
+  # get the running user
+  get_user
+  # switch directories
+  pushd $CONF >/dev/null 2>&1 || err
+  # get change count
+  L=`git status -s |wc -l 2>/dev/null`
+  # make sure we are not on master
+  git branch |grep -E '^\*' |grep -q master; M=$?
+  if [[ $M -eq 0 && $L -gt 0 ]]; then err "Error -- changes on master branch must be resolved manually."; elif [ $M -eq 0 ]; then return; fi
+  # make sure we are on the correct branch...
+  git branch |grep -E '^\*' |grep -q $USERNAME
+  test $? -ne 0 && err "Error -- this is not your branch."
+  # confirm
+  get_yn DF "Are you sure you want to discard outstanding changes (y/n)? "
+  if [ "$DF" == "y" ]; then
+    git clean -f >/dev/null 2>&1
+    git reset --hard >/dev/null 2>&1
+    git checkout master >/dev/null 2>&1
+    git branch -d $USERNAME >/dev/null 2>&1
+  fi
+  popd >/dev/null 2>&1
+  return
 }
 
 # input functions
@@ -102,8 +168,7 @@ function stop_modify {
 #
 function get_input {
   test $# -lt 2 && return
-  RL=""
-  if [ "$2" == "0" ]; then LC=0; else LC=1; fi
+  RL=""; if [ "$2" == "0" ]; then LC=0; else LC=1; fi
   while [ -z "$RL" ]; do read -p "$2" RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi; done
   eval "$1='$RL'"
 }
@@ -114,7 +179,7 @@ function get_input {
 #
 function get_yn {
   test $# -lt 2 && return
-  while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
+  RL=""; while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
   eval "$1='$RL'"
 }
 
@@ -144,7 +209,8 @@ function application_delete {
 
 function application_list {
   NUM=$( wc -l $CONF/application |awk '{print $1}' )
-  echo "There are $NUM defined applications."
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
   cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort
 }
@@ -256,6 +322,7 @@ function resource_update {
 function usage {
   echo "Usage $0 subject verb [--option1] [--option2] [...]
               $0 commit
+              $0 cancel
 
 Run commit when complete to finalize changes.
 
@@ -284,6 +351,7 @@ Verbs - File:
 
 # variables
 CONF=/usr/local/etc/lpad/app-config
+USERNAME=""
 
 # set local variables
 APP=""
@@ -311,6 +379,7 @@ VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify; exit 0; fi
+if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
 
 # validate subject and verb
 printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
