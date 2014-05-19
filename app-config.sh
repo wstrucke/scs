@@ -385,11 +385,28 @@ function environment_update {
 }
 
 function file_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input NAME "Name (for reference)" --nc
+  get_input PTH "Full Path (for deployment)" --nc
+  get_input DESC "Description" --nc --null
+  # validate unique name
+  grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
+  # add
+  printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
+  return
 }
 
 function file_delete {
-  err
+  start_modify
+  file_list
+  printf -- "\n"
+  get_input C "File to Delete"
+  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/file; fi
+  refresh_dirs
 }
 
 function file_edit {
@@ -397,19 +414,36 @@ function file_edit {
 }
 
 function file_list {
-  err
-}
-
-function file_show {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined file${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1}' |sort
+  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
+}
+
+function file_show {
+  test $# -eq 1 || err "Provide the file name"
+  grep -qE '^'$1',' ${CONF}/file || err "Unknown file" 
+  read NAME PTH DESC <<< $( grep -E '^'$1',' ${CONF}/file |tr ',' ' ' )
+  printf -- "Name: $NAME\nPath: $PTH\nDescription: $DESC"
 }
 
 function file_update {
-  err
+  start_modify
+  file_list
+  printf -- "\n"
+  get_input C "File to Modify"
+  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  printf -- "\n"
+  read NAME PTH DESC <<< $( grep -E '^'$C',' ${CONF}/file |tr ',' ' ' )
+  get_input NAME "Name (for reference)" --default $NAME
+  get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
+  get_input DESC "Description" --default "$DESC" --null --nc
+  if [ "$NAME" != "$C" ]; then
+    # validate unique name
+    grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
+  fi
+  sed -i 's%^'$C',.*%'${NAME}','${PTH//,/_}','"${DESC//,/ }"'%' ${CONF}/file
 }
 
 function location_create {
