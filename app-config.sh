@@ -236,6 +236,14 @@ function application_list {
   cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
+function application_show {
+  test $# -eq 1 || err "Provide the application name"
+  APP="$1"
+  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
+  read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
+  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER"
+}
+
 function application_update {
   start_modify
   application_list
@@ -252,19 +260,58 @@ function application_update {
 }
 
 function constant_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input NAME "Name" --nc
+  get_input DESC "Description" --nc
+  # force uppercase for constants
+  NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
+  # validate unique name
+  grep -qE '^'$NAME',' $CONF/constant && err "Constant already defined."
+  # add
+  printf -- "${NAME},${DESC//,/ }\n" >>$CONF/constant
+  return
 }
 
 function constant_delete {
-  err
+  start_modify
+  constant_list
+  printf -- "\n"
+  get_input C "Constant to Delete"
+  C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
+  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/constant; fi
 }
 
 function constant_list {
-  err
+  NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined constant${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/constant |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function constant_show {
+  test $# -eq 1 || err "Provide the constant name"
+  C="$( printf -- "$1" |tr 'a-z' 'A-Z' )"
+  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
+  read NAME DESC <<< $( grep -E '^'$C',' ${CONF}/constant |tr ',' ' ' )
+  printf -- "Name: $NAME\nDescription: $DESC"
 }
 
 function constant_update {
-  err
+  start_modify
+  constant_list
+  printf -- "\n"
+  get_input C "Constant to Modify"
+  C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
+  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
+  printf -- "\n"
+  read NAME DESC <<< $( grep -E '^'$C',' ${CONF}/constant |tr ',' ' ' )
+  get_input NAME "Name" --default $NAME
+  get_input DESC "Description" --default "$DESC"
+  sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
 }
 
 function environment_create {
@@ -276,6 +323,14 @@ function environment_delete {
 }
 
 function environment_list {
+  NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined environment${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function environment_show {
   err
 }
 
@@ -299,6 +354,14 @@ function file_list {
   err
 }
 
+function file_show {
+  NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined file${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
 function file_update {
   err
 }
@@ -312,6 +375,14 @@ function location_delete {
 }
 
 function location_list {
+  NUM=$( wc -l ${CONF}/location |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined location${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function location_show {
   err
 }
 
@@ -328,6 +399,14 @@ function network_delete {
 }
 
 function network_list {
+  NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined network${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function network_show {
   err
 }
 
@@ -344,6 +423,14 @@ function resource_delete {
 }
 
 function resource_list {
+  NUM=$( wc -l ${CONF}/resource |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined resource${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function resource_show {
   err
 }
 
@@ -371,6 +458,7 @@ Verbs - All Subjects:
   create
   delete
   list
+  show
   update
 
 Verbs - File:
@@ -416,7 +504,7 @@ if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
 # validate subject and verb
 printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
-printf -- " create delete list update edit " |grep -q " $VERB "
+printf -- " create delete list show update edit " |grep -q " $VERB "
 [[ $? -ne 0 || -z "$VERB" ]] && usage
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
 
