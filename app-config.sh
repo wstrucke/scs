@@ -201,6 +201,35 @@ function get_yn {
   eval "$1='$RL'"
 }
 
+# use this for anything that modifies a configuration file to keep changes committed
+#
+function commit_file {
+  test -z "$1" && return
+  pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
+  git add "$1" >/dev/null 2>&1
+  git commit -m"committing change" "$1" >/dev/null 2>&1 || err "Error committing new template to repository"
+  popd >/dev/null 2>&1
+}
+
+# generic delete function, since they are all exactly the same
+#
+function generic_delete {
+  test -z "$1" && return
+  start_modify
+  if [ -z "$2" ]; then
+    eval ${1}_list
+    printf -- "\n"
+    get_input C "`printf -- $1 |sed -e "s/\b\(.\)/\u\1/g"` to Delete"
+  else
+    C="$2"
+  fi
+  grep -qE '^'$C',' ${CONF}/$1 || err "Unknown $1"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/$1; fi
+  commit_file $1
+  refresh_dirs
+}
+
 # refresh the directory structure to add/remove location/environment/application paths
 #
 function refresh_dirs {
@@ -225,23 +254,13 @@ function application_create {
   while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
   # add
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
+  commit_file application
   refresh_dirs
   return
 }
 
 function application_delete {
-  start_modify
-  if [ -z "$1" ]; then
-    application_list
-    printf -- "\n"
-    get_input APP "Application to Delete"
-  else
-    APP="$1"
-  fi
-  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
-  get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then sed -i '/^'$APP',/d' $CONF/application; fi
-  refresh_dirs
+  generic_delete application $1
 }
 
 function application_list {
@@ -277,6 +296,7 @@ function application_update {
   get_input BUILD "Build" --default $BUILD
   get_yn CLUSTER "LVS Support (y/n)"
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
+  commit_file application
 }
 
 function constant_create {
@@ -290,22 +310,12 @@ function constant_create {
   grep -qE '^'$NAME',' $CONF/constant && err "Constant already defined."
   # add
   printf -- "${NAME},${DESC//,/ }\n" >>$CONF/constant
+  commit_file constant
   return
 }
 
 function constant_delete {
-  start_modify
-  if [ -z "$1" ]; then
-    constant_list
-    printf -- "\n"
-    get_input C "Constant to Delete"
-  else
-    C="$1"
-  fi
-  C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
-  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
-  get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/constant; fi
+  generic_delete constant $1
 }
 
 function constant_list {
@@ -340,6 +350,7 @@ function constant_update {
   get_input NAME "Name" --default $NAME
   get_input DESC "Description" --default "$DESC"
   sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
+  commit_file constant
 }
 
 function environment_create {
@@ -355,23 +366,13 @@ function environment_create {
   grep -qE ','$ALIAS',' ${CONF}/environment && err "Environment alias already in use."
   # add
   printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
+  commit_file environment
   refresh_dirs
   return
 }
 
 function environment_delete {
-  start_modify
-  if [ -z "$1" ]; then
-    environment_list
-    printf -- "\n"
-    get_input C "Environment to Delete"
-  else
-    C="$1"
-  fi
-  grep -qE '^'$C',' ${CONF}/environment || err "Unknown environment"
-  get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/environment; fi
-  refresh_dirs
+  generic_delete environment $1
 }
 
 function environment_list {
@@ -407,6 +408,7 @@ function environment_update {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/constant
+  commit_file environment
 }
 
 function file_create {
@@ -507,16 +509,27 @@ function file_update {
     grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
   fi
   sed -i 's%^'$C',.*%'${NAME}','${PTH//,/_}','"${DESC//,/ }"'%' ${CONF}/file
+  commit_file file
 }
 
 function location_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input CODE "Location Code (three characters)"
+  test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
+  get_input NAME "Name" --nc
+  get_input DESC "Description" --nc --null
+  # validate unique name
+  grep -qE '^'$CODE',' $CONF/location && err "Location already defined."
+  # add
+  printf -- "${CODE},${NAME//,/ },${DESC//,/ }\n" >>$CONF/location
+  commit_file location
   refresh_dirs
+  return
 }
 
 function location_delete {
-  err
-  refresh_dirs
+  generic_delete location $1
 }
 
 function location_list {
@@ -540,7 +553,7 @@ function network_create {
 }
 
 function network_delete {
-  err
+  generic_delete network $1
 }
 
 function network_list {
@@ -564,7 +577,7 @@ function resource_create {
 }
 
 function resource_delete {
-  err
+  generic_delete resource $1
 }
 
 function resource_list {
@@ -628,7 +641,7 @@ TMP=/tmp/generate-patch.$$
 trap cleanup_and_exit EXIT INT
 
 # initialize
-test "`whoami`" == "root" || err "What madness is this? Ye art not auth\'riz\'d to doeth that."
+test "`whoami`" == "root" || err "What madness is this? Ye art not auth'riz'd to doeth that."
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
 if ! [ -d $CONF ]; then
   read -p "Configuration not found - this appears to be the first time running this script.  Do you want to initialize the configuration (y/n)? " P
@@ -644,6 +657,9 @@ VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
+
+# if no verb is provided default to list, since it is available for all subjects
+if [ -z "$VERB" ]; then VERB="list"; fi
 
 # validate subject and verb
 printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
