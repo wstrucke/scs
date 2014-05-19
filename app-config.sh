@@ -166,13 +166,26 @@ function cancel_modify {
 # requires:
 #  $1 variable name (no spaces)
 #  $2 prompt
-#  $3 force lowercase (0 eq no, 1 eq yes, default 1)
+#
+# optional:
+#  --nc            do not force lowercase
+#  --default ""    specify a default value
 #
 function get_input {
   test $# -lt 2 && return
-  RL=""; if [ "$2" == "0" ]; then LC=0; else LC=1; fi
-  while [ -z "$RL" ]; do printf -- "$2"; read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi; done
-  eval "$1='$RL'"
+  LC=1; RL=""; P="$2"; V="$1"; D=""; shift; shift
+  while [ $# -gt 0 ]; do case $1 in
+    --default) D="$2"; shift;;
+    --nc) LC=0;;
+    *) err;;
+  esac; shift; done
+  while [ -z "$RL" ]; do
+    printf -- "$P"
+    test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
+    read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
+    [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
+  done
+  eval "$V='$RL'"
 }
 #
 # requires:
@@ -188,10 +201,10 @@ function get_yn {
 function application_create {
   start_modify
   # get user input and validate
-  get_input NAME "Name: "
-  get_input ALIAS "Alias: "
-  get_input BUILD "Build: "
-  get_yn CLUSTER "LVS Support (y/n): "
+  get_input NAME "Name"
+  get_input ALIAS "Alias"
+  get_input BUILD "Build"
+  get_yn CLUSTER "LVS Support (y/n)"
   # validate unique name
   grep -qE '^'$NAME',' $CONF/application && err "Application already defined."
   grep -qE ','$ALIAS',' $CONF/application && err "Alias invalid or already defined."
@@ -209,7 +222,7 @@ function application_delete {
   start_modify
   application_list
   printf -- "\n"
-  get_input APP "Application to Delete: "
+  get_input APP "Application to Delete"
   grep -qE '^'$APP',' $CONF/application || err "Invalid application"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then sed -i '/^'$APP',/d' $CONF/application; fi
@@ -227,14 +240,15 @@ function application_update {
   start_modify
   application_list
   printf -- "\n"
-  get_input APP "Application to Modify: "
+  get_input APP "Application to Modify"
   grep -qE '^'$APP',' $CONF/application || err "Invalid application"
   printf -- "\n"
   read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
-  get_input NAME "Name: "
-  get_input ALIAS "Alias: "
-  get_input BUILD "Build: "
-  get_yn CLUSTER "LVS Support (y/n): "
+  get_input NAME "Name" --default $APP
+  get_input ALIAS "Alias" --default $ALIAS
+  get_input BUILD "Build" --default $BUILD
+  get_yn CLUSTER "LVS Support (y/n)"
+  sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
 }
 
 function constant_create {
