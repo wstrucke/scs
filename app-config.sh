@@ -133,6 +133,8 @@ function stop_modify {
   else
     get_yn DF "Do you want to review the changes from master (y/n)? "
     test "$DF" == "y" && git diff master
+    get_yn DF "Do you want to commit the changes (y/n)? "
+    if [ "$DF" != "y" ]; then return 0; fi
   fi
   git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
