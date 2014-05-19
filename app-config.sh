@@ -396,37 +396,60 @@ function file_create {
   # add
   printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
   # create base file
-  pushd $CONF >/dev/null 2>&1
-  touch ${CONF}/template/${NAME}
-  git add ${CONF}/template/${NAME} >/dev/null 2>&1
+  pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
+  mkdir template
+  touch template/${NAME}
+  git add template/${NAME} >/dev/null 2>&1
+  git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
   popd >/dev/null 2>&1
   return
 }
 
 function file_delete {
   start_modify
-  file_list
-  printf -- "\n"
-  get_input C "File to Delete"
+  if [ -z "$1" ]; then
+    file_list
+    printf -- "\n"
+    get_input C "File to Delete"
+  else
+    C="$1"
+  fi
   grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
     sed -i '/^'$C',/d' ${CONF}/file
     pushd $CONF >/dev/null 2>&1
-    git rm ${CONF}/template/${NAME} >/dev/null 2>&1
+    git rm template/${C} >/dev/null 2>&1
+    git add file >/dev/null 2>&1
+    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
+    popd >/dev/null 2>&1
     refresh_dirs
   fi
 }
 
+# general file editing function for both templates and applied template instances
+#
+# optional:
+#   $1 name of the template to edit
+#
 function file_edit {
   start_modify
-  file_list
-  printf -- "\n"
-  get_input C "File to Edit"
+  if [ -z "$1" ]; then
+    file_list
+    printf -- "\n"
+    get_input C "File to Edit"
+  else
+    C="$1"
+  fi
   grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
   vim ${CONF}/template/${C}
   wait
+  pushd ${CONF} >/dev/null 2>&1
+  if [ `git status -s template/${C} |wc -l` -ne 0 ]; then
+    git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
+  fi
+  popd >/dev/null 2>&1
 }
 
 function file_list {
@@ -561,7 +584,6 @@ Verbs - All Subjects:
 
 Verbs - File:
   edit
-
 " >&2
   exit 1
 }
