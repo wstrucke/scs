@@ -857,8 +857,6 @@ exit 3
 #  *) if [[ -z "$APP" || -z "$ENV" ]]; then usage; else FILE="$1"; fi;;
 #esac; shift; done
 
-#  affiliates|ctm|deskpro|e4x|ea|etl|expression-engine|finance|jasper|pentaho|prod-admin|purchase|purchase-api|rubix|v2|va) APP=$( echo $1 |tr 'A-Z' 'a-z' );;
-
 # set file names based on convention
 PATCHFILE="$ENV-$APP-$FILE"
 TEMPLATE="$APP-$FILE"
