@@ -168,15 +168,17 @@ function cancel_modify {
 #  $2 prompt
 #
 # optional:
-#  --nc            do not force lowercase
 #  --default ""    specify a default value
+#  --nc            do not force lowercase
+#  --null          allow null (empty) values
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; shift; shift
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; shift; shift
   while [ $# -gt 0 ]; do case $1 in
     --default) D="$2"; shift;;
     --nc) LC=0;;
+    --null) NUL=1;;
     *) err;;
   esac; shift; done
   while [ -z "$RL" ]; do
@@ -184,6 +186,7 @@ function get_input {
     test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
     read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
+    [[ -z "$RL" && $NUL -eq 1 ]] && break
   done
   eval "$V='$RL'"
 }
@@ -196,6 +199,12 @@ function get_yn {
   test $# -lt 2 && return
   RL=""; while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
   eval "$1='$RL'"
+}
+
+# refresh the directory structure to add/remove location/environment/application paths
+#
+function refresh_dirs {
+  echo "Refresh not implemented" >&2
 }
 
 function application_create {
@@ -215,6 +224,7 @@ function application_create {
   while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
   # add
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
+  refresh_dirs
   return
 }
 
@@ -226,6 +236,7 @@ function application_delete {
   grep -qE '^'$APP',' $CONF/application || err "Invalid application"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then sed -i '/^'$APP',/d' $CONF/application; fi
+  refresh_dirs
 }
 
 function application_list {
@@ -311,15 +322,35 @@ function constant_update {
   read NAME DESC <<< $( grep -E '^'$C',' ${CONF}/constant |tr ',' ' ' )
   get_input NAME "Name" --default $NAME
   get_input DESC "Description" --default "$DESC"
-  sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
+  sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
 }
 
 function environment_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input NAME "Name"
+  get_input ALIAS "Alias (One Letter, Unique)"
+  get_input DESC "Description" --nc --null
+  # force uppercase for site alias
+  ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
+  # validate unique name and alias
+  grep -qE '^'$NAME',' ${CONF}/environment && err "Environment already defined."
+  grep -qE ','$ALIAS',' ${CONF}/environment && err "Environment alias already in use."
+  # add
+  printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
+  refresh_dirs
+  return
 }
 
 function environment_delete {
-  err
+  start_modify
+  environment_list
+  printf -- "\n"
+  get_input C "Environment to Delete"
+  grep -qE '^'$C',' ${CONF}/environment || err "Unknown environment"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/environment; fi
+  refresh_dirs
 }
 
 function environment_list {
@@ -331,11 +362,26 @@ function environment_list {
 }
 
 function environment_show {
-  err
+  test $# -eq 1 || err "Provide the environment name"
+  grep -qE '^'$1',' ${CONF}/environment || err "Unknown environment" 
+  read NAME ALIAS DESC <<< $( grep -E '^'$1',' ${CONF}/environment |tr ',' ' ' )
+  printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
 }
 
 function environment_update {
-  err
+  start_modify
+  environment_list
+  printf -- "\n"
+  get_input C "Environment to Modify"
+  grep -qE '^'$C',' ${CONF}/environment || err "Unknown constant"
+  printf -- "\n"
+  read NAME ALIAS DESC <<< $( grep -E '^'$C',' ${CONF}/environment |tr ',' ' ' )
+  get_input NAME "Name" --default $NAME
+  get_input ALIAS "Alias (One Letter, Unique)" --default $ALIAS
+  get_input DESC "Description" --default "$DESC" --null --nc
+  # force uppercase for site alias
+  ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
+  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/constant
 }
 
 function file_create {
@@ -368,10 +414,12 @@ function file_update {
 
 function location_create {
   err
+  refresh_dirs
 }
 
 function location_delete {
   err
+  refresh_dirs
 }
 
 function location_list {
