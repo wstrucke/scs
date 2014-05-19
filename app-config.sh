@@ -217,8 +217,8 @@ function get_yn {
 function commit_file {
   test -z "$1" && return
   pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
-  git add "$1" >/dev/null 2>&1
-  git commit -m"committing change" "$1" >/dev/null 2>&1 || err "Error committing new template to repository"
+  while [ $# -gt 0 ]; do git add "$1" >/dev/null 2>&1; shift; done
+  git commit -m"committing change" >/dev/null 2>&1 || err "Error committing new template to repository"
   popd >/dev/null 2>&1
 }
 
@@ -590,7 +590,9 @@ function network_create {
   get_input VLAN "VLAN Tag/Number"
   # add
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC//,/ }\n" >>$CONF/network
-  commit_file network
+  test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
+  printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
+  commit_file network ${CONF}/${LOC}/network
   refresh_dirs
 }
 
@@ -601,8 +603,9 @@ function network_delete {
 function network_list {
   NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo -e "There ${A} ${NUM} defined network${S}.\n"
+  echo "There ${A} ${NUM} defined network${S}."
   test $NUM -eq 0 && return
+  echo
   ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t
 }
 
