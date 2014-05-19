@@ -231,9 +231,13 @@ function application_create {
 
 function application_delete {
   start_modify
-  application_list
-  printf -- "\n"
-  get_input APP "Application to Delete"
+  if [ -z "$1" ]; then
+    application_list
+    printf -- "\n"
+    get_input APP "Application to Delete"
+  else
+    APP="$1"
+  fi
   grep -qE '^'$APP',' $CONF/application || err "Invalid application"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then sed -i '/^'$APP',/d' $CONF/application; fi
@@ -258,9 +262,13 @@ function application_show {
 
 function application_update {
   start_modify
-  application_list
-  printf -- "\n"
-  get_input APP "Application to Modify"
+  if [ -z "$1" ]; then
+    application_list
+    printf -- "\n"
+    get_input APP "Application to Modify"
+  else
+    APP="$1"
+  fi
   grep -qE '^'$APP',' $CONF/application || err "Invalid application"
   printf -- "\n"
   read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
@@ -287,9 +295,13 @@ function constant_create {
 
 function constant_delete {
   start_modify
-  constant_list
-  printf -- "\n"
-  get_input C "Constant to Delete"
+  if [ -z "$1" ]; then
+    constant_list
+    printf -- "\n"
+    get_input C "Constant to Delete"
+  else
+    C="$1"
+  fi
   C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
   grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
   get_yn RL "Are you sure (y/n)? "
@@ -314,9 +326,13 @@ function constant_show {
 
 function constant_update {
   start_modify
-  constant_list
-  printf -- "\n"
-  get_input C "Constant to Modify"
+  if [ -z "$1" ]; then
+    constant_list
+    printf -- "\n"
+    get_input C "Constant to Modify"
+  else
+    C="$1"
+  fi
   C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
   grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
   printf -- "\n"
@@ -345,9 +361,13 @@ function environment_create {
 
 function environment_delete {
   start_modify
-  environment_list
-  printf -- "\n"
-  get_input C "Environment to Delete"
+  if [ -z "$1" ]; then
+    environment_list
+    printf -- "\n"
+    get_input C "Environment to Delete"
+  else
+    C="$1"
+  fi
   grep -qE '^'$C',' ${CONF}/environment || err "Unknown environment"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/environment; fi
@@ -371,9 +391,13 @@ function environment_show {
 
 function environment_update {
   start_modify
-  environment_list
-  printf -- "\n"
-  get_input C "Environment to Modify"
+  if [ -z "$1" ]; then
+    environment_list
+    printf -- "\n"
+    get_input C "Environment to Modify"
+  else
+    C="$1"
+  fi
   grep -qE '^'$C',' ${CONF}/environment || err "Unknown constant"
   printf -- "\n"
   read NAME ALIAS DESC <<< $( grep -E '^'$C',' ${CONF}/environment |tr ',' ' ' )
