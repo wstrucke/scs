@@ -169,23 +169,36 @@ function cancel_modify {
 #  --default ""    specify a default value
 #  --nc            do not force lowercase
 #  --null          allow null (empty) values
+#  --options       comma delimited list of options to restrict selection to
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; shift; shift
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; shift; shift
   while [ $# -gt 0 ]; do case $1 in
     --default) D="$2"; shift;;
     --nc) LC=0;;
     --null) NUL=1;;
+    --options) OPT="$2"; shift;;
     *) err;;
   esac; shift; done
+  # collect input until a valid entry is provided
   while [ -z "$RL" ]; do
+    # output the prompt
     printf -- "$P"
+    # output the list of valid options if one was provided
+    test ! -z "$OPT" && printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`)"
+    # output the default option if one was provided
     test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
+    # collect the input and force it to lowercase unless requested not to
     read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
+    # if no input was provided and there is a default value, set the input to the default
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
+    # if no input was provied and null values are allowed, stop collecting input here
     [[ -z "$RL" && $NUL -eq 1 ]] && break
+    # if there is a list of limited options clear the provided input unless it matches the list
+    if ! [ -z "$OPT" ]; then printf -- ",$OPT," |grep -q ",$RL," || RL=""; fi
   done
+  # set the provided variable value to the validated input
   eval "$V='$RL'"
 }
 #
@@ -561,19 +574,36 @@ function location_update {
 }
 
 function network_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input LOC "Location Code"
+  grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
+  get_input ZONE "Network Zone" --options core,edge
+  get_input ALIAS "Site Alias"
+  # validate unique name
+  grep -qE '^'$LOC','$ZONE','$ALIAS',' $CONF/network && err "Network already defined."
+  get_input DESC "Description" --nc --null
+  get_input NET "Network"
+  get_input MASK "Subnet Mask"
+  get_input BITS "Subnet Bits"
+  get_input GW "Gateway Address"
+  get_input VLAN "VLAN Tag/Number"
+  # add
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC//,/ }\n" >>$CONF/network
+  commit_file network
+  refresh_dirs
 }
 
 function network_delete {
-  generic_delete network $1
+  err
 }
 
 function network_list {
   NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined network${S}."
+  echo -e "There ${A} ${NUM} defined network${S}.\n"
   test $NUM -eq 0 && return
-  cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1}' |sort
+  ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t
 }
 
 function network_show {
