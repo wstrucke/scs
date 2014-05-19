@@ -120,6 +120,9 @@ function stop_modify {
     get_yn DF "Do you want to commit the changes (y/n)? "
     if [ "$DF" != "y" ]; then return 0; fi
     git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
+  else
+    get_yn DF "Do you want to review the changes from master (y/n)? "
+    test "$DF" == "y" && git diff master
   fi
   git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
@@ -218,7 +221,9 @@ function commit_file {
   test -z "$1" && return
   pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
   while [ $# -gt 0 ]; do git add "$1" >/dev/null 2>&1; shift; done
-  git commit -m"committing change" >/dev/null 2>&1 || err "Error committing new template to repository"
+  if [ `git status -s |wc -l` -ne 0 ]; then
+    git commit -m"committing change" >/dev/null 2>&1 || err "Error committing file to repository"
+  fi
   popd >/dev/null 2>&1
 }
 
@@ -605,6 +610,7 @@ function network_delete {
   else
     C="$1"
   fi
+  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE '^'${C//-/,}',' ${CONF}/network || err "Unknown network"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
@@ -626,11 +632,53 @@ function network_list {
 }
 
 function network_show {
-  err
+  test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE '^'${1//-/,}',' ${CONF}/network || err "Unknown network"
+  read LOC ZONE ALIAS NET MASK BITS GW VLAN DESC <<< $( grep -E '^'${1//-/,}',' ${CONF}/network |tr ',' ' ' )
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN"
 }
 
 function network_update {
-  err
+  start_modify
+  if [ -z "$1" ]; then
+    network_list
+    printf -- "\n"
+    get_input C "Network to Modify (loc-zone-alias)"
+  else
+    C="$1"
+  fi
+  # validate string
+  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE '^'${C//-/,}',' ${CONF}/network || err "Unknown network"
+  printf -- "\n"
+  read L Z A NET MASK BITS GW VLAN DESC <<< $( grep -E '^'${C//-/,}',' ${CONF}/network |tr ',' ' ' )
+  get_input LOC "Location Code" --default $L
+  grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
+  get_input ZONE "Network Zone" --options core,edge --default $Z
+  get_input ALIAS "Site Alias" --default $A
+  # validate unique name if it is changing
+  if [ "$LOC-$ZONE-$ALIAS" != "$C" ]; then
+    grep -qE '^'$LOC','$ZONE','$ALIAS',' $CONF/network && err "Network already defined."
+  fi
+  get_input DESC "Description" --nc --null --default "$DESC"
+  get_input NET "Network" --default $NET
+  get_input MASK "Subnet Mask" --default $MASK
+  get_input BITS "Subnet Bits" --default $BITS
+  get_input GW "Gateway Address" --default $GW
+  get_input VLAN "VLAN Tag/Number" --default $VLAN
+  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC//,/ }"'/' ${CONF}/network
+  if [ "$LOC" == "$L" ]; then
+    # location is not changing, safe to update in place
+    sed -i 's/^'${Z}','${A}',.*/'${ZONE}','${ALIAS}','${NET}'\/'${BITS}'/' ${CONF}/${LOC}/network
+    commit_file network ${CONF}/${LOC}/network
+  else
+    # location changed, remove from old location and add to new
+    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
+    test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
+    printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
+    commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
+  fi
 }
 
 function resource_create {
