@@ -54,6 +54,8 @@ function initialize_configuration {
 function cleanup_and_exit {
   test -d $TMP && rm -rf $TMP
 #  echo "Make sure to delete $TMP"
+  printf -- "\n"
+  exit 0
 }
 
 # error / exit function
@@ -169,7 +171,7 @@ function cancel_modify {
 function get_input {
   test $# -lt 2 && return
   RL=""; if [ "$2" == "0" ]; then LC=0; else LC=1; fi
-  while [ -z "$RL" ]; do read -p "$2" RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi; done
+  while [ -z "$RL" ]; do printf -- "$2"; read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi; done
   eval "$1='$RL'"
 }
 #
@@ -199,12 +201,18 @@ function application_create {
   printf -- "cluster support.\n"
   while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
   # add
-  [ "$ACK" == "y" ] && printf -- "${NAME},${BUILD},${CLUSTER}\n" >>$CONF/application
+  [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   return
 }
 
 function application_delete {
-  err
+  start_modify
+  application_list
+  printf -- "\n"
+  get_input APP "Application to Delete: "
+  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then sed -i '/^'$APP',/d' $CONF/application; fi
 }
 
 function application_list {
@@ -216,7 +224,17 @@ function application_list {
 }
 
 function application_update {
-  err
+  start_modify
+  application_list
+  printf -- "\n"
+  get_input APP "Application to Modify: "
+  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
+  printf -- "\n"
+  read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
+  get_input NAME "Name: "
+  get_input ALIAS "Alias: "
+  get_input BUILD "Build: "
+  get_yn CLUSTER "LVS Support (y/n): "
 }
 
 function constant_create {
