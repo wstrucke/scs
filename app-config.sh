@@ -2,6 +2,9 @@
 #
 # Manage application configuration files
 #
+# William Strucke [wstrucke@gmail.com]
+# Version 1.0.0, May 2014
+#
 # Configuration Storage:
 #   /usr/local/etc/lpad/app-config/
 #     application                                          file
@@ -15,10 +18,17 @@
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             directory
+#     <location>/<environment>/constant                    file
 #     <location>/<environment>/<application>               directory
 #     <location>/<environment>/<application>/constant      file
-#     
+#
 # Locks are taken by using git branches
+#
+# A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
+# A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
+#
+# A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to one or more hosts or applications.
+#
 
 #
 # Assists you in generating or updating the patches that are deployed to
@@ -682,11 +692,33 @@ function network_update {
 }
 
 function resource_create {
-  err
+  start_modify
+  # get user input and validate
+  get_input TYPE "Type" --options ip,cluster_ip
+  get_input VAL "Value" --nc
+  get_input DESC "Description" --nc --null
+  # validate unique value
+  grep -qE ','${VAL//,/}',' $CONF/resource && err "Error - not a unique resource value."
+  # add
+  printf -- "${TYPE},${VAL//,/},${DESC//,/ }\n" >>$CONF/resource
+  commit_file resource
 }
 
 function resource_delete {
-  generic_delete resource $1
+  start_modify
+  if [ -z "$1" ]; then
+    resource_list
+    printf -- "\n"
+    get_input C "Resource to Delete (value)"
+  else
+    C="$1"
+  fi
+  grep -qE ','${C}',' ${CONF}/resource || err "Unknown resource"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then
+    sed -i '/,'${C}',/d' ${CONF}/resource
+  fi
+  commit_file resource
 }
 
 function resource_list {
@@ -694,15 +726,38 @@ function resource_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined resource${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1}' |sort
+  echo
+  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
 }
 
 function resource_show {
-  err
+  test $# -eq 1 || err "Provide the resource value"
+  grep -qE ','$1',' ${CONF}/resource || err "Unknown resource" 
+  read TYPE VAL DESC <<< $( grep -E ','$1',' ${CONF}/resource |tr ',' ' ' )
+  printf -- "Type: $TYPE\nValue: $VAL\nDescription: $DESC"
 }
 
 function resource_update {
-  err
+  start_modify
+  if [ -z "$1" ]; then
+    resource_list
+    printf -- "\n"
+    get_input C "Resource value to Modify"
+  else
+    C="$1"
+  fi
+  grep -qE ','$C',' ${CONF}/resource || err "Unknown resource"
+  printf -- "\n"
+  read TYPE VAL DESC <<< $( grep -E ','$C',' ${CONF}/resource |tr ',' ' ' )
+  get_input TYPE "Type" --options ip,cluster_ip --default $TYPE
+  get_input VAL "Value" --nc --default $VAL
+  # validate unique value
+  if [ "$VAL" != "$C" ]; then
+    grep -qE ','${VAL//,/}',' $CONF/resource && err "Error - not a unique resource value."
+  fi
+  get_input DESC "Description" --nc --null --default "$DESC"
+  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"${DESC//,/ }"'/' ${CONF}/resource
+  commit_file resource
 }
 
 function usage {
