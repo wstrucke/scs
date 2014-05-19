@@ -294,7 +294,7 @@ function application_list {
   NUM=$( wc -l $CONF/application |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
-  test $NUM -eq 0 && return
+  test $NUM -eq 0 && return || echo
   cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
@@ -348,7 +348,7 @@ function constant_list {
   NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S}."
-  test $NUM -eq 0 && return
+  test $NUM -eq 0 && return || echo
   cat ${CONF}/constant |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
@@ -404,7 +404,7 @@ function environment_list {
   NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S}."
-  test $NUM -eq 0 && return
+  test $NUM -eq 0 && return || echo
   cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
@@ -448,7 +448,7 @@ function file_create {
   printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
   # create base file
   pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
-  mkdir template
+  mkdir template >/dev/null 2>&1
   touch template/${NAME}
   git add template/${NAME} >/dev/null 2>&1
   git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
@@ -506,7 +506,7 @@ function file_list {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined file${S}."
-  test $NUM -eq 0 && return
+  test $NUM -eq 0 && return || echo
   cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
 }
 
@@ -519,9 +519,13 @@ function file_show {
 
 function file_update {
   start_modify
-  file_list
-  printf -- "\n"
-  get_input C "File to Modify"
+  if [ -z "$1" ]; then
+    file_list
+    printf -- "\n"
+    get_input C "File to Modify"
+  else
+    C="$1"
+  fi
   grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
   printf -- "\n"
   read NAME PTH DESC <<< $( grep -E '^'$C',' ${CONF}/file |tr ',' ' ' )
@@ -531,6 +535,10 @@ function file_update {
   if [ "$NAME" != "$C" ]; then
     # validate unique name
     grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
+    # move file
+    pushd ${CONF} >/dev/null 2>&1
+    git mv template/$C template/$NAME >/dev/null 2>&1
+    popd >/dev/null 2>&1
   fi
   sed -i 's%^'$C',.*%'${NAME}','${PTH//,/_}','"${DESC//,/ }"'%' ${CONF}/file
   commit_file file
@@ -559,7 +567,7 @@ function location_list {
   NUM=$( wc -l ${CONF}/location |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined location${S}."
-  test $NUM -eq 0 && return
+  test $NUM -eq 0 && return || echo
   cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
@@ -638,8 +646,7 @@ function network_list {
   NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined network${S}."
-  test $NUM -eq 0 && return
-  echo
+  test $NUM -eq 0 && return || echo
   ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t
 }
 
@@ -727,8 +734,7 @@ function resource_list {
   NUM=$( wc -l ${CONF}/resource |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined resource${S}."
-  test $NUM -eq 0 && return
-  echo
+  test $NUM -eq 0 && return || echo
   cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
 }
 
@@ -763,7 +769,9 @@ function resource_update {
 }
 
 function usage {
-  echo "Usage $0 subject verb [--option1] [--option2] [...]
+  echo "Manage application/server configurations and base templates across all environments.
+
+Usage $0 subject verb [--option1] [--option2] [...]
               $0 commit
               $0 cancel
 
