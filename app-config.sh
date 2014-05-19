@@ -290,12 +290,17 @@ function application_delete {
   generic_delete application $1
 }
 
+function application_file {
+  err "Not Implemented"
+  # file [--add|--remove|--list]
+}
+
 function application_list {
   NUM=$( wc -l $CONF/application |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
-  test $NUM -eq 0 && return || echo
-  cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort
+  test $NUM -eq 0 && return
+  cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
 }
 
 function application_show {
@@ -348,8 +353,8 @@ function constant_list {
   NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S}."
-  test $NUM -eq 0 && return || echo
-  cat ${CONF}/constant |awk 'BEGIN{FS=","}{print $1}' |sort
+  test $NUM -eq 0 && return
+  cat ${CONF}/constant |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
 }
 
 function constant_show {
@@ -379,6 +384,18 @@ function constant_update {
   commit_file constant
 }
 
+function environment_application {
+  err "Not Implemented"
+  # application [--add|--remove|--list]
+  # application --name <name> [--define|--undefine|--list-constant]
+  # application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+}
+
+function environment_constant {
+  err "Not Implemented"
+  # constant [--define|--undefine|--list]
+}
+
 function environment_create {
   start_modify
   # get user input and validate
@@ -404,8 +421,8 @@ function environment_list {
   NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S}."
-  test $NUM -eq 0 && return || echo
-  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort
+  test $NUM -eq 0 && return
+  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
 }
 
 function environment_show {
@@ -481,7 +498,8 @@ function file_delete {
 # general file editing function for both templates and applied template instances
 #
 # optional:
-#   $1 name of the template to edit
+#   $1                     name of the template to edit
+#   --environment <name>   edit or create an instance of a template for an environment
 #
 function file_edit {
   start_modify
@@ -506,8 +524,8 @@ function file_list {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined file${S}."
-  test $NUM -eq 0 && return || echo
-  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
+  test $NUM -eq 0 && return
+  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
 }
 
 function file_show {
@@ -563,12 +581,85 @@ function location_delete {
   generic_delete location $1
 }
 
+function location_environment {
+  # get the requested location or abort
+  grep -qE '^'$1',' ${CONF}/location
+  if [ $? -ne 0 ]; then
+    location_list
+    printf -- "\n"
+    get_input LOC "Please specify a location"
+    grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
+    printf -- "\n"
+  else
+    LOC="$1"; shift
+  fi
+  # get the command to process
+  C="$1"; shift
+  case "$C" in
+    --assign) location_environment_assign $LOC $@;;
+    --unassign) location_environment_unassign $LOC $@;;
+    *) location_environment_list $LOC $@;;
+  esac
+}
+
+function location_environment_assign {
+  LOC=$1; shift
+  # get the requested environment or abort
+  grep -qE '^'$1',' ${CONF}/environment
+  if [ $? -ne 0 ]; then
+    environment_list
+    printf -- "\n"
+    get_input ENV "Please specify an environment"
+    grep -qE '^'$ENV',' ${CONF}/environment || err "Unknown environment"
+    printf -- "\n"
+  else
+    ENV="$1"; shift
+  fi
+  # assign the environment
+  pushd $CONF >/dev/null 2>&1
+  test -d ${LOC}/$ENV || mkdir ${LOC}/$ENV
+  touch ${LOC}/$ENV/constant
+  git add ${LOC}/$ENV/constant >/dev/null 2>&1
+  git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV/constant >/dev/null 2>&1 || err "Error committing change to the repository"
+  popd >/dev/null 2>&1
+}
+
+function location_environment_list {
+  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type d |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|$)' |wc -l ) || NUM=0
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined environment${S} at $1."
+  test $NUM -eq 0 && return
+  find ${CONF}/$1/ -type d |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|$)' |sort |sed 's/^/   /'
+}
+
+function location_environment_unassign {
+  LOC=$1; shift
+  # get the requested environment or abort
+  grep -qE '^'$1',' ${CONF}/environment
+  if [ $? -ne 0 ]; then
+    environment_list
+    printf -- "\n"
+    get_input ENV "Please specify an environment"
+    grep -qE '^'$ENV',' ${CONF}/environment || err "Unknown environment"
+    printf -- "\n"
+  else
+    ENV="$1"; shift
+  fi
+  printf -- "Removing $ENV from location $LOC, deleting all configurations, files, resources, constants, et cetera...\n"
+  get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
+  # unassign the environment
+  pushd $CONF >/dev/null 2>&1
+  test -d ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
+  git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
+  popd >/dev/null 2>&1
+}
+
 function location_list {
   NUM=$( wc -l ${CONF}/location |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined location${S}."
-  test $NUM -eq 0 && return || echo
-  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort
+  test $NUM -eq 0 && return
+  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
 }
 
 function location_show {
@@ -646,8 +737,8 @@ function network_list {
   NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined network${S}."
-  test $NUM -eq 0 && return || echo
-  ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t
+  test $NUM -eq 0 && return
+  ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t |sed 's/^/   /'
 }
 
 function network_show {
@@ -700,6 +791,11 @@ function network_update {
   fi
 }
 
+function resource_byval {
+  err "Not Implemented"
+  # <value> [--assign-host|--unassign-host|--list]
+}
+
 function resource_create {
   start_modify
   # get user input and validate
@@ -734,8 +830,8 @@ function resource_list {
   NUM=$( wc -l ${CONF}/resource |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined resource${S}."
-  test $NUM -eq 0 && return || echo
-  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t
+  test $NUM -eq 0 && return
+  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
 }
 
 function resource_show {
@@ -771,30 +867,35 @@ function resource_update {
 function usage {
   echo "Manage application/server configurations and base templates across all environments.
 
-Usage $0 subject verb [--option1] [--option2] [...]
+Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit
               $0 cancel
 
 Run commit when complete to finalize changes.
 
-Subject:
+Component:
   application
+    file [--add|--remove|--list]
   constant
   environment
+    application [--add|--remove|--list]
+    application --name <name> [--define|--undefine|--list-constant]
+    application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+    constant [--define|--undefine|--list]
   file
+    edit [<name>] [--environment <name>]
   location
+    [<name>] [--assign|--unassign|--list]
   network
   resource
+    <value> [--assign-host|--unassign-host|--list]
 
-Verbs - All Subjects:
+Verbs - all top level components:
   create
-  delete
+  delete [<name>]
   list
-  show
-  update
-
-Verbs - File:
-  edit
+  show [<name>]
+  update [<name>]
 " >&2
   exit 1
 }
@@ -838,12 +939,30 @@ if [ -z "$VERB" ]; then VERB="list"; fi
 # validate subject and verb
 printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
-printf -- " create delete list show update edit " |grep -q " $VERB "
-[[ $? -ne 0 || -z "$VERB" ]] && usage
+if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" ]]; then
+  printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
+  [[ $? -ne 0 || -z "$VERB" ]] && usage
+fi
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
+[[ "$VERB" == "file" && "$SUBJ" != "application" ]] && usage
+[[ "$VERB" == "application" && "$SUBJ" != "environment" ]] && usage
+[[ "$VERB" == "constant" && "$SUBJ" != "environment" ]] && usage
+[[ "$VERB" == "environment" && "$SUBJ" != "location" ]] && usage
 
 # call function with remaining arguments
-eval ${SUBJ}_${VERB} $@
+if [ "$SUBJ" == "resource" ]; then
+  case "$VERB" in
+    create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
+    *) resource_byval $@;;
+  esac
+elif [ "$SUBJ" == "location" ]; then
+  case "$VERB" in
+    create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
+    *) location_environment $@;;
+  esac
+else
+  eval ${SUBJ}_${VERB} $@
+fi
 
 
 # --------
