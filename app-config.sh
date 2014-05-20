@@ -241,15 +241,25 @@ function commit_file {
 
 # generic choose function, since they are all exactly the same
 #
+# required:
+#  $1 name of file to search
+#  $2 value to search for in the list
+#  $3 variable to return
+#
+# optional:
+#  $4 value to pass to list function
+#
 function generic_choose {
   printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
-  grep -qE "^$2," ${CONF}/$1
+  [ "$1" == "resource" ] && M="," || M="^"
+  test ! -z "$2" && grep -qE "$M$2," ${CONF}/$1
   if [ $? -ne 0 ]; then
-    eval $1_list
+    eval $1_list "$4"
     printf -- "\n"
     get_input I "Please specify $AN $1"
-    grep -qE "^$I," ${CONF}/$1 || err "Unknown $1" 
+    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
     printf -- "\n"
+    eval $3="$I"
     return 1
   else
     eval $3="$2"
@@ -410,9 +420,9 @@ function constant_update {
 #
 function environment_application {
   # get the requested location or abort
-  generic_choose location $1 LOC && shift
+  generic_choose location "$1" LOC && shift
   # get the requested environment or abort
-  generic_choose environment $1 ENV && shift
+  generic_choose environment "$1" ENV && shift
   test -d ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   C="$1"; shift
   case "$C" in
@@ -426,7 +436,7 @@ function environment_application {
 function environment_application_add {
   LOC=$1; shift; ENV=$1; shift;
   # get the requested application or abort
-  generic_choose application $1 APP && shift
+  generic_choose application "$1" APP && shift
   # assign the application
   pushd $CONF >/dev/null 2>&1
   test -d ${LOC}/$ENV/$APP || mkdir ${LOC}/$ENV/$APP
@@ -444,7 +454,7 @@ function environment_application_add {
 function environment_application_byname {
   LOC=$1; shift; ENV=$1; shift;
   # get the requested application or abort
-  generic_choose application $1 APP && shift
+  generic_choose application "$1" APP && shift
   test -d ${CONF}/${LOC}/${ENV}/${APP} || err "Error - please add $APP to $LOC $ENV before managing it."
   C="$1"; shift
   case "$C" in
@@ -470,15 +480,34 @@ function environment_application_byname_list_constant {
 }
 
 function environment_application_byname_assign {
-  err 'Not implemented'
+  LOC=$1; ENV=$2; APP=$3; shift 3
+  # select an available resource to assign
+  generic_choose resource "$1" RES "^cluster_ip,.*,not assigned," && shift
+  # verify the resource is available for this purpose
+  grep -E ",${RES//,/}," $CONF/resource |grep -qE '^cluster_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
+  # assign resource, update index
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$DESC"'/' ${CONF}/resource
+  commit_file resource
 }
 
 function environment_application_byname_unassign {
-  err 'Not implemented'
+  LOC=$1; ENV=$2; APP=$3; shift 3
+  # select an available resource to unassign
+  generic_choose resource "$1" RES ",application,$LOC:$ENV:$APP," && shift
+  # verify the resource is available for this purpose
+  grep -E ",${RES//,/}," $CONF/resource |grep -qE ",application,$LOC:$ENV:$APP," || err "Error - the provided resource is not assigned to this application."
+  # confirm
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" != "y" ]; then return; fi
+  # assign resource, update index
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$DESC"'/' ${CONF}/resource
+  commit_file resource
 }
 
 function environment_application_byname_list_resource {
-  err 'Not implemented'
+  resource_list ",application,$1:$2:$3,"
 }
 
 function environment_application_list {
@@ -491,7 +520,7 @@ function environment_application_list {
 
 function environment_application_remove {
   LOC=$1; shift; ENV=$1; shift;
-  generic_choose application $1 APP && shift
+  generic_choose application "$1" APP && shift
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # assign the application
@@ -693,7 +722,7 @@ function location_delete {
 
 function location_environment {
   # get the requested location or abort
-  generic_choose location $1 LOC && shift
+  generic_choose location "$1" LOC && shift
   # get the command to process
   C="$1"; shift
   case "$C" in
@@ -706,7 +735,7 @@ function location_environment {
 function location_environment_assign {
   LOC=$1; shift
   # get the requested environment or abort
-  generic_choose environment $1 ENV && shift
+  generic_choose environment "$1" ENV && shift
   # assign the environment
   pushd $CONF >/dev/null 2>&1
   test -d ${LOC}/$ENV || mkdir ${LOC}/$ENV
@@ -727,7 +756,7 @@ function location_environment_list {
 function location_environment_unassign {
   LOC=$1; shift
   # get the requested environment or abort
-  generic_choose environment $1 ENV && shift
+  generic_choose environment "$1" ENV && shift
   printf -- "Removing $ENV from location $LOC, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the environment
@@ -885,13 +914,13 @@ function resource_byval {
 function resource_create {
   start_modify
   # get user input and validate
-  get_input TYPE "Type" --options ip,cluster_ip
+  get_input TYPE "Type" --options ip,cluster_ip,ha_ip
   get_input VAL "Value" --nc
   get_input DESC "Description" --nc --null
   # validate unique value
   grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
-  printf -- "${TYPE},${VAL//,/},,,${DESC//,/ }\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,not assigned,${DESC//,/ }\n" >>$CONF/resource
   commit_file resource
 }
 
@@ -912,12 +941,25 @@ function resource_delete {
   commit_file resource
 }
 
+# show available resources
+#
+# optional:
+#  $1  regex to filter list on
+#
 function resource_list {
-  NUM=$( wc -l ${CONF}/resource |awk '{print $1}' )
+  if ! [ -z "$1" ]; then
+    NUM=$( grep -E "$1" ${CONF}/resource |wc -l |awk '{print $1}' ); N="matching"
+  else
+    NUM=$( wc -l ${CONF}/resource |awk '{print $1}' ); N="defined"
+  fi
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined resource${S}."
+  echo "There ${A} ${NUM} $N resource${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+  if ! [ -z "$1" ]; then
+    grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+  else
+    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+  fi
 }
 
 function resource_show {
@@ -939,7 +981,7 @@ function resource_update {
   grep -qE ",$C," ${CONF}/resource || err "Unknown resource"
   printf -- "\n"
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
-  get_input TYPE "Type" --options ip,cluster_ip --default $TYPE
+  get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default $TYPE
   get_input VAL "Value" --nc --default $VAL
   # validate unique value
   if [ "$VAL" != "$C" ]; then
