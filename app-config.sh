@@ -413,7 +413,7 @@ function constant_update {
   commit_file constant
 }
 
-# manipulate applications at a specific enviroment at a specific location
+# manipulate applications at a specific environment at a specific location
 #
 # application [--add|--remove|--list]
 # application --name <name> [--define|--undefine|--list-constant]
@@ -639,13 +639,53 @@ function file_delete {
 function file_edit {
   start_modify
   generic_choose file "$1" C && shift
-  vim ${CONF}/template/${C}
-  wait
-  pushd ${CONF} >/dev/null 2>&1
-  if [ `git status -s template/${C} |wc -l` -ne 0 ]; then
-    git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
+  if [[ ! -z "$1" && "$1" == "--environment" ]]; then
+    generic_choose environment "$2" ENV
+    # put the template in a temporary folder and patch it, if a patch exists already
+    mkdir -m0700 -p $TMP
+    cat $CONF/template/$C >$TMP/$C
+    mkdir -p $CONF/template/$ENV >/dev/null 2>&1
+    if [ -s $CONF/template/$ENV/$C ]; then
+      patch -p0 $TMP/$C <$CONF/template/$ENV/$C || err "Unable to patch template!"
+      cat $TMP/$C >$TMP/${C}.ORIG
+      sleep 1
+    else
+      cat $CONF/template/$C >$TMP/$C.ORIG
+    fi
+    # open the patched file for editing
+    vim $TMP/$C
+    wait
+    # do nothing further if there were no changes made
+    if [ `md5sum $TMP/$C{.ORIG,} 2>/dev/null |cut -d' ' -f1 |uniq |wc -l` -eq 1 ]; then
+      echo "No changes were made."; exit 0
+    fi
+    # generate a new patch file against the original template
+    diff -c $CONF/template/$C $TMP/$C >$TMP/$C.patch
+    # ensure the original patch exists
+    test ! -f $CONF/template/$ENV/$C && touch $CONF/template/$ENV/$C
+    # confirm changes if this isn't a new patch
+    echo -e "Please confirm the change to the patch:\n"
+    diff $CONF/template/$ENV/$C $TMP/$C.patch
+    echo -e "\n\n"
+    get_yn Q "Look OK? (y/n)" 
+    test "$Q" != "y" && err "Aborted!"
+    # write the new patch file
+    cat $TMP/$C.patch >$CONF/template/$ENV/$C
+    echo "Wrote $( wc -c $CONF/template/$ENV/$C |cut -d' ' -f1 ) bytes to $ENV/$C."
+    # commit
+    pushd $CONF >/dev/null 2>&1
+    git add template/$ENV/$C >/dev/null 2>&1
+    popd >/dev/null 2>&1
+    commit_file template/$ENV/$C
+  else
+    vim ${CONF}/template/${C}
+    wait
+    pushd ${CONF} >/dev/null 2>&1
+    if [ `git status -s template/${C} |wc -l` -ne 0 ]; then
+      git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
+    fi
+    popd >/dev/null 2>&1
   fi
-  popd >/dev/null 2>&1
 }
 
 function file_list {
@@ -1011,15 +1051,13 @@ Verbs - all top level components:
 
 # variables
 CONF=/usr/local/etc/lpad/app-config
+TMP=/tmp/generate-patch.$$
 USERNAME=""
 
 # set local variables
 APP=""
 ENV=""
 FILE=""
-PATCHDIR=/usr/local/etc/lpad/app-patches
-TEMPLATEDIR=/usr/local/etc/lpad/app-templates
-TMP=/tmp/generate-patch.$$
 
 trap cleanup_and_exit EXIT INT
 
@@ -1071,63 +1109,3 @@ elif [ "$SUBJ" == "location" ]; then
 else
   eval ${SUBJ}_${VERB} $@
 fi
-
-
-# --------
-# END
-exit 3
-#
-# --------
-
-# parse remaining arguments
-#while [ $# -ge 1 ]; do case $( echo $1 |tr 'A-Z' 'a-z' ) in
-#  *) if [[ -z "$APP" || -z "$ENV" ]]; then usage; else FILE="$1"; fi;;
-#esac; shift; done
-
-# set file names based on convention
-PATCHFILE="$ENV-$APP-$FILE"
-TEMPLATE="$APP-$FILE"
-
-# sanity check
-test -d $PATCHDIR || err "Patch directory does not exist!"
-test -d $TEMPLATEDIR || err "Template directory does not exist!"
-test -s $TEMPLATEDIR/$TEMPLATE || err "Template '$TEMPLATE' does not exist!"
-
-# put the template in a temporary folder and patch it, if a patch exists already
-mkdir -m0700 -p $TMP
-cat $TEMPLATEDIR/$TEMPLATE >$TMP/$TEMPLATE
-if [ -s $PATCHDIR/$PATCHFILE ]; then
-  patch -p0 $TMP/$TEMPLATE <$PATCHDIR/$PATCHFILE || err "Unable to patch template!"
-  cat $TMP/$TEMPLATE >$TMP/$TEMPLATE.ORIG
-  sleep 1
-fi
-
-# open the file for editing by the user
-vim $TMP/$TEMPLATE
-wait
-
-# do nothing further if there were no changes made
-if [ -s $PATCHDIR/$PATCHFILE ]; then
-  if [ `md5sum $TMP/$TEMPLATE{.ORIG,} |cut -d' ' -f1 |uniq |wc -l` -eq 1 ]; then
-    echo "No changes were made."; exit 0
-  fi
-fi
-
-# generate a new patch file against the original template
-diff -c $TEMPLATEDIR/$TEMPLATE $TMP/$TEMPLATE >$TMP/$PATCHFILE
-
-# confirm changes if this isn't a new patch
-if [ -s $PATCHDIR/$PATCHFILE ]; then
-  echo -e "Please confirm the change to the patch:\n"
-  diff $PATCHDIR/$PATCHFILE $TMP/$PATCHFILE
-  echo -e "\n\n"
-  read -r -p "Look OK? (y/n) " C
-  C=$( echo $C |tr 'A-Z' 'a-z' )
-  test "$C" != "y" && err "Aborted!"
-fi
-
-# write the new patch file
-cat $TMP/$PATCHFILE >$PATCHDIR/$PATCHFILE
-echo "Wrote $( wc -c $PATCHDIR/$PATCHFILE |cut -d' ' -f1 ) bytes to $PATCHFILE. Please make sure to commit your changes."
-
-exit 0
