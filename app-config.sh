@@ -70,6 +70,12 @@ function cleanup_and_exit {
   exit 0
 }
 
+function diff_master {
+  pushd $CONF >/dev/null 2>&1
+  git diff master
+  popd >/dev/null 2>&1
+}
+
 # error / exit function
 #
 function err {
@@ -325,18 +331,18 @@ function application_delete {
 # file [--add|--remove|--list]
 #
 function application_file {
-  # get the requested application or abort
-  generic_choose application "$1" APP && shift
-  C="$1"; shift
-  case "$C" in
-    --add) application_file_add $APP $@;;
-    --remove) application_file_remove $APP $@;;
-    *) application_file_list $APP $@;;
-  esac
+  APP=""; C="$1"; shift
+  while ! [ -z "$C" ]; do case "$C" in
+    --add) application_file_add "$APP" $@; break;;
+    --remove) application_file_remove "$APP" $@; break;;
+    --list) application_file_list "$APP" $@; break;;
+    *) if [ -z "$APP" ]; then generic_choose application "$C" APP; else application_file_list "$APP" $@; break; fi;;
+  esac; C="$1"; shift; done
 }
 
 function application_file_add {
-  APP=$1; shift
+  test -z "$1" && shift
+  generic_choose application "$1" APP
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
@@ -346,7 +352,8 @@ function application_file_add {
 }
 
 function application_file_list {
-  APP=$1; shift
+  test -z "$1" && shift
+  generic_choose application "$1" APP
   NUM=$( grep -E ",$APP\$" $CONF/file-map |wc -l |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} file${S} linked to $APP."
@@ -357,7 +364,8 @@ function application_file_list {
 }
 
 function application_file_remove {
-  APP=$1; shift
+  test -z "$1" && shift
+  generic_choose application "$1" APP
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # confirm
@@ -1065,6 +1073,7 @@ function usage {
 Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit
               $0 cancel
+              $0 diff
 
 Run commit when complete to finalize changes.
 
@@ -1125,6 +1134,7 @@ VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
+if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
