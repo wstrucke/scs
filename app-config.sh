@@ -15,6 +15,7 @@
 #     network                                              file
 #     resource                                             file
 #     template/                                            directory containing global application templates
+#     template/patch/<environment>/                        directory containing template patches for the environment
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>/                            directory
@@ -51,7 +52,7 @@
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template
+  mkdir -p $CONF/template/patch
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file,location,network,resource}
   cd $CONF || err
@@ -188,7 +189,7 @@ function cancel_modify {
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; shift; shift
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --default) D="$2"; shift;;
     --nc) LC=0;;
@@ -547,6 +548,7 @@ function environment_create {
   grep -qE "^$NAME," ${CONF}/environment && err "Environment already defined."
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
+  mkdir -p $CONF/template/patch/${NAME} >/dev/null 2>&1
   printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
   commit_file environment
   refresh_dirs
@@ -573,15 +575,7 @@ function environment_show {
 
 function environment_update {
   start_modify
-  if [ -z "$1" ]; then
-    environment_list
-    printf -- "\n"
-    get_input C "Environment to Modify"
-  else
-    C="$1"
-  fi
-  grep -qE "^$C," ${CONF}/environment || err "Unknown environment"
-  printf -- "\n"
+  generic_choose environment "$1" C && shift
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$C," ${CONF}/environment )"
   get_input NAME "Name" --default $NAME
   get_input ALIAS "Alias (One Letter, Unique)" --default $ALIAS
@@ -589,6 +583,15 @@ function environment_update {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/environment
+  # handle rename
+  if [ "$NAME" != "$C" ]; then
+    pushd ${CONF} >/dev/null 2>&1
+    test -d template/patch/$C && git mv template/patch/$C template/patch/$NAME >/dev/null 2>&1
+    for L in $( cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' ); do
+      test -d $L/$C && git mv $L/$C $L/$NAME >/dev/null 2>&1
+    done
+    popd >/dev/null 2>&1
+  fi
   commit_file environment
 }
 
@@ -613,14 +616,7 @@ function file_create {
 
 function file_delete {
   start_modify
-  if [ -z "$1" ]; then
-    file_list
-    printf -- "\n"
-    get_input C "File to Delete"
-  else
-    C="$1"
-  fi
-  grep -qE "^$C," ${CONF}/file || err "Unknown file"
+  generic_choose file "$1" C && shift
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
@@ -642,14 +638,7 @@ function file_delete {
 #
 function file_edit {
   start_modify
-  if [ -z "$1" ]; then
-    file_list
-    printf -- "\n"
-    get_input C "File to Edit"
-  else
-    C="$1"
-  fi
-  grep -qE "^$C," ${CONF}/file || err "Unknown file"
+  generic_choose file "$1" C && shift
   vim ${CONF}/template/${C}
   wait
   pushd ${CONF} >/dev/null 2>&1
@@ -676,15 +665,7 @@ function file_show {
 
 function file_update {
   start_modify
-  if [ -z "$1" ]; then
-    file_list
-    printf -- "\n"
-    get_input C "File to Modify"
-  else
-    C="$1"
-  fi
-  grep -qE "^$C," ${CONF}/file || err "Unknown file"
-  printf -- "\n"
+  generic_choose file "$1" C && shift
   IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default $NAME
   get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
@@ -783,21 +764,20 @@ function location_show {
 
 function location_update {
   start_modify
-  if [ -z "$1" ]; then
-    location_list
-    printf -- "\n"
-    get_input C "Location to Modify"
-  else
-    C="$1"
-  fi
-  grep -qE "^$C," ${CONF}/location || err "Unknown location"
-  printf -- "\n"
+  generic_choose location "$1" C && shift
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$C," ${CONF}/location )"
   get_input CODE "Location Code (three characters)" --default $CODE
   test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
-  get_input NAME "Name" --nc --default $NAME
+  get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/^'$C',.*/'${CODE}','${NAME}','"${DESC//,/ }"'/' ${CONF}/location
+  sed -i 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC//,/ }"'/' ${CONF}/location
+  # handle rename
+  if [ "$CODE" != "$C" ]; then
+    pushd $CONF >/dev/null 2>&1
+    test -d $C && git mv $C $CODE >/dev/null 2>&1
+    sed -i 's/^'$C',/'$CODE',/' network
+    popd >/dev/null 2>&1
+  fi
   commit_file location
 }
 
