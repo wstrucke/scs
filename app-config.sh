@@ -83,7 +83,7 @@ function err {
 function get_user {
   if ! [ -z "$USERNAME" ]; then return; fi
   if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
-    read -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
+    read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
     U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
   fi
   test -z "$U" && err "A user name is required to make modifications."
@@ -205,7 +205,7 @@ function get_input {
     # output the default option if one was provided
     test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
     # collect the input and force it to lowercase unless requested not to
-    read RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
+    read -r RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
     # if no input was provided and there is a default value, set the input to the default
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
     # if no input was provied and null values are allowed, stop collecting input here
@@ -243,12 +243,12 @@ function commit_file {
 #
 function generic_choose {
   printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
-  grep -qE '^'$2',' ${CONF}/$1
+  grep -qE "^$2," ${CONF}/$1
   if [ $? -ne 0 ]; then
     eval $1_list
     printf -- "\n"
     get_input I "Please specify $AN $1"
-    grep -qE '^'$I',' ${CONF}/$1 || err "Unknown $1" 
+    grep -qE "^$I," ${CONF}/$1 || err "Unknown $1" 
     printf -- "\n"
     return 1
   else
@@ -269,7 +269,7 @@ function generic_delete {
   else
     C="$2"
   fi
-  grep -qE '^'$C',' ${CONF}/$1 || err "Unknown $1"
+  grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/$1; fi
   commit_file $1
@@ -291,13 +291,13 @@ function application_create {
   get_input BUILD "Build"
   get_yn CLUSTER "LVS Support (y/n)"
   # validate unique name
-  grep -qE '^'$NAME',' $CONF/application && err "Application already defined."
-  grep -qE ','$ALIAS',' $CONF/application && err "Alias invalid or already defined."
+  grep -qE "^$NAME," $CONF/application && err "Application already defined."
+  grep -qE ",$ALIAS," $CONF/application && err "Alias invalid or already defined."
   # confirm before adding
   printf -- "\nDefining a new application named '$NAME', alias '$ALIAS', installed on the '$BUILD' build"
   [ "$CLUSTER" == "y" ] && printf -- " with " || printf -- " without "
   printf -- "cluster support.\n"
-  while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
+  while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -r -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
   # add
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
@@ -324,8 +324,8 @@ function application_list {
 function application_show {
   test $# -eq 1 || err "Provide the application name"
   APP="$1"
-  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
-  read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
+  grep -qE "^$APP," $CONF/application || err "Invalid application"
+  IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER"
 }
 
@@ -338,9 +338,9 @@ function application_update {
   else
     APP="$1"
   fi
-  grep -qE '^'$APP',' $CONF/application || err "Invalid application"
+  grep -qE "^$APP," $CONF/application || err "Invalid application"
   printf -- "\n"
-  read APP ALIAS BUILD CLUSTER <<< $( grep -E '^'$APP',' ${CONF}/application |tr ',' ' ' )
+  IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default $APP
   get_input ALIAS "Alias" --default $ALIAS
   get_input BUILD "Build" --default $BUILD
@@ -357,7 +357,7 @@ function constant_create {
   # force uppercase for constants
   NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
   # validate unique name
-  grep -qE '^'$NAME',' $CONF/constant && err "Constant already defined."
+  grep -qE "^$NAME," $CONF/constant && err "Constant already defined."
   # add
   printf -- "${NAME},${DESC//,/ }\n" >>$CONF/constant
   commit_file constant
@@ -378,8 +378,8 @@ function constant_list {
 function constant_show {
   test $# -eq 1 || err "Provide the constant name"
   C="$( printf -- "$1" |tr 'a-z' 'A-Z' )"
-  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
-  read NAME DESC <<< $( grep -E '^'$C',' ${CONF}/constant |tr ',' ' ' )
+  grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
+  IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   printf -- "Name: $NAME\nDescription: $DESC"
 }
 
@@ -393,9 +393,9 @@ function constant_update {
     C="$1"
   fi
   C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
-  grep -qE '^'$C',' ${CONF}/constant || err "Unknown constant"
+  grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
   printf -- "\n"
-  read NAME DESC <<< $( grep -E '^'$C',' ${CONF}/constant |tr ',' ' ' )
+  IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   get_input NAME "Name" --default $NAME
   get_input DESC "Description" --default "$DESC"
   sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
@@ -515,8 +515,8 @@ function environment_create {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   # validate unique name and alias
-  grep -qE '^'$NAME',' ${CONF}/environment && err "Environment already defined."
-  grep -qE ','$ALIAS',' ${CONF}/environment && err "Environment alias already in use."
+  grep -qE "^$NAME," ${CONF}/environment && err "Environment already defined."
+  grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
   printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
   commit_file environment
@@ -537,8 +537,8 @@ function environment_list {
 
 function environment_show {
   test $# -eq 1 || err "Provide the environment name"
-  grep -qE '^'$1',' ${CONF}/environment || err "Unknown environment" 
-  read NAME ALIAS DESC <<< $( grep -E '^'$1',' ${CONF}/environment |tr ',' ' ' )
+  grep -qE "^$1," ${CONF}/environment || err "Unknown environment" 
+  IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
 }
 
@@ -551,9 +551,9 @@ function environment_update {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/environment || err "Unknown environment"
+  grep -qE "^$C," ${CONF}/environment || err "Unknown environment"
   printf -- "\n"
-  read NAME ALIAS DESC <<< $( grep -E '^'$C',' ${CONF}/environment |tr ',' ' ' )
+  IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$C," ${CONF}/environment )"
   get_input NAME "Name" --default $NAME
   get_input ALIAS "Alias (One Letter, Unique)" --default $ALIAS
   get_input DESC "Description" --default "$DESC" --null --nc
@@ -570,7 +570,7 @@ function file_create {
   get_input PTH "Full Path (for deployment)" --nc
   get_input DESC "Description" --nc --null
   # validate unique name
-  grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
+  grep -qE "^$NAME," ${CONF}/file && err "File already defined."
   # add
   printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
   # create base file
@@ -591,7 +591,7 @@ function file_delete {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  grep -qE "^$C," ${CONF}/file || err "Unknown file"
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
@@ -620,7 +620,7 @@ function file_edit {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  grep -qE "^$C," ${CONF}/file || err "Unknown file"
   vim ${CONF}/template/${C}
   wait
   pushd ${CONF} >/dev/null 2>&1
@@ -640,8 +640,8 @@ function file_list {
 
 function file_show {
   test $# -eq 1 || err "Provide the file name"
-  grep -qE '^'$1',' ${CONF}/file || err "Unknown file" 
-  read NAME PTH DESC <<< $( grep -E '^'$1',' ${CONF}/file |tr ',' ' ' )
+  grep -qE "^$1," ${CONF}/file || err "Unknown file" 
+  IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$1," ${CONF}/file )"
   printf -- "Name: $NAME\nPath: $PTH\nDescription: $DESC"
 }
 
@@ -654,15 +654,15 @@ function file_update {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/file || err "Unknown file"
+  grep -qE "^$C," ${CONF}/file || err "Unknown file"
   printf -- "\n"
-  read NAME PTH DESC <<< $( grep -E '^'$C',' ${CONF}/file |tr ',' ' ' )
+  IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default $NAME
   get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
   get_input DESC "Description" --default "$DESC" --null --nc
   if [ "$NAME" != "$C" ]; then
     # validate unique name
-    grep -qE '^'$NAME',' ${CONF}/file && err "File already defined."
+    grep -qE "^$NAME," ${CONF}/file && err "File already defined."
     # move file
     pushd ${CONF} >/dev/null 2>&1
     git mv template/$C template/$NAME >/dev/null 2>&1
@@ -680,7 +680,7 @@ function location_create {
   get_input NAME "Name" --nc
   get_input DESC "Description" --nc --null
   # validate unique name
-  grep -qE '^'$CODE',' $CONF/location && err "Location already defined."
+  grep -qE "^$CODE," $CONF/location && err "Location already defined."
   # add
   printf -- "${CODE},${NAME//,/ },${DESC//,/ }\n" >>$CONF/location
   commit_file location
@@ -747,8 +747,8 @@ function location_list {
 
 function location_show {
   test $# -eq 1 || err "Provide the location name"
-  grep -qE '^'$1',' ${CONF}/location || err "Unknown location" 
-  read CODE NAME DESC <<< $( grep -E '^'$1',' ${CONF}/location |tr ',' ' ' )
+  grep -qE "^$1," ${CONF}/location || err "Unknown location" 
+  IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$1," ${CONF}/location )"
   printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC"
 }
 
@@ -761,9 +761,9 @@ function location_update {
   else
     C="$1"
   fi
-  grep -qE '^'$C',' ${CONF}/location || err "Unknown location"
+  grep -qE "^$C," ${CONF}/location || err "Unknown location"
   printf -- "\n"
-  read CODE NAME DESC <<< $( grep -E '^'$C',' ${CONF}/location |tr ',' ' ' )
+  IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$C," ${CONF}/location )"
   get_input CODE "Location Code (three characters)" --default $CODE
   test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc --default $NAME
@@ -776,11 +776,11 @@ function network_create {
   start_modify
   # get user input and validate
   get_input LOC "Location Code"
-  grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
+  grep -qE "^$LOC," ${CONF}/location || err "Unknown location"
   get_input ZONE "Network Zone" --options core,edge
   get_input ALIAS "Site Alias"
   # validate unique name
-  grep -qE '^'$LOC','$ZONE','$ALIAS',' $CONF/network && err "Network already defined."
+  grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
   get_input DESC "Description" --nc --null
   get_input NET "Network"
   get_input MASK "Subnet Mask"
@@ -805,10 +805,10 @@ function network_delete {
     C="$1"
   fi
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE '^'${C//-/,}',' ${CONF}/network || err "Unknown network"
+  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
-    read LOC ZONE ALIAS DISC <<< $( grep -E '^'${C//-/,}',' ${CONF}/network |tr ',' ' ' )
+    IFS="," read -r LOC ZONE ALIAS DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
     sed -i '/^'${C//-/,}',/d' ${CONF}/network
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
   fi
@@ -827,8 +827,8 @@ function network_list {
 function network_show {
   test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE '^'${1//-/,}',' ${CONF}/network || err "Unknown network"
-  read LOC ZONE ALIAS NET MASK BITS GW VLAN DESC <<< $( grep -E '^'${1//-/,}',' ${CONF}/network |tr ',' ' ' )
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN"
 }
 
@@ -843,16 +843,16 @@ function network_update {
   fi
   # validate string
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE '^'${C//-/,}',' ${CONF}/network || err "Unknown network"
+  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  read L Z A NET MASK BITS GW VLAN DESC <<< $( grep -E '^'${C//-/,}',' ${CONF}/network |tr ',' ' ' )
+  IFS="," read -r L Z A NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default $L
-  grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
+  grep -qE "^$LOC," ${CONF}/location || err "Unknown location"
   get_input ZONE "Network Zone" --options core,edge --default $Z
   get_input ALIAS "Site Alias" --default $A
   # validate unique name if it is changing
   if [ "$LOC-$ZONE-$ALIAS" != "$C" ]; then
-    grep -qE '^'$LOC','$ZONE','$ALIAS',' $CONF/network && err "Network already defined."
+    grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
   get_input NET "Network" --default $NET
@@ -879,6 +879,9 @@ function resource_byval {
   # <value> [--assign-host|--unassign-host|--list]
 }
 
+# resource field format:
+#   type,value,assignment_type(application,host),assigned_to,description
+#
 function resource_create {
   start_modify
   # get user input and validate
@@ -886,9 +889,9 @@ function resource_create {
   get_input VAL "Value" --nc
   get_input DESC "Description" --nc --null
   # validate unique value
-  grep -qE ','${VAL//,/}',' $CONF/resource && err "Error - not a unique resource value."
+  grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
-  printf -- "${TYPE},${VAL//,/},${DESC//,/ }\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,,${DESC//,/ }\n" >>$CONF/resource
   commit_file resource
 }
 
@@ -901,7 +904,7 @@ function resource_delete {
   else
     C="$1"
   fi
-  grep -qE ','${C}',' ${CONF}/resource || err "Unknown resource"
+  grep -qE ",${C}," ${CONF}/resource || err "Unknown resource"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
     sed -i '/,'${C}',/d' ${CONF}/resource
@@ -919,9 +922,9 @@ function resource_list {
 
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
-  grep -qE ','$1',' ${CONF}/resource || err "Unknown resource" 
-  read TYPE VAL DESC <<< $( grep -E ','$1',' ${CONF}/resource |tr ',' ' ' )
-  printf -- "Type: $TYPE\nValue: $VAL\nDescription: $DESC"
+  grep -qE ",$1," ${CONF}/resource || err "Unknown resource" 
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
+  printf -- "Type: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO"
 }
 
 function resource_update {
@@ -933,17 +936,17 @@ function resource_update {
   else
     C="$1"
   fi
-  grep -qE ','$C',' ${CONF}/resource || err "Unknown resource"
+  grep -qE ",$C," ${CONF}/resource || err "Unknown resource"
   printf -- "\n"
-  read TYPE VAL DESC <<< $( grep -E ','$C',' ${CONF}/resource |tr ',' ' ' )
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
   get_input TYPE "Type" --options ip,cluster_ip --default $TYPE
   get_input VAL "Value" --nc --default $VAL
   # validate unique value
   if [ "$VAL" != "$C" ]; then
-    grep -qE ','${VAL//,/}',' $CONF/resource && err "Error - not a unique resource value."
+    grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"${DESC//,/ }"'/' ${CONF}/resource
+  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','$ASSIGN_TYPE','$ASSIGN_TO','"${DESC//,/ }"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -1002,7 +1005,7 @@ trap cleanup_and_exit EXIT INT
 test "`whoami`" == "root" || err "What madness is this? Ye art not auth'riz'd to doeth that."
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
 if ! [ -d $CONF ]; then
-  read -p "Configuration not found - this appears to be the first time running this script.  Do you want to initialize the configuration (y/n)? " P
+  read -r -p "Configuration not found - this appears to be the first time running this script.  Do you want to initialize the configuration (y/n)? " P
   P=$( echo "$P" |tr 'A-Z' 'a-z' )
   test "$P" == "y" && initialize_configuration || exit 1
 fi
@@ -1096,7 +1099,7 @@ if [ -s $PATCHDIR/$PATCHFILE ]; then
   echo -e "Please confirm the change to the patch:\n"
   diff $PATCHDIR/$PATCHFILE $TMP/$PATCHFILE
   echo -e "\n\n"
-  read -p "Look OK? (y/n) " C
+  read -r -p "Look OK? (y/n) " C
   C=$( echo $C |tr 'A-Z' 'a-z' )
   test "$C" != "y" && err "Aborted!"
 fi
