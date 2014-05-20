@@ -15,6 +15,7 @@
 #     location                                             file
 #     network                                              file
 #     resource                                             file
+#     system                                               file
 #     template/                                            directory containing global application templates
 #     template/patch/<environment>/                        directory containing template patches for the environment
 #     <location>/                                          directory
@@ -55,7 +56,7 @@ function initialize_configuration {
   test -d $CONF && exit 2
   mkdir -p $CONF/template/patch
   git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file,file-map,location,network,resource}
+  touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
   cd $CONF || err
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
@@ -847,7 +848,11 @@ function location_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined location${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+  location_list_unformatted |sed 's/^/   /'
+}
+
+function location_list_unformatted {
+  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
 function location_show {
@@ -879,8 +884,7 @@ function location_update {
 function network_create {
   start_modify
   # get user input and validate
-  get_input LOC "Location Code"
-  grep -qE "^$LOC," ${CONF}/location || err "Unknown location"
+  get_input LOC "Location Code" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge
   get_input ALIAS "Site Alias"
   # validate unique name
@@ -950,8 +954,7 @@ function network_update {
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
   IFS="," read -r L Z A NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-  get_input LOC "Location Code" --default $L
-  grep -qE "^$LOC," ${CONF}/location || err "Unknown location"
+  get_input LOC "Location Code" --default $L --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default $Z
   get_input ALIAS "Site Alias" --default $A
   # validate unique name if it is changing
@@ -1001,14 +1004,7 @@ function resource_create {
 
 function resource_delete {
   start_modify
-  if [ -z "$1" ]; then
-    resource_list
-    printf -- "\n"
-    get_input C "Resource to Delete (value)"
-  else
-    C="$1"
-  fi
-  grep -qE ",${C}," ${CONF}/resource || err "Unknown resource"
+  generic_choose resource "$1" C && shift
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
     sed -i '/,'${C}',/d' ${CONF}/resource
@@ -1046,15 +1042,7 @@ function resource_show {
 
 function resource_update {
   start_modify
-  if [ -z "$1" ]; then
-    resource_list
-    printf -- "\n"
-    get_input C "Resource value to Modify"
-  else
-    C="$1"
-  fi
-  grep -qE ",$C," ${CONF}/resource || err "Unknown resource"
-  printf -- "\n"
+  generic_choose resource "$1" C && shift
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
   get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default $TYPE
   get_input VAL "Value" --nc --default $VAL
@@ -1063,8 +1051,53 @@ function resource_update {
     grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','$ASSIGN_TYPE','$ASSIGN_TO','"${DESC//,/ }"'/' ${CONF}/resource
+  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${DESC//,/ }"'/' ${CONF}/resource
   commit_file resource
+}
+
+function system_create {
+  start_modify
+  # get user input and validate
+  get_input NAME "Hostname"
+  get_input BUILD "Build" --null
+  get_input IP "Primary IP"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  # validate unique name
+  grep -qE "^$NAME," $CONF/system && err "System already defined."
+  # add
+  printf -- "${NAME},${BUILD//,/ },${IP},${LOC}\n" >>$CONF/system
+  commit_file system
+}
+
+function system_delete {
+  generic_delete system $1
+}
+
+function system_list {
+  NUM=$( wc -l ${CONF}/system |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined system${S}."
+  test $NUM -eq 0 && return
+  cat ${CONF}/system |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+}
+
+function system_show {
+  test $# -eq 1 || err "Provide the system name"
+  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$1," ${CONF}/system )"
+  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC"
+}
+
+function system_update {
+  start_modify
+  generic_choose system "$1" C && shift
+  IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$C," ${CONF}/system )"
+  get_input NAME "Hostname" --default $NAME
+  get_input BUILD "Build" --default $BUILD --null
+  get_input IP "Primary IP" --default $IP
+  get_input LOC "Location" --default $LOC --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
+  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}'/' ${CONF}/system
+  commit_file system
 }
 
 function usage {
@@ -1093,6 +1126,8 @@ Component:
   network
   resource
     <value> [--assign-host|--unassign-host|--list]
+  system
+    <value> [--release]
 
 Verbs - all top level components:
   create
@@ -1103,7 +1138,6 @@ Verbs - all top level components:
 " >&2
   exit 1
 }
-
 
 # variables
 CONF=/usr/local/etc/lpad/app-config
@@ -1140,7 +1174,7 @@ if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ -z "$VERB" ]; then VERB="list"; fi
 
 # validate subject and verb
-printf -- " application constant environment file location network resource " |grep -q " $SUBJ "
+printf -- " application constant environment file location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" ]]; then
   printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
