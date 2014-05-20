@@ -11,6 +11,7 @@
 #     constant                                             file
 #     environment                                          file
 #     file                                                 file
+#     file-map                                             application to file map
 #     location                                             file
 #     network                                              file
 #     resource                                             file
@@ -54,7 +55,7 @@ function initialize_configuration {
   test -d $CONF && exit 2
   mkdir -p $CONF/template/patch
   git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file,location,network,resource}
+  touch $CONF/{application,constant,environment,file,file-map,location,network,resource}
   cd $CONF || err
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
@@ -142,7 +143,7 @@ function stop_modify {
     git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
   fi
   git checkout master >/dev/null 2>&1 || err "Error switching to master"
-  git merge $USERNAME >/dev/null 2>&1
+  git merge --squash $USERNAME >/dev/null 2>&1
   if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
   git commit -a -m"$USERNAME completed modifications at `date`" >/dev/null 2>&1
   git branch -d $USERNAME >/dev/null 2>&1
@@ -317,11 +318,55 @@ function application_create {
 
 function application_delete {
   generic_delete application $1
+# should also remove entry from file-map here
+#  sed -i "/^$F,$APP/d" $CONF/file-map
 }
 
+# file [--add|--remove|--list]
+#
 function application_file {
-  err "Not Implemented"
-  # file [--add|--remove|--list]
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  C="$1"; shift
+  case "$C" in
+    --add) application_file_add $APP $@;;
+    --remove) application_file_remove $APP $@;;
+    *) application_file_list $APP $@;;
+  esac
+}
+
+function application_file_add {
+  APP=$1; shift
+  # get the requested file or abort
+  generic_choose file "$1" F && shift
+  # add the mapping if it does not already exist
+  grep -qE "^$F,$APP\$" $CONF/file-map && return
+  echo "$F,$APP" >>$CONF/file-map
+  commit_file file-map
+}
+
+function application_file_list {
+  APP=$1; shift
+  NUM=$( grep -E ",$APP\$" $CONF/file-map |wc -l |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} file${S} linked to $APP."
+  test $NUM -eq 0 && return
+  ( for F in $( grep -E ",$APP\$" $CONF/file-map |awk 'BEGIN{FS=","}{print $1}' ); do
+    grep -E "^$F," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+  done ) |sort |column -t |sed 's/^/   /'
+}
+
+function application_file_remove {
+  APP=$1; shift
+  # get the requested file or abort
+  generic_choose file "$1" F && shift
+  # confirm
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" != "y" ]; then return; fi
+  # remove the mapping if it exists
+  grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not assocaited with $APP."
+  sed -i "/^$F,$APP/d" $CONF/file-map
+  commit_file file-map
 }
 
 function application_list {
@@ -628,6 +673,8 @@ function file_delete {
     popd >/dev/null 2>&1
     refresh_dirs
   fi
+# should also remove entry from file-map here
+#  sed -i "/^$F,$APP/d" $CONF/file-map
 }
 
 # general file editing function for both templates and applied template instances
