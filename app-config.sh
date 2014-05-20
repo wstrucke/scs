@@ -8,6 +8,7 @@
 # Configuration Storage:
 #   /usr/local/etc/lpad/app-config/
 #     application                                          file
+#     build                                                file
 #     constant                                             file
 #     environment                                          file
 #     file                                                 file
@@ -307,7 +308,7 @@ function application_create {
   # get user input and validate
   get_input NAME "Name"
   get_input ALIAS "Alias"
-  get_input BUILD "Build"
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_yn CLUSTER "LVS Support (y/n)"
   # validate unique name
   grep -qE "^$NAME," $CONF/application && err "Application already defined."
@@ -406,12 +407,59 @@ function application_update {
   grep -qE "^$APP," $CONF/application || err "Invalid application"
   printf -- "\n"
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
-  get_input NAME "Name" --default $APP
-  get_input ALIAS "Alias" --default $ALIAS
-  get_input BUILD "Build" --default $BUILD
+  get_input NAME "Name" --default "$APP"
+  get_input ALIAS "Alias" --default "$ALIAS"
+  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_yn CLUSTER "LVS Support (y/n)"
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   commit_file application
+}
+
+function build_create {
+  start_modify
+  # get user input and validate
+  get_input NAME "Build"
+  get_input ROLE "Role" --null
+  get_input DESC "Description" --nc --null
+  # validate unique name
+  grep -qE "^$NAME," $CONF/build && err "Build already defined."
+  # add
+  printf -- "${NAME},${ROLE},${DESC//,/}\n" >>$CONF/build
+  commit_file build
+}
+
+function build_delete {
+  generic_delete build $1
+}
+
+function build_list {
+  NUM=$( wc -l ${CONF}/build |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined build${S}."
+  test $NUM -eq 0 && return
+  build_list_unformatted |sed 's/^/   /'
+}
+
+function build_list_unformatted {
+  cat ${CONF}/build |awk 'BEGIN{FS=","}{print $1}' |sort
+}
+
+function build_show {
+  test $# -eq 1 || err "Provide the build name"
+  grep -qE "^$1," ${CONF}/build || err "Unknown build"
+  IFS="," read -r NAME ROLE DESC <<< "$( grep -E "^$1," ${CONF}/build )"
+  printf -- "Build: $NAME\nRole: $ROLE\nDescription: $DESC"
+}
+
+function build_update {
+  start_modify
+  generic_choose build "$1" C && shift
+  IFS="," read -r NAME ROLE DESC <<< "$( grep -E "^$C," ${CONF}/build )"
+  get_input NAME "Build" --default "$NAME"
+  get_input ROLE "Role" --default "$ROLE" --null
+  get_input DESC "Description" --default "$DESC" --nc --null
+  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"'/' ${CONF}/build
+  commit_file build
 }
 
 function constant_create {
@@ -461,7 +509,7 @@ function constant_update {
   grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
   printf -- "\n"
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  get_input NAME "Name" --default $NAME
+  get_input NAME "Name" --default "$NAME"
   get_input DESC "Description" --default "$DESC"
   sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
   commit_file constant
@@ -631,8 +679,8 @@ function environment_update {
   start_modify
   generic_choose environment "$1" C && shift
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$C," ${CONF}/environment )"
-  get_input NAME "Name" --default $NAME
-  get_input ALIAS "Alias (One Letter, Unique)" --default $ALIAS
+  get_input NAME "Name" --default "$NAME"
+  get_input ALIAS "Alias (One Letter, Unique)" --default "$ALIAS"
   get_input DESC "Description" --default "$DESC" --null --nc
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
@@ -763,7 +811,7 @@ function file_update {
   start_modify
   generic_choose file "$1" C && shift
   IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$C," ${CONF}/file )"
-  get_input NAME "Name (for reference)" --default $NAME
+  get_input NAME "Name (for reference)" --default "$NAME"
   get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
   get_input DESC "Description" --default "$DESC" --null --nc
   if [ "$NAME" != "$C" ]; then
@@ -866,7 +914,7 @@ function location_update {
   start_modify
   generic_choose location "$1" C && shift
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$C," ${CONF}/location )"
-  get_input CODE "Location Code (three characters)" --default $CODE
+  get_input CODE "Location Code (three characters)" --default "$CODE"
   test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
@@ -954,19 +1002,19 @@ function network_update {
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
   IFS="," read -r L Z A NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-  get_input LOC "Location Code" --default $L --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input ZONE "Network Zone" --options core,edge --default $Z
-  get_input ALIAS "Site Alias" --default $A
+  get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input ZONE "Network Zone" --options core,edge --default "$Z"
+  get_input ALIAS "Site Alias" --default "$A"
   # validate unique name if it is changing
   if [ "$LOC-$ZONE-$ALIAS" != "$C" ]; then
     grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  get_input NET "Network" --default $NET
-  get_input MASK "Subnet Mask" --default $MASK
-  get_input BITS "Subnet Bits" --default $BITS
-  get_input GW "Gateway Address" --default $GW
-  get_input VLAN "VLAN Tag/Number" --default $VLAN
+  get_input NET "Network" --default "$NET"
+  get_input MASK "Subnet Mask" --default "$MASK"
+  get_input BITS "Subnet Bits" --default "$BITS"
+  get_input GW "Gateway Address" --default "$GW"
+  get_input VLAN "VLAN Tag/Number" --default "$VLAN"
   sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC//,/ }"'/' ${CONF}/network
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -1044,8 +1092,8 @@ function resource_update {
   start_modify
   generic_choose resource "$1" C && shift
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
-  get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default $TYPE
-  get_input VAL "Value" --nc --default $VAL
+  get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default "$TYPE"
+  get_input VAL "Value" --nc --default "$VAL"
   # validate unique value
   if [ "$VAL" != "$C" ]; then
     grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
@@ -1059,7 +1107,7 @@ function system_create {
   start_modify
   # get user input and validate
   get_input NAME "Hostname"
-  get_input BUILD "Build" --null
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input IP "Primary IP"
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # validate unique name
@@ -1092,10 +1140,10 @@ function system_update {
   start_modify
   generic_choose system "$1" C && shift
   IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$C," ${CONF}/system )"
-  get_input NAME "Hostname" --default $NAME
-  get_input BUILD "Build" --default $BUILD --null
-  get_input IP "Primary IP" --default $IP
-  get_input LOC "Location" --default $LOC --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
+  get_input NAME "Hostname" --default "$NAME"
+  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input IP "Primary IP" --default "$IP"
+  get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}'/' ${CONF}/system
   commit_file system
 }
@@ -1113,6 +1161,7 @@ Run commit when complete to finalize changes.
 Component:
   application
     file [--add|--remove|--list]
+  build
   constant
   environment
     application [--add|--remove|--list]
@@ -1174,7 +1223,7 @@ if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ -z "$VERB" ]; then VERB="list"; fi
 
 # validate subject and verb
-printf -- " application constant environment file location network resource system " |grep -q " $SUBJ "
+printf -- " application build constant environment file location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" ]]; then
   printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
