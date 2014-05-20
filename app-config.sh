@@ -14,12 +14,12 @@
 #     location                                             file
 #     network                                              file
 #     resource                                             file
-#     template                                             directory containing global application templates
+#     template/                                            directory containing global application templates
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
-#     <location>/<environment>                             directory
+#     <location>/<environment>/                            directory
 #     <location>/<environment>/constant                    file
-#     <location>/<environment>/<application>               directory
+#     <location>/<environment>/<application>/              directory
 #     <location>/<environment>/<application>/constant      file
 #
 # Locks are taken by using git branches
@@ -239,6 +239,24 @@ function commit_file {
   popd >/dev/null 2>&1
 }
 
+# generic choose function, since they are all exactly the same
+#
+function generic_choose {
+  printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
+  grep -qE '^'$2',' ${CONF}/$1
+  if [ $? -ne 0 ]; then
+    eval $1_list
+    printf -- "\n"
+    get_input I "Please specify $AN $1"
+    grep -qE '^'$I',' ${CONF}/$1 || err "Unknown $1" 
+    printf -- "\n"
+    return 1
+  else
+    eval $3="$2"
+  fi
+  return 0
+}
+
 # generic delete function, since they are all exactly the same
 #
 function generic_delete {
@@ -384,11 +402,103 @@ function constant_update {
   commit_file constant
 }
 
+# manipulate applications at a specific enviroment at a specific location
+#
+# application [--add|--remove|--list]
+# application --name <name> [--define|--undefine|--list-constant]
+# application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+#
 function environment_application {
-  err "Not Implemented"
-  # application [--add|--remove|--list]
-  # application --name <name> [--define|--undefine|--list-constant]
-  # application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+  # get the requested location or abort
+  generic_choose location $1 LOC && shift
+  # get the requested environment or abort
+  generic_choose environment $1 ENV && shift
+  test -d ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  C="$1"; shift
+  case "$C" in
+    --add) environment_application_add $LOC $ENV $@;;
+    --name) environment_application_byname $LOC $ENV $@;;
+    --remove) environment_application_remove $LOC $ENV $@;;
+    *) environment_application_list $LOC $ENV $@;;
+  esac
+}
+
+function environment_application_add {
+  LOC=$1; shift; ENV=$1; shift;
+  # get the requested application or abort
+  generic_choose application $1 APP && shift
+  # assign the application
+  pushd $CONF >/dev/null 2>&1
+  test -d ${LOC}/$ENV/$APP || mkdir ${LOC}/$ENV/$APP
+  touch ${LOC}/$ENV/$APP/constant
+  git add ${LOC}/$ENV/$APP/constant >/dev/null 2>&1
+  git commit -m"${USERNAME} added $APP to $ENV at $LOC" ${LOC}/$ENV/$APP/constant >/dev/null 2>&1 || err "Error committing change to the repository"
+  popd >/dev/null 2>&1
+}
+
+# manage applications in an environment at a location
+#
+# application --name <name> [--define|--undefine|--list-constant]
+# application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+#
+function environment_application_byname {
+  LOC=$1; shift; ENV=$1; shift;
+  # get the requested application or abort
+  generic_choose application $1 APP && shift
+  test -d ${CONF}/${LOC}/${ENV}/${APP} || err "Error - please add $APP to $LOC $ENV before managing it."
+  C="$1"; shift
+  case "$C" in
+    --define) environment_application_byname_define $LOC $ENV $APP $@;;
+    --undefine) environment_application_byname_undefine $LOC $ENV $APP $@;;
+    --list-constant) environment_application_byname_list_constant $LOC $ENV $APP $@;;
+    --assign-resource) environment_application_byname_assign $LOC $ENV $APP $@;;
+    --unassign-resource) environment_application_byname_unassign $LOC $ENV $APP $@;;
+    --list-resource) environment_application_byname_list_resource $LOC $ENV $APP $@;;
+  esac
+}
+
+function environment_application_byname_define {
+  err 'Not implemented'
+}
+
+function environment_application_byname_undefine {
+  err 'Not implemented'
+}
+
+function environment_application_byname_list_constant {
+  err 'Not implemented'
+}
+
+function environment_application_byname_assign {
+  err 'Not implemented'
+}
+
+function environment_application_byname_unassign {
+  err 'Not implemented'
+}
+
+function environment_application_byname_list_resource {
+  err 'Not implemented'
+}
+
+function environment_application_list {
+  test -d ${CONF}/$1/$2 && NUM=$( find ${CONF}/$1/$2/ -type d |sed 's%'"${CONF}/$1/$2"'/%%' |grep -vE '^(\.|template|$)' |wc -l ) || NUM=0
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined application${S} at $1 $2."
+  test $NUM -eq 0 && return
+  find ${CONF}/$1/$2/ -type d |sed 's%'"${CONF}/$1/$2"'/%%' |grep -vE '^(\.|template|$)' |sort |sed 's/^/   /'
+}
+
+function environment_application_remove {
+  LOC=$1; shift; ENV=$1; shift;
+  generic_choose application $1 APP && shift
+  printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
+  get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
+  # assign the application
+  pushd $CONF >/dev/null 2>&1
+  test -d ${LOC}/$ENV/$APP && git rm -rf ${LOC}/$ENV/$APP >/dev/null 2>&1
+  git commit -m"${USERNAME} removed $APP from $ENV at $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
+  popd >/dev/null 2>&1
 }
 
 function environment_constant {
@@ -583,16 +693,7 @@ function location_delete {
 
 function location_environment {
   # get the requested location or abort
-  grep -qE '^'$1',' ${CONF}/location
-  if [ $? -ne 0 ]; then
-    location_list
-    printf -- "\n"
-    get_input LOC "Please specify a location"
-    grep -qE '^'$LOC',' ${CONF}/location || err "Unknown location"
-    printf -- "\n"
-  else
-    LOC="$1"; shift
-  fi
+  generic_choose location $1 LOC && shift
   # get the command to process
   C="$1"; shift
   case "$C" in
@@ -605,16 +706,7 @@ function location_environment {
 function location_environment_assign {
   LOC=$1; shift
   # get the requested environment or abort
-  grep -qE '^'$1',' ${CONF}/environment
-  if [ $? -ne 0 ]; then
-    environment_list
-    printf -- "\n"
-    get_input ENV "Please specify an environment"
-    grep -qE '^'$ENV',' ${CONF}/environment || err "Unknown environment"
-    printf -- "\n"
-  else
-    ENV="$1"; shift
-  fi
+  generic_choose environment $1 ENV && shift
   # assign the environment
   pushd $CONF >/dev/null 2>&1
   test -d ${LOC}/$ENV || mkdir ${LOC}/$ENV
@@ -635,16 +727,7 @@ function location_environment_list {
 function location_environment_unassign {
   LOC=$1; shift
   # get the requested environment or abort
-  grep -qE '^'$1',' ${CONF}/environment
-  if [ $? -ne 0 ]; then
-    environment_list
-    printf -- "\n"
-    get_input ENV "Please specify an environment"
-    grep -qE '^'$ENV',' ${CONF}/environment || err "Unknown environment"
-    printf -- "\n"
-  else
-    ENV="$1"; shift
-  fi
+  generic_choose environment $1 ENV && shift
   printf -- "Removing $ENV from location $LOC, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the environment
