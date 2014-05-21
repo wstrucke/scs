@@ -678,6 +678,13 @@ function environment_show {
   grep -qE "^$1," ${CONF}/environment || err "Unknown environment" 
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
+  # also show installed locations
+  NUM=$( find $CONF -name $NAME -type d |grep -v template |wc -l )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo -e "\n\nThere ${A} ${NUM} linked location${S}."
+  if [ $NUM -gt 0 ]; then
+    find $CONF -name $NAME -type d |grep -v template |sed -r 's%'$CONF'/(.{3}).*%   \1%'
+  fi
 }
 
 function environment_update {
