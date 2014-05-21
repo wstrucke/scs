@@ -67,7 +67,7 @@ function initialize_configuration {
 
 function cleanup_and_exit {
   test -d $TMP && rm -rf $TMP
-#  echo "Make sure to delete $TMP"
+  test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$
   printf -- "\n"
   exit 0
 }
@@ -109,7 +109,7 @@ function start_modify {
   cd $CONF || err
   git branch |grep -E '^\*' |grep -q master
   if [ $? -eq 0 ]; then
-    git branch $USERNAME
+    git branch $USERNAME >/dev/null 2>&1
     git checkout $USERNAME >/dev/null 2>&1
   else
     git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
@@ -119,7 +119,12 @@ function start_modify {
 
 # merge changes back into master and remove the branch
 #
+# optional:
+#  -m   commit message
+#
 function stop_modify {
+  # optional commit message
+  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="$2"; else MSG="$USERNAME completed modifications at `date`"; fi
   # get the running user
   get_user
   # switch directories
@@ -153,7 +158,7 @@ function stop_modify {
   git checkout master >/dev/null 2>&1 || err "Error switching to master"
   git merge --squash $USERNAME >/dev/null 2>&1
   if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
-  git commit -a -m"$USERNAME completed modifications at `date`" >/dev/null 2>&1
+  git commit -a -m"$MSG" >/dev/null 2>&1
   git branch -d $USERNAME >/dev/null 2>&1
   popd >/dev/null 2>&1
 }
@@ -344,7 +349,7 @@ function application_file {
 
 function application_file_add {
   test -z "$1" && shift
-  generic_choose application "$1" APP
+  generic_choose application "$1" APP && shift
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
@@ -367,7 +372,7 @@ function application_file_list {
 
 function application_file_remove {
   test -z "$1" && shift
-  generic_choose application "$1" APP
+  generic_choose application "$1" APP && shift
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # confirm
@@ -1133,7 +1138,24 @@ function system_show {
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$1," ${CONF}/system )"
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC"
+  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\n"
+  # look up the applications configured for the build assigned to this system
+  if ! [ -z "$BUILD" ]; then
+    NUM=$( grep -E ",${BUILD}," ${CONF}/application |wc -l )
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo -e "\nThere ${A} ${NUM} linked application${S}."
+    if [ $NUM -gt 0 ]; then
+      grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' |sed 's/^/   /'
+      :>/tmp/app-config.$$
+      for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
+        grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}' >>/tmp/app-config.$$
+      done
+      echo -e "\nConfiguration files:"
+      for FILE in $( cat /tmp/app-config.$$ |sort |uniq ); do
+        grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
+      done
+    fi
+  fi
 }
 
 function system_update {
@@ -1152,7 +1174,7 @@ function usage {
   echo "Manage application/server configurations and base templates across all environments.
 
 Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
-              $0 commit
+              $0 commit [-m 'commit message']
               $0 cancel
               $0 diff
 
@@ -1210,14 +1232,16 @@ if ! [ -d $CONF ]; then
 fi
 test $# -ge 1 || usage
 
-# get subject and verb
+# get subject
 SUBJ="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
-VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 
 # intercept non subject/verb commands
-if [ "$SUBJ" == "commit" ]; then stop_modify; exit 0; fi
+if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
+
+# get verb
+VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
