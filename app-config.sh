@@ -159,7 +159,7 @@ function stop_modify {
   git merge --squash $USERNAME >/dev/null 2>&1
   if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
   git commit -a -m"$MSG" >/dev/null 2>&1
-  git branch -d $USERNAME >/dev/null 2>&1
+  git branch -D $USERNAME >/dev/null 2>&1
   popd >/dev/null 2>&1
 }
 
@@ -953,8 +953,8 @@ function network_create {
   get_input NET "Network"
   get_input MASK "Subnet Mask"
   get_input BITS "Subnet Bits"
-  get_input GW "Gateway Address"
-  get_input VLAN "VLAN Tag/Number"
+  get_input GW "Gateway Address" --null
+  get_input VLAN "VLAN Tag/Number" --null
   # add
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC//,/ }\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
@@ -1025,8 +1025,8 @@ function network_update {
   get_input NET "Network" --default "$NET"
   get_input MASK "Subnet Mask" --default "$MASK"
   get_input BITS "Subnet Bits" --default "$BITS"
-  get_input GW "Gateway Address" --default "$GW"
-  get_input VLAN "VLAN Tag/Number" --default "$VLAN"
+  get_input GW "Gateway Address" --default "$GW" --null
+  get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
   sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC//,/ }"'/' ${CONF}/network
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
