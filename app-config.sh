@@ -670,7 +670,11 @@ function environment_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+  environment_list_unformatted |sed 's/^/   /'
+}
+
+function environment_list_unformatted {
+  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort
 }
 
 function environment_show {
@@ -1122,10 +1126,11 @@ function system_create {
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input IP "Primary IP"
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # validate unique name
   grep -qE "^$NAME," $CONF/system && err "System already defined."
   # add
-  printf -- "${NAME},${BUILD//,/ },${IP},${LOC}\n" >>$CONF/system
+  printf -- "${NAME},${BUILD//,/ },${IP},${LOC},${EN}\n" >>$CONF/system
   commit_file system
 }
 
@@ -1144,8 +1149,8 @@ function system_list {
 function system_show {
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
-  IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$1," ${CONF}/system )"
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\n"
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\n"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     NUM=$( grep -E ",${BUILD}," ${CONF}/application |wc -l )
@@ -1168,12 +1173,13 @@ function system_show {
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
-  IFS="," read -r NAME BUILD IP LOC <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input IP "Primary IP" --default "$IP"
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
-  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}'/' ${CONF}/system
+  get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}'/' ${CONF}/system
   commit_file system
 }
 
