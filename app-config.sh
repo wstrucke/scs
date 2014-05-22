@@ -151,7 +151,7 @@ function stop_modify {
     get_yn DF "Do you want to commit the changes (y/n)? "
     if [ "$DF" != "y" ]; then return 0; fi
   fi
-  git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
+#  git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
     git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
   fi
@@ -1160,7 +1160,7 @@ function system_show {
       echo -e "\nConfiguration files:"
       for FILE in $( cat /tmp/app-config.$$ |sort |uniq ); do
         grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
-      done
+      done |sort
     fi
   fi
 }
