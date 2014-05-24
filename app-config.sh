@@ -480,7 +480,7 @@ function constant_create {
   start_modify
   # get user input and validate
   get_input NAME "Name" --nc
-  get_input DESC "Description" --nc
+  get_input DESC "Description" --nc --null
   # force uppercase for constants
   NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
   # validate unique name
@@ -524,7 +524,9 @@ function constant_update {
   printf -- "\n"
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   get_input NAME "Name" --default "$NAME"
-  get_input DESC "Description" --default "$DESC"
+  # force uppercase for constants
+  NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
+  get_input DESC "Description" --default "$DESC" --null --nc
   sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
   commit_file constant
 }
