@@ -522,69 +522,61 @@ function constant_update {
 
 # manipulate applications at a specific environment at a specific location
 #
-# application [--add|--remove|--list]
-# application --name <name> [--define|--undefine|--list-constant]
-# application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+# application [<environment>] [--list] [<location>]
+# application [<environment>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<application>] [<location>]
+# application [<environment>] [--name <name>] [--define|--undefine|--list-constant] [<application>]
 #
 function environment_application {
-  # get the requested location or abort
-  generic_choose location "$1" LOC && shift
   # get the requested environment or abort
   generic_choose environment "$1" ENV && shift
-  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  # optionally set the application
+  if [ "$1" == "--name" ]; then generic_choose application "$2" APP; shift 2; fi
   C="$1"; shift
   case "$C" in
-    --add) environment_application_add $LOC $ENV $@;;
-    --name) environment_application_byname $LOC $ENV $@;;
-    --remove) environment_application_remove $LOC $ENV $@;;
-    *) environment_application_list $LOC $ENV $@;;
+    --add) environment_application_add $ENV $APP $@;;
+    --define) environment_application_define_constant $ENV $APP $@;;
+    --undefine) environment_application_undefine_constant $ENV $APP $@;;
+    --list-constant) environment_application_byname_list_constant $ENV $APP $@;;
+    --assign-resource) environment_application_byname_assign $ENV $APP $@;;
+    --unassign-resource) environment_application_byname_unassign $ENV $APP $@;;
+    --list-resource) environment_application_byname_list_resource $ENV $APP $@;;
+    --remove) environment_application_remove $ENV $APP $@;;
+    *) environment_application_list $ENV $@;;
   esac
 }
 
 function environment_application_add {
-  LOC=$1; ENV=$2; shift 2
+  ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   # assign the application
   echo "$APP" >>${CONF}/${LOC}/${ENV}
   commit_file "${LOC}/${ENV}"
 }
 
-# manage applications in an environment at a location
-#
-# application --name <name> [--define|--undefine|--list-constant]
-# application --name <name> [--assign-resource|--unassign-resource|--list-resource]
-#
-function environment_application_byname {
-  LOC=$1; ENV=$2; shift 2
-  # get the requested application or abort
-  generic_choose application "$1" APP && shift
-  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
-  C="$1"; shift
-  case "$C" in
-    --define) environment_application_byname_define $LOC $ENV $APP $@;;
-    --undefine) environment_application_byname_undefine $LOC $ENV $APP $@;;
-    --list-constant) environment_application_byname_list_constant $LOC $ENV $APP $@;;
-    --assign-resource) environment_application_byname_assign $LOC $ENV $APP $@;;
-    --unassign-resource) environment_application_byname_unassign $LOC $ENV $APP $@;;
-    --list-resource) environment_application_byname_list_resource $LOC $ENV $APP $@;;
-  esac
-}
-
-function environment_application_byname_define {
+function environment_application_define_constant {
   err 'Not implemented'
 }
 
-function environment_application_byname_undefine {
+function environment_application_undefine_constant {
   err 'Not implemented'
 }
 
-function environment_application_byname_list_constant {
+function environment_application_list_constant {
   err 'Not implemented'
 }
 
 function environment_application_byname_assign {
-  LOC=$1; ENV=$2; APP=$3; shift 3
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # select an available resource to assign
   generic_choose resource "$1" RES "^cluster_ip,.*,not assigned," && shift
   # verify the resource is available for this purpose
@@ -596,7 +588,13 @@ function environment_application_byname_assign {
 }
 
 function environment_application_byname_unassign {
-  LOC=$1; ENV=$2; APP=$3; shift 3
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # select an available resource to unassign
   generic_choose resource "$1" RES ",application,$LOC:$ENV:$APP," && shift
   # verify the resource is available for this purpose
@@ -611,27 +609,38 @@ function environment_application_byname_unassign {
 }
 
 function environment_application_byname_list_resource {
-  resource_list ",application,$1:$2:$3,"
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
+  resource_list ",application,$LOC:$ENV:$APP,"
 }
 
 # list applications at an environment
 #
 # required:
-#  $1  location
-#  $2  environment
+#  $1  environment
 #
 function environment_application_list {
-  test $# -eq 2 || err
-  test -f ${CONF}/$1/$2 && NUM=$( wc -l ${CONF}/$1/$2 |awk '{print $1}' ) || NUM=0
+  ENV=$1; shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} && NUM=$( wc -l ${CONF}/${LOC}/${ENV} |awk '{print $1}' ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined application${S} at $1 $2."
+  echo "There ${A} ${NUM} defined application${S} at $LOC $ENV."
   test $NUM -eq 0 && return
-  sort ${CONF}/$1/$2 |sed 's/^/   /'
+  sort ${CONF}/${LOC}/${ENV} |sed 's/^/   /'
 }
 
 function environment_application_remove {
-  LOC=$1; ENV=$2; shift 2
+  ENV=$1; shift
   generic_choose application "$1" APP && shift
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} && NUM=$( wc -l ${CONF}/${LOC}/${ENV} |awk '{print $1}' ) || NUM=0
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the application
@@ -1337,9 +1346,9 @@ Component:
   build
   constant
   environment
-    application [<location>] [<environment>] [--add|--remove|--list]
-    application --name <name> [--define|--undefine|--list-constant]
-    application --name <name> [--assign-resource|--unassign-resource|--list-resource]
+    application [<environment>] [--list] [<location>]
+    application [<environment>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<application>] [<location>]
+    application [<environment>] [--name <name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
     edit [<name>] [--environment <name>]
