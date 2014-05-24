@@ -404,7 +404,7 @@ function application_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
-  cat $CONF/application |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort |sed 's/^/   /'
 }
 
 function application_show {
@@ -453,7 +453,7 @@ function build_list {
 }
 
 function build_list_unformatted {
-  cat ${CONF}/build |awk 'BEGIN{FS=","}{print $1}' |sort
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/build |sort
 }
 
 function build_show {
@@ -497,7 +497,7 @@ function constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/constant |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |sed 's/^/   /'
 }
 
 function constant_show {
@@ -644,8 +644,39 @@ function environment_application_remove {
 # constant [--define|--undefine|--list]
 function environment_constant {
   case "$1" in
+    --define) environment_constant_define ${@:2};;
+    --undefine) environment_constant_undefine ${@:2};;
     *) environment_constant_list ${@:2};;
   esac
+}
+
+# define a constant for an environment
+#
+function environment_constant_define {
+  start_modify
+  generic_choose environment "$1" ENV && shift
+  generic_choose constant "$1" C && shift
+  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
+  # check if constant is already defined
+  grep -qE "^$C," ${CONF}/value/$ENV/constant
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/constant
+  else
+    # not defined, add
+    printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/constant
+  fi
+  commit_file ${CONF}/value/$ENV/constant
+}
+
+# undefine a constant for an environment
+#
+function environment_constant_undefine {
+  start_modify
+  generic_choose environment "$1" ENV && shift
+  generic_choose constant "$1" C
+  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/constant
+  commit_file ${CONF}/value/$ENV/constant
 }
 
 function environment_constant_list {
@@ -1013,7 +1044,7 @@ function network_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined network${S}."
   test $NUM -eq 0 && return
-  ( printf -- "Site Alias Network\n"; cat ${CONF}/network |awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' |sort ) |column -t |sed 's/^/   /'
+  ( printf -- "Site Alias Network\n"; awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort ) |column -t |sed 's/^/   /'
 }
 
 function network_show {
@@ -1172,7 +1203,7 @@ function resource_list_unformatted {
   if ! [ -z "$1" ]; then
     grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $5,$1,$2}' |sort
   else
-    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $5,$1,$2}' |sort
+    awk 'BEGIN{FS=","}{print $5,$1,$2}' ${CONF}/resource |sort
   fi
 }
 
@@ -1228,7 +1259,7 @@ function system_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/system |awk 'BEGIN{FS=","}{print $1}' |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/system |sort |sed 's/^/   /'
 }
 
 function system_show {
@@ -1269,7 +1300,7 @@ function system_show {
   # output linked configuration file list
   if [ -s /tmp/app-config.$$ ]; then
     echo -e "\nManaged configuration files:"
-    for FILE in $( cat /tmp/app-config.$$ |sort |uniq ); do
+    for FILE in $( sort /tmp/app-config.$$ |uniq ); do
       grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
     done |sort
   else
