@@ -40,7 +40,7 @@
 #  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
 
-#
+#--ORIGINAL DOCUMENTATION BELOW--NOT NECESSARILY RELEVANT--
 # Assists you in generating or updating the patches that are deployed to
 #  application servers to be installed with the local update-config
 #  script
@@ -55,7 +55,7 @@
 #  is in lpad at:
 #
 #  /usr/local/etc/lpad/app-templates
-#
+#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 
 # first run function to init the configuration store
 #
@@ -1110,13 +1110,14 @@ function resource_byval_unassign {
 function resource_create {
   start_modify
   # get user input and validate
+  get_input NAME "Name" --null
   get_input TYPE "Type" --options ip,cluster_ip,ha_ip
   get_input VAL "Value" --nc
   get_input DESC "Description" --nc --null
   # validate unique value
   grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
-  printf -- "${TYPE},${VAL//,/},,not assigned,${DESC//,/ }\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC//,/ }\n" >>$CONF/resource
   commit_file resource
 }
 
@@ -1158,23 +1159,24 @@ function resource_list {
 #
 function resource_list_unformatted {
   if ! [ -z "$1" ]; then
-    grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort
+    grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $5,$1,$2}' |sort
   else
-    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort
+    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $5,$1,$2}' |sort
   fi
 }
 
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
   grep -qE ",$1," ${CONF}/resource || err "Unknown resource" 
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
-  printf -- "Type: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
+  printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO"
 }
 
 function resource_update {
   start_modify
   generic_choose resource "$1" C && shift
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
+  get_input NAME "Name" --default "$NAME" --null
   get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default "$TYPE"
   get_input VAL "Value" --nc --default "$VAL"
   # validate unique value
@@ -1182,12 +1184,12 @@ function resource_update {
     grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${DESC//,/ }"'/' ${CONF}/resource
+  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC//,/ }"'/' ${CONF}/resource
   commit_file resource
 }
 
 function system_byname {
-  err "Not Implemented"
+  err "Not implemented"
   # <value> [--release]
 }
 
