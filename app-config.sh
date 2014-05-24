@@ -10,7 +10,7 @@
 #   /usr/local/etc/lpad/app-config/
 #     application                                          file
 #     build                                                file
-#     constant                                             file
+#     constant                                             constant index
 #     environment                                          file
 #     file                                                 file
 #     file-map                                             application to file map
@@ -20,12 +20,13 @@
 #     system                                               file
 #     template/                                            directory containing global application templates
 #     template/patch/<environment>/                        directory containing template patches for the environment
+#     value/                                               directory containing constant definitions
+#     value/<environment>/                                 directory
+#     value/<environment>/constant                         file
+#     value/<environment>/<application>                    file
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
-#     <location>/<environment>/                            directory
-#     <location>/<environment>/constant                    file
-#     <location>/<environment>/<application>/              directory
-#     <location>/<environment>/<application>/constant      file
+#     <location>/<environment>                             file
 #
 # Locks are taken by using git branches
 #
@@ -61,7 +62,7 @@
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch
+  mkdir -p $CONF/template/patch $CONF/value
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
   cd $CONF || err
@@ -276,15 +277,18 @@ function commit_file {
 function generic_choose {
   printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
   [ "$1" == "resource" ] && M="," || M="^"
-  test ! -z "$2" && grep -qE "$M$2," ${CONF}/$1
+  test ! -z "$2" && grep -qiE "$M$2," ${CONF}/$1
   if [ $? -ne 0 ]; then
     eval $1_list "$4"
     printf -- "\n"
     get_input I "Please specify $AN $1"
+    test "$1" == "constant" && I=$( printf -- $I |tr 'a-z' 'A-Z' )
     grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
     printf -- "\n"
     eval $3="$I"
     return 1
+  elif [ "$1" == "constant" ]; then
+    eval $3=$( printf -- $2 |tr 'a-z' 'A-Z' )
   else
     eval $3="$2"
   fi
@@ -342,6 +346,8 @@ function application_delete {
   generic_delete application $1
 # should also remove entry from file-map here
 #  sed -i "/^$F,$APP/d" $CONF/file-map
+# should also unassign resources
+# should also undefine constants
 }
 
 # file [--add|--remove|--list]
@@ -411,15 +417,7 @@ function application_show {
 
 function application_update {
   start_modify
-  if [ -z "$1" ]; then
-    application_list
-    printf -- "\n"
-    get_input APP "Application to Modify"
-  else
-    APP="$1"
-  fi
-  grep -qE "^$APP," $CONF/application || err "Invalid application"
-  printf -- "\n"
+  generic_choose application "$1" APP && shift
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
@@ -512,16 +510,7 @@ function constant_show {
 
 function constant_update {
   start_modify
-  if [ -z "$1" ]; then
-    constant_list
-    printf -- "\n"
-    get_input C "Constant to Modify"
-  else
-    C="$1"
-  fi
-  C=$( printf -- "$C" |tr 'a-z' 'A-Z' )
-  grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
-  printf -- "\n"
+  generic_choose constant "$1" C && shift
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   get_input NAME "Name" --default "$NAME"
   # force uppercase for constants
@@ -542,7 +531,7 @@ function environment_application {
   generic_choose location "$1" LOC && shift
   # get the requested environment or abort
   generic_choose environment "$1" ENV && shift
-  test -d ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   C="$1"; shift
   case "$C" in
     --add) environment_application_add $LOC $ENV $@;;
@@ -553,16 +542,12 @@ function environment_application {
 }
 
 function environment_application_add {
-  LOC=$1; shift; ENV=$1; shift;
+  LOC=$1; ENV=$2; shift 2
   # get the requested application or abort
   generic_choose application "$1" APP && shift
   # assign the application
-  pushd $CONF >/dev/null 2>&1
-  test -d ${LOC}/$ENV/$APP || mkdir ${LOC}/$ENV/$APP
-  touch ${LOC}/$ENV/$APP/constant
-  git add ${LOC}/$ENV/$APP/constant >/dev/null 2>&1
-  git commit -m"${USERNAME} added $APP to $ENV at $LOC" ${LOC}/$ENV/$APP/constant >/dev/null 2>&1 || err "Error committing change to the repository"
-  popd >/dev/null 2>&1
+  echo "$APP" >>${CONF}/${LOC}/${ENV}
+  commit_file "${LOC}/${ENV}"
 }
 
 # manage applications in an environment at a location
@@ -571,10 +556,10 @@ function environment_application_add {
 # application --name <name> [--assign-resource|--unassign-resource|--list-resource]
 #
 function environment_application_byname {
-  LOC=$1; shift; ENV=$1; shift;
+  LOC=$1; ENV=$2; shift 2
   # get the requested application or abort
   generic_choose application "$1" APP && shift
-  test -d ${CONF}/${LOC}/${ENV}/${APP} || err "Error - please add $APP to $LOC $ENV before managing it."
+  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   C="$1"; shift
   case "$C" in
     --define) environment_application_byname_define $LOC $ENV $APP $@;;
@@ -629,29 +614,47 @@ function environment_application_byname_list_resource {
   resource_list ",application,$1:$2:$3,"
 }
 
+# list applications at an environment
+#
+# required:
+#  $1  location
+#  $2  environment
+#
 function environment_application_list {
-  test -d ${CONF}/$1/$2 && NUM=$( find ${CONF}/$1/$2/ -type d |sed 's%'"${CONF}/$1/$2"'/%%' |grep -vE '^(\.|template|$)' |wc -l ) || NUM=0
+  test $# -eq 2 || err
+  test -f ${CONF}/$1/$2 && NUM=$( wc -l ${CONF}/$1/$2 |awk '{print $1}' ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S} at $1 $2."
   test $NUM -eq 0 && return
-  find ${CONF}/$1/$2/ -type d |sed 's%'"${CONF}/$1/$2"'/%%' |grep -vE '^(\.|template|$)' |sort |sed 's/^/   /'
+  sort ${CONF}/$1/$2 |sed 's/^/   /'
 }
 
 function environment_application_remove {
-  LOC=$1; shift; ENV=$1; shift;
+  LOC=$1; ENV=$2; shift 2
   generic_choose application "$1" APP && shift
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
-  # assign the application
-  pushd $CONF >/dev/null 2>&1
-  test -d ${LOC}/$ENV/$APP && git rm -rf ${LOC}/$ENV/$APP >/dev/null 2>&1
-  git commit -m"${USERNAME} removed $APP from $ENV at $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
-  popd >/dev/null 2>&1
+  # unassign the application
+  sed -i "/^$APP\$/d" $CONF/$LOC/$ENV
+  commit_file $LOC/$ENV
 }
 
+# manage environment constants
+#
+# constant [--define|--undefine|--list]
 function environment_constant {
-  err "Not implemented"
-  # constant [--define|--undefine|--list]
+  case "$1" in
+    *) environment_constant_list ${@:2};;
+  esac
+}
+
+function environment_constant_list {
+  generic_choose environment "$1" ENV && shift
+  NUM=$( wc -l ${CONF}/value/$ENV/constant |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined constant${S} for $ENV."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/$ENV/constant |sed 's/^/   /'
 }
 
 function environment_create {
@@ -666,8 +669,9 @@ function environment_create {
   grep -qE "^$NAME," ${CONF}/environment && err "Environment already defined."
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
-  mkdir -p $CONF/template/patch/${NAME} >/dev/null 2>&1
+  mkdir -p $CONF/template/patch/${NAME} $CONF/value/${NAME} >/dev/null 2>&1
   printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
+  touch $CONF/value/${NAME}/constant
   commit_file environment
   refresh_dirs
 }
@@ -685,7 +689,7 @@ function environment_list {
 }
 
 function environment_list_unformatted {
-  cat ${CONF}/environment |awk 'BEGIN{FS=","}{print $1}' |sort
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/environment |sort
 }
 
 function environment_show {
@@ -694,11 +698,11 @@ function environment_show {
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
   # also show installed locations
-  NUM=$( find $CONF -name $NAME -type d |grep -v template |wc -l )
+  NUM=$( find $CONF -name $NAME -type f |grep -vE '(template|value)' |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\n\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
-    find $CONF -name $NAME -type d |grep -v template |sed -r 's%'$CONF'/(.{3}).*%   \1%'
+    find $CONF -name $NAME -type f |grep -vE '(template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
   fi
 }
 
@@ -716,7 +720,8 @@ function environment_update {
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
     test -d template/patch/$C && git mv template/patch/$C template/patch/$NAME >/dev/null 2>&1
-    for L in $( cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' ); do
+    test -d value/$C && git mv value/$C value/$NAME >/dev/null 2>&1
+    for L in $( awk 'BEGIN{FS=","}{print $1}' ${CONF}/location ); do
       test -d $L/$C && git mv $L/$C $L/$NAME >/dev/null 2>&1
     done
     popd >/dev/null 2>&1
@@ -824,7 +829,7 @@ function file_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined file${S}."
   test $NUM -eq 0 && return
-  cat ${CONF}/file |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1,$2}' ${CONF}/file |sort |column -t |sed 's/^/   /'
 }
 
 function file_show {
@@ -890,19 +895,23 @@ function location_environment_assign {
   generic_choose environment "$1" ENV && shift
   # assign the environment
   pushd $CONF >/dev/null 2>&1
-  test -d ${LOC}/$ENV || mkdir ${LOC}/$ENV
-  touch ${LOC}/$ENV/constant
-  git add ${LOC}/$ENV/constant >/dev/null 2>&1
-  git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV/constant >/dev/null 2>&1 || err "Error committing change to the repository"
+  touch ${LOC}/$ENV
+  git add ${LOC}/$ENV >/dev/null 2>&1
+  git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
 
+# list environments at a location
+#
+# required:
+#  $1 location
+#
 function location_environment_list {
-  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type d |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|$)' |wc -l ) || NUM=0
+  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type f |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |wc -l ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S} at $1."
   test $NUM -eq 0 && return
-  find ${CONF}/$1/ -type d |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|$)' |sort |sed 's/^/   /'
+  find ${CONF}/$1/ -type f |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |sort |sed 's/^/   /'
 }
 
 function location_environment_unassign {
@@ -913,7 +922,7 @@ function location_environment_unassign {
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the environment
   pushd $CONF >/dev/null 2>&1
-  test -d ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
+  test -f ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
   git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
@@ -927,7 +936,7 @@ function location_list {
 }
 
 function location_list_unformatted {
-  cat ${CONF}/location |awk 'BEGIN{FS=","}{print $1}' |sort
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/location |sort
 }
 
 function location_show {
@@ -1300,7 +1309,7 @@ Component:
     application [<location>] [<environment>] [--add|--remove|--list]
     application --name <name> [--define|--undefine|--list-constant]
     application --name <name> [--assign-resource|--unassign-resource|--list-resource]
-    constant [--define|--undefine|--list]
+    constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
     edit [<name>] [--environment <name>]
   location
