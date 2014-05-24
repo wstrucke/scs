@@ -33,6 +33,10 @@
 #
 # A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to one or more hosts or applications.
 #
+# Use constants and resources in configuration files -- this is the whole point, mind you -- with this syntax:
+#  {% resource.name %}
+#  {% constant.name %}
+#
 
 #
 # Assists you in generating or updating the patches that are deployed to
@@ -642,7 +646,7 @@ function environment_application_remove {
 }
 
 function environment_constant {
-  err "Not Implemented"
+  err "Not implemented"
   # constant [--define|--undefine|--list]
 }
 
@@ -1050,12 +1054,52 @@ function network_update {
 
 # manage or list resource assignments
 #
-# <value> [--assign-host|--unassign-host|--list]
+# <value> [--assign|--unassign|--list] [<host>]
 #
 function resource_byval {
-  case "$1" in
-    --list) resource_list ',,';;
+  case "$2" in
+    --assign) resource_byval_assign $1 ${@:3};;
+    --list) resource_list ",host,$1,";;
+    --unassign) resource_byval_unassign $1;;
   esac
+}
+
+# assign a resource to a host
+# - it only makes sense to assign an ip to a host, ha/cluster ips should
+#   be assigned to an application and environment
+#
+# requires:
+#   $1  resource
+# 
+# optional:
+#   $2  system
+#
+function resource_byval_assign {
+  # input validation
+  test $# -gt 0 || err
+  grep -qE "^ip,$1,,not assigned," ${CONF}/resource || err "Invalid or unavailable resource"
+  # get the system name
+  generic_choose system "$2" HOST
+  # update the assignment in the resource file
+  sed -ri 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
+  commit_file resource
+}
+
+# unassign a resource
+#
+# requires:
+#   $1  resource
+# 
+function resource_byval_unassign {
+  # input validation
+  test $# -gt 0 || err
+  grep -qE "^(cluster_|ha_)?ip,$1,(host|application)," ${CONF}/resource || err "Invalid or unassigned resource"
+  # confirm
+  get_yn RL "Are you sure (y/n)? "
+  test "$RL" != "y" && return
+  # update the assignment in the resource file
+  sed -ri 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
+  commit_file resource
 }
 
 # resource field format:
@@ -1099,8 +1143,9 @@ function resource_list {
   echo "There ${A} ${NUM} $N resource${S}."
   test $NUM -eq 0 && return
   # include assignment status in output
-  for R in $( resource_list_unformatted "$1" ); do
+  for R in $( resource_list_unformatted "$1" |tr ' ' ',' ); do
     grep -E "^${R// /,}," ${CONF}/resource |grep -qE ',(host|application),'
+    test $? -eq 0 && printf -- "${R//,/ }\n" || printf -- "${R//,/ } unassigned\n"
   done |column -t |sed 's/^/   /'
 }
 
@@ -1256,7 +1301,8 @@ Component:
     [<name>] [--assign|--unassign|--list]
   network
   resource
-    <value> [--assign-host|--unassign-host|--list]
+    <value> [--assign] [<system>]
+    <value> [--unassign|--list]
   system
     <value> [--release]
 
@@ -1323,7 +1369,7 @@ fi
 if [ "$SUBJ" == "resource" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
-    *) resource_byval $@;;
+    *) resource_byval "$VERB" $@;;
   esac
 elif [ "$SUBJ" == "system" ]; then
   case "$VERB" in
