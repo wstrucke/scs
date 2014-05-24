@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Manage application configuration files
+# LPAD Application Configuration
+# Manage and deploy application configuration files
 #
 # William Strucke [wstrucke@gmail.com]
 # Version 1.0.0, May 2014
@@ -33,9 +34,10 @@
 #
 # A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to one or more hosts or applications.
 #
-# Use constants and resources in configuration files -- this is the whole point, mind you -- with this syntax:
+# Use constants and resources in configuration files -- this is the whole point of lpac, mind you -- with this syntax:
 #  {% resource.name %}
 #  {% constant.name %}
+#  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
 
 #
@@ -1291,7 +1293,7 @@ Component:
   build
   constant
   environment
-    application [--add|--remove|--list]
+    application [<location>] [<environment>] [--add|--remove|--list]
     application --name <name> [--define|--undefine|--list-constant]
     application --name <name> [--assign-resource|--unassign-resource|--list-resource]
     constant [--define|--undefine|--list]
