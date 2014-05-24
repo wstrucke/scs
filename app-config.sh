@@ -165,6 +165,9 @@ function stop_modify {
 
 # cancel changes and switch back to master
 #
+# optional:
+#   --force  force the cancel even if this isn't your branch
+#
 function cancel_modify {
   # get the running user
   get_user
@@ -177,7 +180,7 @@ function cancel_modify {
   if [[ $M -eq 0 && $L -gt 0 ]]; then err "Error -- changes on master branch must be resolved manually."; elif [ $M -eq 0 ]; then return; fi
   # make sure we are on the correct branch...
   git branch |grep -E '^\*' |grep -q $USERNAME
-  test $? -ne 0 && err "Error -- this is not your branch."
+  if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
   # confirm
   get_yn DF "Are you sure you want to discard outstanding changes (y/n)? "
   if [ "$DF" == "y" ]; then
@@ -1045,9 +1048,14 @@ function network_update {
   fi
 }
 
+# manage or list resource assignments
+#
+# <value> [--assign-host|--unassign-host|--list]
+#
 function resource_byval {
-  err "Not Implemented"
-  # <value> [--assign-host|--unassign-host|--list]
+  case "$1" in
+    --list) resource_list ',,';;
+  esac
 }
 
 # resource field format:
@@ -1090,10 +1098,22 @@ function resource_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} $N resource${S}."
   test $NUM -eq 0 && return
+  # include assignment status in output
+  for R in $( resource_list_unformatted "$1" ); do
+    grep -E "^${R// /,}," ${CONF}/resource |grep -qE ',(host|application),'
+  done |column -t |sed 's/^/   /'
+}
+
+# show available resources
+#
+# optional:
+#  $1  regex to filter list on
+#
+function resource_list_unformatted {
   if ! [ -z "$1" ]; then
-    grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+    grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort
   else
-    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort |column -t |sed 's/^/   /'
+    cat ${CONF}/resource |awk 'BEGIN{FS=","}{print $1,$2}' |sort
   fi
 }
 
@@ -1117,6 +1137,11 @@ function resource_update {
   get_input DESC "Description" --nc --null --default "$DESC"
   sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${DESC//,/ }"'/' ${CONF}/resource
   commit_file resource
+}
+
+function system_byname {
+  err "Not Implemented"
+  # <value> [--release]
 }
 
 function system_create {
@@ -1147,9 +1172,14 @@ function system_list {
 }
 
 function system_show {
+  # local variables
+  RSRC=()
+  # input validation
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # load the system
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # output the status/summary
   printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\n"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
@@ -1159,14 +1189,31 @@ function system_show {
     if [ $NUM -gt 0 ]; then
       grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' |sed 's/^/   /'
       :>/tmp/app-config.$$
+      # retrieve application related data
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
+        # get the file list per application
         grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}' >>/tmp/app-config.$$
+        # get any localized resources for the application
+        RSRC=( `grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2` )
       done
-      echo -e "\nConfiguration files:"
-      for FILE in $( cat /tmp/app-config.$$ |sort |uniq ); do
-        grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
-      done |sort
     fi
+  fi
+  # add any host assigned resources to the list
+  RSRC=( ${RSRC[@]} `grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2` )
+  # show assigned resources (by host, application + environment)
+  if [ ${#RSRC[*]} -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo -e "\nThere ${A} ${#RSRC[*]} linked resource${S}."
+  if [ ${#RSRC[*]} -gt 0 ]; then for ((i=0;i<${#RSRC[*]};i++)); do
+    printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1}'
+  done; fi |column -t |sed 's/^/   /'
+  # output linked configuration file list
+  if [ -s /tmp/app-config.$$ ]; then
+    echo -e "\nManaged configuration files:"
+    for FILE in $( cat /tmp/app-config.$$ |sort |uniq ); do
+      grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
+    done |sort
+  else
+    echo -e "\nNo managed configuration files."
   fi
 }
 
@@ -1188,7 +1235,7 @@ function usage {
 
 Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
-              $0 cancel
+              $0 cancel [--force]
               $0 diff
 
 Run commit when complete to finalize changes.
@@ -1250,7 +1297,7 @@ SUBJ="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
-if [ "$SUBJ" == "cancel" ]; then cancel_modify; exit 0; fi
+if [ "$SUBJ" == "cancel" ]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 
 # get verb
@@ -1277,6 +1324,11 @@ if [ "$SUBJ" == "resource" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
     *) resource_byval $@;;
+  esac
+elif [ "$SUBJ" == "system" ]; then
+  case "$VERB" in
+    create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
+    *) system_byname $@;;
   esac
 elif [ "$SUBJ" == "location" ]; then
   case "$VERB" in
