@@ -25,6 +25,8 @@
 #     value/<environment>/                                 directory
 #     value/<environment>/constant                         file (environment)
 #     value/<environment>/<application>                    file (environment application)
+#     value/<location>/                                    directory
+#     value/<location>/<environment>                       file (location environment)
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
@@ -992,6 +994,9 @@ function location_delete {
   generic_delete location $1
 }
 
+#  [<name>] [--assign|--unassign|--list]
+#  [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+#
 function location_environment {
   # get the requested location or abort
   generic_choose location "$1" LOC && shift
@@ -1000,6 +1005,7 @@ function location_environment {
   case "$C" in
     --assign) location_environment_assign $LOC $@;;
     --unassign) location_environment_unassign $LOC $@;;
+    constant) location_environment_constant $LOC $@;;
     *) location_environment_list $LOC $@;;
   esac
 }
@@ -1015,6 +1021,53 @@ function location_environment_assign {
   git add ${LOC}/$ENV >/dev/null 2>&1
   git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
+}
+
+function location_environment_constant {
+  LOC=$1; shift
+  # get the command to process
+  C="$1"; shift
+  # get the requested environment or abort
+  generic_choose environment "$1" ENV && shift
+  case "$C" in
+    --define) location_environment_constant_define "$LOC" "$ENV" $@;;
+    --undefine) location_environment_constant_undefine "$LOC" "$ENV" $@;;
+    *) location_environment_constant_list "$LOC" "$ENV";; 
+  esac
+}
+
+function location_environment_constant_define {
+  LOC="$1"; ENV="$2"; shift 2
+  start_modify
+  if ! [ -f $CONF/value/$LOC/$ENV ]; then mkdir -p $CONF/value/$LOC; touch $CONF/value/$LOC/$ENV; fi
+  generic_choose constant "$1" C && shift
+  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
+  # check if constant is already defined
+  grep -qE "^$C," $CONF/value/$LOC/$ENV
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' $CONF/value/$LOC/$ENV
+  else
+    # not defined, add
+    printf -- "$C,$VAL\n" >>$CONF/value/$LOC/$ENV
+  fi
+  commit_file $CONF/value/$LOC/$ENV
+}
+
+function location_environment_constant_undefine {
+  start_modify
+  generic_choose constant "$1" C
+  sed -i '/^'"$C"',.*/d' $CONF/value/$1/$2
+  commit_file $CONF/value/$1/$2
+}
+
+function location_environment_constant_list {
+  LOC="$1"; ENV="$2"; shift 2
+  test -f $CONF/value/$LOC/$ENV && NUM=$( wc -l $CONF/value/$LOC/$ENV |awk '{print $1}' ) || NUM=0
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined constant${S} for $LOC $ENV."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' $CONF/value/$LOC/$ENV |sort |sed 's/^/   /'
 }
 
 # list environments at a location
@@ -1384,6 +1437,8 @@ function system_audit {
         get_yn DF "Do you want to review the differences (y/n)? "
         test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
       fi
+    elif [ `stat -c%s $TMP/REFERENCE/$F` -eq 0 ]; then
+      echo "Ignoring empty file $F"
     else
       echo "WARNING: Remote system is missing file: $F"
       VALID=0
@@ -1590,6 +1645,7 @@ Component:
     edit [<name>] [--environment <name>]
   location
     [<name>] [--assign|--unassign|--list]
+    [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
   network
   resource
     <value> [--assign] [<system>]
@@ -1671,7 +1727,7 @@ elif [ "$SUBJ" == "system" ]; then
 elif [ "$SUBJ" == "location" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
-    *) location_environment $@;;
+    *) location_environment "$VERB" $@;;
   esac
 else
   eval ${SUBJ}_${VERB} $@
