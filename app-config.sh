@@ -42,23 +42,6 @@
 #  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
 
-#--ORIGINAL DOCUMENTATION BELOW--NOT NECESSARILY RELEVANT--
-# Assists you in generating or updating the patches that are deployed to
-#  application servers to be installed with the local update-config
-#  script
-#
-# Patches are stored in LPAD and pushed out with the install-config lpad
-#  script.
-#
-#  /usr/local/etc/lpad/app-patches
-#
-# Templates are stored in LPAD and downloaded by the app server on
-#  demand from sm-web.  The authoritative source for the patches
-#  is in lpad at:
-#
-#  /usr/local/etc/lpad/app-templates
-#-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
-
 # first run function to init the configuration store
 #
 function initialize_configuration {
