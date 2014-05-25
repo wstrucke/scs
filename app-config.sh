@@ -1373,7 +1373,39 @@ function system_byname {
 }
 
 function system_audit {
-  err "Not implemented"
+  test $# -gt 0 || err
+  VALID=1
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # test connectivity
+  nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
+  # generate the release
+  FILE=$( system_release $1 |tail -n1 )
+  test -f $FILE && echo "OK" || echo "FAIL"
+  # extract release to local directory
+  mkdir -p $TMP/{REFERENCE,ACTUAL}
+  tar xzf $FILE -C $TMP/REFERENCE/ || err "Error extracting release to local directory"
+  pushd $TMP/REFERENCE >/dev/null 2>&1
+  # pull down the files to audit
+  for F in $( find . -type f |sed 's%^\./%%' ); do
+    mkdir -p $TMP/ACTUAL/`dirname $F`
+    scp $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
+  done
+  # review differences
+  for F in $( find . -type f |sed 's%^\./%%' ); do
+    if [ -f $TMP/ACTUAL/$F ]; then
+      if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
+        VALID=0
+        echo "Deployed file and reference do not match: $F"
+        get_yn DF "Do you want to review the differences (y/n)? "
+        test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
+      fi
+    else
+      echo "WARNING: Remote system is missing file: $F"
+      VALID=0
+    fi
+  done
+  test $VALID -eq 1 && echo "System audit PASSED" || echo "System audit FAILED"
 }
 
 # output a list of constants and values assigned to a system
