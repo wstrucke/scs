@@ -21,9 +21,10 @@
 #     template/                                            directory containing global application templates
 #     template/patch/<environment>/                        directory containing template patches for the environment
 #     value/                                               directory containing constant definitions
+#     value/constant                                       file (global)
 #     value/<environment>/                                 directory
-#     value/<environment>/constant                         file
-#     value/<environment>/<application>                    file
+#     value/<environment>/constant                         file (environment)
+#     value/<environment>/<application>                    file (environment application)
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
@@ -74,7 +75,7 @@ function initialize_configuration {
 
 function cleanup_and_exit {
   test -d $TMP && rm -rf $TMP
-  test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$
+  test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
   printf -- "\n"
   exit 0
 }
@@ -426,6 +427,13 @@ function application_update {
   get_yn CLUSTER "LVS Support (y/n)"
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   commit_file application
+}
+
+# return all applications linked to a build
+#
+function build_application_list {
+  generic_choose build "$1" C 
+  grep -E ",$1," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}'
 }
 
 function build_create {
@@ -1191,6 +1199,29 @@ function network_update {
   fi
 }
 
+# locate template variables and replace with actual data
+#
+# the template file WILL be modified!
+#
+# required:
+#  $1 /path/to/template
+#  $2 file with space seperated variables and values
+#
+# syntax:
+#  {% resource.name %}
+#  {% constant.name %}
+#  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
+#
+function parse_template {
+  [[ $# -ne 2 || ! -f $1 || ! -f $2 ]] && return
+  while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
+    NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
+    grep -qE "^$NAME " $2 || err "Error: Undefined variable $NAME"
+    VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
+    sed -i "s/{% $NAME %}/$VAL/" $1
+  done
+}
+
 # manage or list resource assignments
 #
 # <value> [--assign|--unassign|--list] [<host>]
@@ -1345,57 +1376,95 @@ function system_audit {
   err "Not implemented"
 }
 
+# output a list of constants and values assigned to a system
+#
+function system_constant_list {
+  generic_choose system "$1" C && shift
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  for APP in $( build_application_list "$BUILD" ); do
+    cat $CONF/value/$EN/$APP 2>/dev/null
+  done
+  cat $CONF/value/$EN/constant 2>/dev/null
+  cat $CONF/value/constant 2>/dev/null
+}
+
+# output list of resources assigned to a system
+#
+function system_resource_list {
+  generic_choose system "$1" C && shift
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  for APP in $( build_application_list "$BUILD" ); do
+    # get any localized resources for the application
+    grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2,5
+  done
+  # add any host assigned resources to the list
+  grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2,5
+}
+
 function system_release {
   test $# -gt 0 || err
   # load the system
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
-  mkdir -p $TMP
+  mkdir -p $TMP $RELEASEDIR
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
-  RSRC=()
+  FILES=()
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
-    NUM=$( grep -E ",${BUILD}," ${CONF}/application |wc -l )
-    if [ $NUM -gt 0 ]; then
-      grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' |sed 's/^/   /'
-      :>/tmp/app-config.$$
-      # retrieve application related data
-      for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
-        # get the file list per application
-        grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}' >>/tmp/app-config.$$
-        # get any localized resources for the application
-        RSRC=( `grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2` )
-      done
-    fi
-  fi
-  # add any host assigned resources to the list
-  RSRC=( ${RSRC[@]} `grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2` )
-  # show assigned resources (by host, application + environment)
-  #if [ ${#RSRC[*]} -gt 0 ]; then for ((i=0;i<${#RSRC[*]};i++)); do
-  #  printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1}'
-  #done; fi |column -t |sed 's/^/   /'
-  # output linked configuration file list
-  if [ -s /tmp/app-config.$$ ]; then
-    for FILE in $( sort /tmp/app-config.$$ |uniq ); do
-      # get the file path based on the unique name
-      P=$( grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's%^/%%' )
-      mkdir -p $TMP/`dirname $P`
-      cat $CONF/template/$FILE >$TMP/$P
-      # apply environment patch for this file if one exists
-      if [ -f $CONF/template/$EN/$FILE ]; then
-        patch -p0 $TMP/$P <$CONF/template/$EN/$FILE >/dev/null 2>&1
-        test $? -eq 0 || err "Error applying $EN patch to $FILE."
-      fi
+    # retrieve application related data
+    for APP in $( build_application_list "$BUILD" ); do
+      # get the file list per application
+      FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
     done
-    # now go through and find template/resource/constant identifiers...
-    echo "incomplete..."
+  fi
+  # generate the system variables
+  system_vars $NAME >/tmp/app-config.$$
+  # generate the release configuration files
+  if [ ${#FILES[*]} -gt 0 ]; then
+    for ((i=0;i<${#FILES[*]};i++)); do
+      # get the file path based on the unique name
+      P=$( grep -E "^${FILES[i]}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's%^/%%' )
+      mkdir -p $TMP/`dirname $P`
+      cat $CONF/template/${FILES[i]} >$TMP/$P
+      # apply environment patch for this file if one exists
+      if [ -f $CONF/template/$EN/${FILES[i]} ]; then
+        patch -p0 $TMP/$P <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
+        test $? -eq 0 || err "Error applying $EN patch to ${FILES[i]}."
+      fi
+      # process template variables
+      parse_template $TMP/$P /tmp/app-config.$$
+    done
+    # generate the release
     pushd $TMP >/dev/null 2>&1
-    tar czf $CONF/$RELEASEFILE *
+    tar czf $RELEASEDIR/$RELEASEFILE *
     popd >/dev/null 2>&1
-    echo "Complete. Generated release: $CONF/$RELEASEFILE"
+    echo -e "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE"
   else
     err "No managed configuration files."
   fi
+}
+
+# generate all system variables and settings
+#
+function system_vars {
+  test $# -eq 1 || err "System name required"
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # output system data
+  echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
+  # pull system resources
+  for R in $( system_resource_list $NAME ); do
+    IFS="," read -r TYPE VAL RN <<< "$R"
+    test -z "$RN" && RN="$TYPE"
+    echo "resource.$RN $VAL"
+  done
+  # pull constants
+  for C in $( system_constant_list $NAME ); do
+    IFS="," read -r CN VAL <<< "$C"
+    echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
+  done
 }
 
 function system_create {
@@ -1427,7 +1496,7 @@ function system_list {
 
 function system_show {
   # local variables
-  RSRC=()
+  FILES=()
   # input validation
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
@@ -1437,23 +1506,20 @@ function system_show {
   printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\n"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
-    NUM=$( grep -E ",${BUILD}," ${CONF}/application |wc -l )
+    NUM=$( build_application_list "$BUILD" |wc -l )
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
     echo -e "\nThere ${A} ${NUM} linked application${S}."
     if [ $NUM -gt 0 ]; then
-      grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' |sed 's/^/   /'
-      :>/tmp/app-config.$$
+      build_application_list "$BUILD" |sed 's/^/   /'
       # retrieve application related data
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
         # get the file list per application
-        grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}' >>/tmp/app-config.$$
-        # get any localized resources for the application
-        RSRC=( `grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2` )
+        FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
       done
     fi
   fi
-  # add any host assigned resources to the list
-  RSRC=( ${RSRC[@]} `grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2` )
+  # pull system resources
+  RSRC=( `system_resource_list "$NAME"` )
   # show assigned resources (by host, application + environment)
   if [ ${#RSRC[*]} -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${#RSRC[*]} linked resource${S}."
@@ -1461,11 +1527,11 @@ function system_show {
     printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1}'
   done; fi |column -t |sed 's/^/   /'
   # output linked configuration file list
-  if [ -s /tmp/app-config.$$ ]; then
+  if [ ${#FILES[*]} -gt 0 ]; then
     echo -e "\nManaged configuration files:"
-    for FILE in $( sort /tmp/app-config.$$ |uniq ); do
-      grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
-    done |sort
+    for ((i=0;i<${#FILES[*]};i++)); do
+      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
+    done |sort |uniq
   else
     echo -e "\nNo managed configuration files."
   fi
@@ -1527,6 +1593,7 @@ Verbs - all top level components:
 
 # variables
 CONF=/usr/local/etc/lpad/app-config
+RELEASEDIR=/bkup1/lpad-releases
 TMP=/tmp/generate-patch.$$
 USERNAME=""
 
