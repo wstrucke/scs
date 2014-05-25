@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # LPAD Application Configuration
 # Manage and deploy application configuration files
@@ -218,6 +218,8 @@ function get_input {
     read -r RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
     # if no input was provided and there is a default value, set the input to the default
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
+    # special case to clear an existing value
+    if [[ "$RL" == "null" || "$RL" == "NULL" ]]; then RL=""; fi
     # if no input was provied and null values are allowed, stop collecting input here
     [[ -z "$RL" && $NUL -eq 1 ]] && break
     # if there is a list of limited options clear the provided input unless it matches the list
@@ -972,7 +974,8 @@ function file_update {
     popd >/dev/null 2>&1
   fi
   sed -i 's%^'$C',.*%'${NAME}','${PTH//,/_}','"${DESC//,/ }"'%' ${CONF}/file
-  commit_file file
+  sed -ri 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+  commit_file file file-map
 }
 
 function location_create {
@@ -1254,7 +1257,7 @@ function parse_template {
     NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2 || err "Error: Undefined variable $NAME"
     VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
-    sed -i "s/{% $NAME %}/$VAL/" $1
+    sed -i s$'\001'"{% $NAME %}"$'\001'"$VAL"$'\001' $1
   done
 }
 
@@ -1353,8 +1356,10 @@ function resource_list {
   test $NUM -eq 0 && return
   # include assignment status in output
   for R in $( resource_list_unformatted "$1" |tr ' ' ',' ); do
-    grep -E "^${R// /,}," ${CONF}/resource |grep -qE ',(host|application),'
-    test $? -eq 0 && printf -- "${R//,/ }\n" || printf -- "${R//,/ } unassigned\n"
+    IFS="," read -r NAME TYPE VAL <<< "$R"
+    test -z "$NAME" && NAME="-"
+    grep -E "^$TYPE,$VAL," ${CONF}/resource |grep -qE ',(host|application),'
+    test $? -eq 0 && printf -- "$NAME $TYPE $VAL\n" || printf -- "$NAME $TYPE $VAL unassigned\n"
   done |column -t |sed 's/^/   /'
 }
 
@@ -1453,11 +1458,26 @@ function system_constant_list {
   generic_choose system "$1" C && shift
   # load the system
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   for APP in $( build_application_list "$BUILD" ); do
-    cat $CONF/value/$EN/$APP 2>/dev/null
+    constant_list_dedupe $TMP/clist $CONF/value/$EN/$APP >$TMP/clist.1
+    cat $TMP/clist.1 >$TMP/clist
   done
-  cat $CONF/value/$EN/constant 2>/dev/null
-  cat $CONF/value/constant 2>/dev/null
+  constant_list_dedupe $TMP/clist $CONF/value/$LOC/$EN >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  constant_list_dedupe $TMP/clist $CONF/value/$EN/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  constant_list_dedupe $TMP/clist $CONF/value/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  cat $TMP/clist
+}
+
+# combine two sets of variables and values, only including the first instance of duplicates
+#
+# example on including duplicates from first file only:
+#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+#
+function constant_list_dedupe {
+  if ! [ -f $1 ]; then cat $2; return; fi
+  if ! [ -f $2 ]; then cat $1; return; fi
+  join -a1 -a2 -t',' <(sort -t',' -k1 $1) <(sort -t',' -k1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
 }
 
 # output list of resources assigned to a system
@@ -1497,6 +1517,7 @@ function system_release {
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
       P=$( grep -E "^${FILES[i]}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's%^/%%' )
+      test -z "$P" && continue
       mkdir -p $TMP/`dirname $P`
       cat $CONF/template/${FILES[i]} >$TMP/$P
       # apply environment patch for this file if one exists
