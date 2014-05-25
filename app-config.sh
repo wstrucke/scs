@@ -556,7 +556,8 @@ function environment_application_add {
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   # assign the application
   echo "$APP" >>${CONF}/${LOC}/${ENV}
-  commit_file "${LOC}/${ENV}"
+  touch $CONF/value/$ENV/$APP
+  commit_file "${LOC}/${ENV}" $CONF/value/$ENV/$APP
 }
 
 function environment_application_define_constant {
@@ -568,7 +569,7 @@ function environment_application_define_constant {
   # get the value
   if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
   # check if constant is already defined
-  grep -qE "^$C," ${CONF}/value/$ENV/$APP
+  grep -qE "^$C," ${CONF}/value/$ENV/$APP 2>/dev/null
   if [ $? -eq 0 ]; then
     # already define, update value
     sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/$APP
@@ -585,7 +586,7 @@ function environment_application_undefine_constant {
   # get the requested application or abort
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
-  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/$APP
+  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/$APP 2>/dev/null
   commit_file ${CONF}/value/$ENV/$APP
 }
 
