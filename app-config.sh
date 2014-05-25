@@ -1364,10 +1364,11 @@ function system_audit {
   nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
   # generate the release
   FILE=$( system_release $1 |tail -n1 )
-  test -f $FILE && echo "OK" || echo "FAIL"
   # extract release to local directory
   mkdir -p $TMP/{REFERENCE,ACTUAL}
   tar xzf $FILE -C $TMP/REFERENCE/ || err "Error extracting release to local directory"
+  # clean up temporary file
+  rm -f $FILE
   pushd $TMP/REFERENCE >/dev/null 2>&1
   # pull down the files to audit
   for F in $( find . -type f |sed 's%^\./%%' ); do
