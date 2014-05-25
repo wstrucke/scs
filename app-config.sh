@@ -876,7 +876,7 @@ function file_edit {
     test ! -f $CONF/template/$ENV/$C && touch $CONF/template/$ENV/$C
     # confirm changes if this isn't a new patch
     echo -e "Please confirm the change to the patch:\n"
-    diff $CONF/template/$ENV/$C $TMP/$C.patch
+    diff -c $CONF/template/$ENV/$C $TMP/$C.patch
     echo -e "\n\n"
     get_yn Q "Look OK? (y/n)" 
     test "$Q" != "y" && err "Aborted!"
@@ -889,8 +889,57 @@ function file_edit {
     popd >/dev/null 2>&1
     commit_file template/$ENV/$C
   else
-    vim ${CONF}/template/${C}
+    # create a copy of the template to edit
+    cat $CONF/template/$C >/tmp/app-config.$$
+    vim /tmp/app-config.$$
     wait
+    # prompt for verification
+    echo -e "Please review the change:\n"
+    diff -c $CONF/template/$C /tmp/app-config.$$
+    echo
+    get_yn RL "Proceed with change (y/n)? "
+    if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$$; return; fi
+    # apply patches to the template for each environment with a patch and verify the apply successfully
+    echo "Validating template instances..."
+    NEWPATCHES=(); NEWENVIRON=()
+    pushd $CONF/template >/dev/null 2>&1
+    for E in $( find . -mindepth 2 -type f -name $C -printf '%h\n' |sed 's/^\.\///' ); do
+      echo -n "${E}... "
+      cat /tmp/app-config.$$ >/tmp/app-config.$$.1
+      patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
+      if [ $? -ne 0 ]; then
+        echo -e "FAILED\n\nThis patch will not apply successfully to $E."
+        get_yn RL "Would you like to try to resolve the patch manually (y/n)? "
+        if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$${,.1,.rej}; return; fi
+        # patch the original file with the environment patch and launch vimdiff
+        echo -e "\nThe LEFT file is your updated template. The RIGHT file is the previous environment configuration. Edit the RIGHT file."
+        echo "The LEFT file is your updated template. The RIGHT file is the previous environment configuration. Edit the RIGHT file."
+        echo "The LEFT file is your updated template. The RIGHT file is the previous environment configuration. Edit the RIGHT file."
+        cat /tmp/app-config.$$ >/tmp/app-config.$$.1
+        cat $CONF/template/$C >/tmp/app-config.$$.2
+        patch -p0 /tmp/app-config.$$.2 <$E/$C >/dev/null 2>&1
+        test $? -ne 0 && err "ERROR -- THE ORIGINAL PATCH IS INVALID!"
+        sleep 3
+        vimdiff /tmp/app-config.$$.1 /tmp/app-config.$$.2
+        wait
+        echo -e "Please review the change:\n"
+        diff -c $CONF/template/$C /tmp/app-config.$$.2
+        echo; get_yn RL "Proceed with change (y/n)? "
+        if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$$*; return; fi
+        # stage the new environment patch file
+        diff -c /tmp/app-config.$$ /tmp/app-config.$$.2 >/tmp/app-config.$$.$E
+        NEWENVIRON[${#NEWENVIRON[*]}]="$E"
+        NEWPATCHES[${#NEWPATCHES[*]}]="/tmp/app-config.$$.$E"
+      fi
+      echo "OK"
+    done
+    # everything checks out, apply change
+    cat /tmp/app-config.$$ >$CONF/template/$C
+    # process any staged environment patch updates
+    for ((i=0;i<${#NEWPATCHES[*]};i++)); do
+      cat ${NEWPATCHES[i]} >${NEWENVIRON[i]}/$C
+    done
+    popd >/dev/null 2>&1
     pushd ${CONF} >/dev/null 2>&1
     if [ `git status -s template/${C} |wc -l` -ne 0 ]; then
       git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
