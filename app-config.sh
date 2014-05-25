@@ -158,7 +158,6 @@ function stop_modify {
     get_yn DF "Do you want to commit the changes (y/n)? "
     if [ "$DF" != "y" ]; then return 0; fi
   fi
-#  git rebase master >/dev/null 2>&1 || err "Error rebasing to master"
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
     git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
   fi
@@ -363,6 +362,7 @@ function application_file {
 }
 
 function application_file_add {
+  start_modify
   test -z "$1" && shift
   generic_choose application "$1" APP && shift
   # get the requested file or abort
@@ -386,6 +386,7 @@ function application_file_list {
 }
 
 function application_file_remove {
+  start_modify
   test -z "$1" && shift
   generic_choose application "$1" APP && shift
   # get the requested file or abort
@@ -536,7 +537,7 @@ function environment_application {
     --add) environment_application_add $ENV $APP $@;;
     --define) environment_application_define_constant $ENV $APP $@;;
     --undefine) environment_application_undefine_constant $ENV $APP $@;;
-    --list-constant) environment_application_byname_list_constant $ENV $APP $@;;
+    --list-constant) environment_application_list_constant $ENV $APP $@;;
     --assign-resource) environment_application_byname_assign $ENV $APP $@;;
     --unassign-resource) environment_application_byname_unassign $ENV $APP $@;;
     --list-resource) environment_application_byname_list_resource $ENV $APP $@;;
@@ -546,6 +547,7 @@ function environment_application {
 }
 
 function environment_application_add {
+  start_modify
   ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
@@ -558,18 +560,48 @@ function environment_application_add {
 }
 
 function environment_application_define_constant {
-  err 'Not implemented'
+  start_modify
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  generic_choose constant "$1" C && shift
+  # get the value
+  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
+  # check if constant is already defined
+  grep -qE "^$C," ${CONF}/value/$ENV/$APP
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/$APP
+  else
+    # not defined, add
+    printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/$APP
+  fi
+  commit_file ${CONF}/value/$ENV/$APP
 }
 
 function environment_application_undefine_constant {
-  err 'Not implemented'
+  start_modify
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  generic_choose constant "$1" C
+  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/$APP
+  commit_file ${CONF}/value/$ENV/$APP
 }
 
 function environment_application_list_constant {
-  err 'Not implemented'
+  ENV=$1; shift
+  # get the requested application or abort
+  generic_choose application "$1" APP && shift
+  test -f $CONF/value/$ENV/$APP && NUM=$( wc -l $CONF/value/$ENV/$APP |awk '{print $1}' ) || NUM=0
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There $A $NUM defined constant$S for $ENV $APP."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' $CONF/value/$ENV/$APP |sort |sed 's/^/   /'
 }
 
 function environment_application_byname_assign {
+  start_modify
   ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
@@ -588,6 +620,7 @@ function environment_application_byname_assign {
 }
 
 function environment_application_byname_unassign {
+  start_modify
   ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
@@ -636,6 +669,7 @@ function environment_application_list {
 }
 
 function environment_application_remove {
+  start_modify
   ENV=$1; shift
   generic_choose application "$1" APP && shift
   # get the requested location or abort
@@ -930,6 +964,7 @@ function location_environment {
 }
 
 function location_environment_assign {
+  start_modify
   LOC=$1; shift
   # get the requested environment or abort
   generic_choose environment "$1" ENV && shift
@@ -955,6 +990,7 @@ function location_environment_list {
 }
 
 function location_environment_unassign {
+  start_modify
   LOC=$1; shift
   # get the requested environment or abort
   generic_choose environment "$1" ENV && shift
@@ -1128,6 +1164,7 @@ function resource_byval {
 #   $2  system
 #
 function resource_byval_assign {
+  start_modify
   # input validation
   test $# -gt 0 || err
   grep -qE "^ip,$1,,not assigned," ${CONF}/resource || err "Invalid or unavailable resource"
@@ -1144,6 +1181,7 @@ function resource_byval_assign {
 #   $1  resource
 # 
 function resource_byval_unassign {
+  start_modify
   # input validation
   test $# -gt 0 || err
   grep -qE "^(cluster_|ha_)?ip,$1,(host|application)," ${CONF}/resource || err "Invalid or unassigned resource"
