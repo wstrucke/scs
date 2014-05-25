@@ -1327,9 +1327,75 @@ function resource_update {
   commit_file resource
 }
 
+# system functions
+#
+# <value> [--audit|--release]
 function system_byname {
+  # input validation
+  test $# -gt 1 || err "Provide the system name"
+  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # function
+  case "$2" in
+    --audit) system_audit $1;;
+    --release) system_release $1;;
+  esac
+}
+
+function system_audit {
   err "Not implemented"
-  # <value> [--release]
+}
+
+function system_release {
+  test $# -gt 0 || err
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # create the temporary directory to store the release files
+  mkdir -p $TMP
+  RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
+  RSRC=()
+  # look up the applications configured for the build assigned to this system
+  if ! [ -z "$BUILD" ]; then
+    NUM=$( grep -E ",${BUILD}," ${CONF}/application |wc -l )
+    if [ $NUM -gt 0 ]; then
+      grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' |sed 's/^/   /'
+      :>/tmp/app-config.$$
+      # retrieve application related data
+      for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
+        # get the file list per application
+        grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}' >>/tmp/app-config.$$
+        # get any localized resources for the application
+        RSRC=( `grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2` )
+      done
+    fi
+  fi
+  # add any host assigned resources to the list
+  RSRC=( ${RSRC[@]} `grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2` )
+  # show assigned resources (by host, application + environment)
+  #if [ ${#RSRC[*]} -gt 0 ]; then for ((i=0;i<${#RSRC[*]};i++)); do
+  #  printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1}'
+  #done; fi |column -t |sed 's/^/   /'
+  # output linked configuration file list
+  if [ -s /tmp/app-config.$$ ]; then
+    for FILE in $( sort /tmp/app-config.$$ |uniq ); do
+      # get the file path based on the unique name
+      P=$( grep -E "^${FILE}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's%^/%%' )
+      mkdir -p $TMP/`dirname $P`
+      cat $CONF/template/$FILE >$TMP/$P
+      # apply environment patch for this file if one exists
+      if [ -f $CONF/template/$EN/$FILE ]; then
+        patch -p0 $TMP/$P <$CONF/template/$EN/$FILE >/dev/null 2>&1
+        test $? -eq 0 || err "Error applying $EN patch to $FILE."
+      fi
+    done
+    # now go through and find template/resource/constant identifiers...
+    echo "incomplete..."
+    pushd $TMP >/dev/null 2>&1
+    tar czf $CONF/$RELEASEFILE *
+    popd >/dev/null 2>&1
+    echo "Complete. Generated release: $CONF/$RELEASEFILE"
+  else
+    err "No managed configuration files."
+  fi
 }
 
 function system_create {
@@ -1447,7 +1513,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--release]
+    <value> [--audit|--release]
 
 Verbs - all top level components:
   create
@@ -1498,7 +1564,7 @@ if [ -z "$VERB" ]; then VERB="list"; fi
 # validate subject and verb
 printf -- " application build constant environment file location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
-if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" ]]; then
+if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" ]]; then
   printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
@@ -1517,7 +1583,7 @@ if [ "$SUBJ" == "resource" ]; then
 elif [ "$SUBJ" == "system" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
-    *) system_byname $@;;
+    *) system_byname "$VERB" $@;;
   esac
 elif [ "$SUBJ" == "location" ]; then
   case "$VERB" in
