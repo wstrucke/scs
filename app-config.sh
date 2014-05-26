@@ -1467,6 +1467,7 @@ function system_constant_list {
   constant_list_dedupe $TMP/clist $CONF/value/$EN/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
   constant_list_dedupe $TMP/clist $CONF/value/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
   cat $TMP/clist
+  rm -f $TMP/clist{,.1}
 }
 
 # combine two sets of variables and values, only including the first instance of duplicates
