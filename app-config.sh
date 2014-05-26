@@ -233,9 +233,17 @@ function get_input {
 #  $1 variable name (no spaces)
 #  $2 prompt
 #
+# optional:
+#  $3 additional option
+#
 function get_yn {
   test $# -lt 2 && return
-  RL=""; while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
+  RL=""
+  if ! [ -z "$3" ]; then
+    while [[ "$RL" != "y" && "$RL" != "n" && "$RL" != "$3" ]]; do get_input RL "$2"; done
+  else
+    while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
+  fi
   eval "$1='$RL'"
 }
 
@@ -1439,8 +1447,9 @@ function system_audit {
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=0
         echo "Deployed file and reference do not match: $F"
-        get_yn DF "Do you want to review the differences (y/n)? "
+        get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]? " d
         test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
+        test "$DF" == "d" && diff -c $TMP/{REFERENCE,ACTUAL}/$F
       fi
     elif [ `stat -c%s $TMP/REFERENCE/$F` -eq 0 ]; then
       echo "Ignoring empty file $F"
