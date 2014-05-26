@@ -1267,6 +1267,7 @@ function parse_template {
     VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
     sed -i s$'\001'"{% $NAME %}"$'\001'"$VAL"$'\001' $1
   done
+  return 0
 }
 
 # manage or list resource assignments
@@ -1409,7 +1410,7 @@ function resource_update {
 
 # system functions
 #
-# <value> [--audit|--release]
+# <value> [--audit|--release|--vars]
 function system_byname {
   # input validation
   test $# -gt 1 || err "Provide the system name"
@@ -1418,34 +1419,40 @@ function system_byname {
   case "$2" in
     --audit) system_audit $1;;
     --release) system_release $1;;
+    --vars) system_vars $1;;
   esac
 }
 
 function system_audit {
   test $# -gt 0 || err
-  VALID=1
+  VALID=0
   # load the system
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
   # test connectivity
   nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
   # generate the release
+  echo "Generating release..."
   FILE=$( system_release $1 |tail -n1 )
+  test -s "$FILE" || err "Error generating release"
   # extract release to local directory
+  echo "Extracting..."
   mkdir -p $TMP/{REFERENCE,ACTUAL}
   tar xzf $FILE -C $TMP/REFERENCE/ || err "Error extracting release to local directory"
   # clean up temporary file
   rm -f $FILE
   pushd $TMP/REFERENCE >/dev/null 2>&1
   # pull down the files to audit
+  echo "Retrieving current system configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
     mkdir -p $TMP/ACTUAL/`dirname $F`
     scp $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
   done
   # review differences
+  echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
     if [ -f $TMP/ACTUAL/$F ]; then
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
-        VALID=0
+        VALID=1
         echo "Deployed file and reference do not match: $F"
         get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]? " d
         test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
@@ -1455,10 +1462,11 @@ function system_audit {
       echo "Ignoring empty file $F"
     else
       echo "WARNING: Remote system is missing file: $F"
-      VALID=0
+      VALID=1
     fi
   done
-  test $VALID -eq 1 && echo "System audit PASSED" || echo "System audit FAILED"
+  test $VALID -eq 0 && echo -e "\nSystem audit PASSED" || echo -e "\nSystem audit FAILED"
+  exit $VALID
 }
 
 # output a list of constants and values assigned to a system
@@ -1536,7 +1544,7 @@ function system_release {
         test $? -eq 0 || err "Error applying $EN patch to ${FILES[i]}."
       fi
       # process template variables
-      parse_template $TMP/$P /tmp/app-config.$$
+      parse_template $TMP/$P /tmp/app-config.$$ || err "Error parsing template data"
     done
     # generate the release
     pushd $TMP >/dev/null 2>&1
@@ -1560,7 +1568,11 @@ function system_vars {
   for R in $( system_resource_list $NAME ); do
     IFS="," read -r TYPE VAL RN <<< "$R"
     test -z "$RN" && RN="$TYPE"
-    echo "system.$RN $VAL"
+    if [ "$TYPE" == "cluster_ip" ]; then
+      echo "resource.$RN $VAL"
+    else
+      echo "system.$RN $VAL"
+    fi
   done
   # pull constants
   for C in $( system_constant_list $NAME ); do
@@ -1682,7 +1694,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--release]
+    <value> [--audit|--release|--vars]
 
 Verbs - all top level components:
   create
