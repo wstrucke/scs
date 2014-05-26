@@ -1560,7 +1560,7 @@ function system_vars {
   for R in $( system_resource_list $NAME ); do
     IFS="," read -r TYPE VAL RN <<< "$R"
     test -z "$RN" && RN="$TYPE"
-    echo "resource.$RN $VAL"
+    echo "system.$RN $VAL"
   done
   # pull constants
   for C in $( system_constant_list $NAME ); do
@@ -1626,7 +1626,7 @@ function system_show {
   if [ ${#RSRC[*]} -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${#RSRC[*]} linked resource${S}."
   if [ ${#RSRC[*]} -gt 0 ]; then for ((i=0;i<${#RSRC[*]};i++)); do
-    printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1}'
+    printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1,$3}'
   done; fi |column -t |sed 's/^/   /'
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
