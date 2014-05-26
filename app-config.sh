@@ -61,7 +61,7 @@ function initialize_configuration {
 function cleanup_and_exit {
   test -d $TMP && rm -rf $TMP
   test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
-  printf -- "\n"
+#  printf -- "\n"
   exit 0
 }
 
