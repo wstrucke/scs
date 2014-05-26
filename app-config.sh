@@ -810,7 +810,7 @@ function environment_update {
 function file_create {
   start_modify
   # get user input and validate
-  get_input NAME "Name (for reference)" --nc
+  get_input NAME "Name (for reference)"
   get_input PTH "Full Path (for deployment)" --nc
   get_input DESC "Description" --nc --null
   # validate unique name
