@@ -9,7 +9,8 @@
 # Configuration Storage:
 #   /usr/local/etc/lpad/app-config/
 #     application                                          file
-#     binary                                               directory containing binary files
+#     binary                                               directory
+#     binary/<environment>/                                environment binary files
 #     build                                                file
 #     constant                                             constant index
 #     environment                                          file
@@ -773,14 +774,16 @@ function environment_create {
   grep -qE "^$NAME," ${CONF}/environment && err "Environment already defined."
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
-  mkdir -p $CONF/template/patch/${NAME} $CONF/value/${NAME} >/dev/null 2>&1
+  mkdir -p $CONF/template/patch/${NAME} $CONF/{binary,value}/${NAME} >/dev/null 2>&1
   printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
   touch $CONF/value/${NAME}/constant
   commit_file environment
 }
 
 function environment_delete {
-  generic_delete environment $1
+  generic_delete environment $1 || return
+  test -d $CONF/binary/$1 && rm -rf $CONF/binary/$1
+  # also delete value folder
 }
 
 function environment_list {
@@ -889,7 +892,7 @@ function file_create {
     git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
     popd >/dev/null 2>&1
   elif [ "$TYPE" == "binary" ]; then
-    printf -- "\nPlease copy the binary file to: $CONF/binary/$NAME\n"
+    printf -- "\nPlease copy the binary file to: $CONF/binary/<environment>/$NAME\n"
   else
     commit_file file
   fi
@@ -904,10 +907,10 @@ function file_delete {
     sed -i '/^'$C',/d' ${CONF}/file
     sed -i '/^'$C',/d' ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
-    git rm template/${C} >/dev/null 2>&1
-    git rm binary/${C} >/dev/null 2>&1
+    find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
     git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
+    find binary/ -type f -name $C -exec rm -f {} \; >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
 }
@@ -1049,7 +1052,7 @@ function file_show {
   else
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
     [ "$TYPE" == "file" ] && printf -- "\nSize: `stat -c%s $CONF/template/$NAME` bytes"
-    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/binary/$NAME` bytes"
+#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/binary/$NAME` bytes"
   fi
   printf -- '\n'
 }
@@ -1082,7 +1085,9 @@ function file_update {
         git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
       done
     elif [ "$TYPE" == "binary" ]; then
-      git mv binary/$C binary/$NAME >/dev/null 2>&1
+      for DIR in `find binary/ -type f -name $C -exec dirname {} \\;`; do
+        mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
+      done
     fi
     popd >/dev/null 2>&1
     # update map
@@ -1095,10 +1100,6 @@ function file_update {
     find template/ -type f -name $C -exec git rm {} \; >/dev/null 2>&1
     git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
     popd >/dev/null 2>&1
-  fi
-  # notify if the file still doesn't exist
-  if [[ "$TYPE" == "binary" && ! -f $CONF/binary/$NAME ]]; then
-    printf -- "\nPlease copy the binary file to: $CONF/binary/$NAME\n"
   fi
   commit_file file file-map
 }
@@ -1676,8 +1677,8 @@ function system_release {
         ln -s $FTARGET $TMP/$FPTH
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
-        test -f $CONF/binary/$FNAME || err "Error - binary file '$FNAME' does not exist"
-        cat $CONF/binary/$FNAME >$TMP/$FPTH
+        test -f $CONF/binary/$EN/$FNAME || err "Error - binary file '$FNAME' does not exist for $EN."
+        cat $CONF/binary/$EN/$FNAME >$TMP/$FPTH
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
         scp $FTARGET $TMP/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
@@ -1699,6 +1700,7 @@ function system_release {
   else
     err "No managed configuration files."
   fi
+  printf -- '\n'
 }
 
 # generate all system variables and settings
