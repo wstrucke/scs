@@ -1637,7 +1637,7 @@ function system_release {
   RELEASESCRIPT="$TMP/lpac-install.sh"
   FILES=()
   # create the installation script
-  printf -- "!/bin/bash\n# lpac installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
+  printf -- "#!/bin/bash\n# lpac installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
   printf -- "logger -t lpac \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
   # look up the applications configured for the build assigned to this system
@@ -1654,7 +1654,7 @@ function system_release {
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
-      IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^$${FILES[i]}," ${CONF}/file )"
+      IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
       # skip if path is null (implies an error occurred)
@@ -1684,7 +1684,8 @@ function system_release {
         scp $FTARGET $TMP/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
       elif [ "$FTYPE" == "download" ]; then
         # add download to command script
-        printf -- "# download '$FNAME'\ncurl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
+        printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
+        printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
       fi
       # stage permissions for processing
       printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
@@ -1696,11 +1697,10 @@ function system_release {
     pushd $TMP >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE *
     popd >/dev/null 2>&1
-    echo -e "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE"
+    printf -- "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE\n"
   else
     err "No managed configuration files."
   fi
-  printf -- '\n'
 }
 
 # generate all system variables and settings
@@ -1789,7 +1789,7 @@ function system_show {
   done; fi |column -t |sed 's/^/   /'
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
-    printf -- "\nManaged configuration files:"
+    printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
     done |sort |uniq
