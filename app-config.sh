@@ -56,6 +56,7 @@ function initialize_configuration {
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
   cd $CONF || err
+  printf -- "*\\.swp\nbinary\n" >.gitignore
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -253,7 +254,7 @@ function get_input {
     # if a validation regex was provided, check the input against it
     if ! [ -z "$RE" ]; then printf -- "$RL" |grep -qE "$RE" || RL=""; fi
     # finally, enforce no comma rule
-    if [ $COMMA -eq 0 ]; then printf -- "$RL" |grep -qE '[^,]*' && RL=""; fi
+    if [[ ! -z "$RL" && $COMMA -eq 0 ]]; then printf -- "$RL" |grep -qE '[^,]*' || RL=""; fi
   done
   # set the provided variable value to the validated input
   eval "$V='$RL'"
@@ -1096,8 +1097,8 @@ function file_update {
     popd >/dev/null 2>&1
   fi
   # notify if the file still doesn't exist
-  if ! [ -f $CONF/binary/$NAME ]; then
-    printf -- "\nPlease copy the binary file to: /$CONF/binary/$NAME"
+  if [[ "$TYPE" == "binary" && ! -f $CONF/binary/$NAME ]]; then
+    printf -- "\nPlease copy the binary file to: $CONF/binary/$NAME\n"
   fi
   commit_file file file-map
 }
