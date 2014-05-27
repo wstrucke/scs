@@ -9,6 +9,7 @@
 # Configuration Storage:
 #   /usr/local/etc/lpad/app-config/
 #     application                                          file
+#     binary                                               directory containing binary files
 #     build                                                file
 #     constant                                             constant index
 #     environment                                          file
@@ -36,19 +37,22 @@
 # A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
 # A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
 #
-# A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to one or more hosts or applications.
+# A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an application in an environment.
 #
 # Use constants and resources in configuration files -- this is the whole point of lpac, mind you -- with this syntax:
 #  {% resource.name %}
 #  {% constant.name %}
 #  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
+# TO DO:
+#   - system audit should check ownership and permissions on files
+#
 
 # first run function to init the configuration store
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch $CONF/value
+  mkdir -p $CONF/template/patch $CONF/{binary,value}
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
   cd $CONF || err
@@ -184,6 +188,24 @@ function cancel_modify {
   popd >/dev/null 2>&1
 }
 
+function octal2perm {
+  local N="$1" R=r W=w X=x
+  if ! [ -z "$2" ]; then local R=s W=s X=t; fi
+  if [ $(( $N - 4 )) -ge 0 ]; then N=$(( $N - 4 )); printf -- $R; else printf -- '-'; fi
+  if [ $(( $N - 2 )) -ge 0 ]; then N=$(( $N - 2 )); printf -- $W; else printf -- '-'; fi
+  if [ $(( $N - 1 )) -ge 0 ]; then N=$(( $N - 1 )); printf -- $X; else printf -- '-'; fi
+}
+
+function octal2text {
+  if [ -z "$1" ]; then local N="0000"; else local N="$1"; fi
+  printf -- "$N" |grep -qE '^[0-7]{3,4}$' || exit 1
+  printf -- "$N" |grep -qE '^[0-7]{4}$' || N="0$N"
+  octal2perm ${N:0:1} sticky
+  octal2perm ${N:1:1}
+  octal2perm ${N:2:1}
+  octal2perm ${N:3:1}
+}
+
 # input functions
 #
 # requires:
@@ -195,15 +217,19 @@ function cancel_modify {
 #  --nc            do not force lowercase
 #  --null          allow null (empty) values
 #  --options       comma delimited list of options to restrict selection to
+#  --regex         validation regex to match against (passed to grep -E)
+#  --comma         allow a comma in the input (default NO)
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; shift 2
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --default) D="$2"; shift;;
     --nc) LC=0;;
     --null) NUL=1;;
     --options) OPT="$2"; shift;;
+    --regex) RE="$2"; shift;;
+    --comma) COMMA=1;;
     *) err;;
   esac; shift; done
   # collect input until a valid entry is provided
@@ -224,6 +250,10 @@ function get_input {
     [[ -z "$RL" && $NUL -eq 1 ]] && break
     # if there is a list of limited options clear the provided input unless it matches the list
     if ! [ -z "$OPT" ]; then printf -- ",$OPT," |grep -q ",$RL," || RL=""; fi
+    # if a validation regex was provided, check the input against it
+    if ! [ -z "$RE" ]; then printf -- "$RL" |grep -qE "$RE" || RL=""; fi
+    # finally, enforce no comma rule
+    if [ $COMMA -eq 0 ]; then printf -- "$RL" |grep -qE '[^,]*' && RL=""; fi
   done
   # set the provided variable value to the validated input
   eval "$V='$RL'"
@@ -304,16 +334,10 @@ function generic_delete {
   fi
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then sed -i '/^'$C',/d' ${CONF}/$1; fi
+  if [ "$RL" != "y" ]; then return 1; fi
+  sed -i '/^'$C',/d' ${CONF}/$1
   commit_file $1
-  refresh_dirs
-}
-
-# refresh the directory structure to add/remove location/environment/application paths
-#
-function refresh_dirs {
-  #echo "Refresh not implemented" >&2
-  return
+  return 0
 }
 
 function application_create {
@@ -334,13 +358,13 @@ function application_create {
   # add
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
-  refresh_dirs
 }
 
 function application_delete {
-  generic_delete application $1
-# should also remove entry from file-map here
-#  sed -i "/^$F,$APP/d" $CONF/file-map
+  generic_delete application $1 || return
+  # delete from file-map as well
+  sed -i "/^[^,]*,$APP\$/d" $CONF/file-map
+  commit_file file-map
 # should also unassign resources
 # should also undefine constants
 }
@@ -391,7 +415,7 @@ function application_file_remove {
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" != "y" ]; then return; fi
   # remove the mapping if it exists
-  grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not assocaited with $APP."
+  grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not associated with $APP."
   sed -i "/^$F,$APP/d" $CONF/file-map
   commit_file file-map
 }
@@ -409,7 +433,7 @@ function application_show {
   APP="$1"
   grep -qE "^$APP," $CONF/application || err "Invalid application"
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
-  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER"
+  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
 }
 
 function application_update {
@@ -464,7 +488,7 @@ function build_show {
   test $# -eq 1 || err "Provide the build name"
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
   IFS="," read -r NAME ROLE DESC <<< "$( grep -E "^$1," ${CONF}/build )"
-  printf -- "Build: $NAME\nRole: $ROLE\nDescription: $DESC"
+  printf -- "Build: $NAME\nRole: $ROLE\nDescription: $DESC\n"
 }
 
 function build_update {
@@ -488,7 +512,7 @@ function constant_create {
   # validate unique name
   grep -qE "^$NAME," $CONF/constant && err "Constant already defined."
   # add
-  printf -- "${NAME},${DESC//,/ }\n" >>$CONF/constant
+  printf -- "${NAME},${DESC}\n" >>$CONF/constant
   commit_file constant
 }
 
@@ -509,7 +533,7 @@ function constant_show {
   C="$( printf -- "$1" |tr 'a-z' 'A-Z' )"
   grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  printf -- "Name: $NAME\nDescription: $DESC"
+  printf -- "Name: $NAME\nDescription: $DESC\n"
 }
 
 function constant_update {
@@ -520,7 +544,7 @@ function constant_update {
   # force uppercase for constants
   NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
   get_input DESC "Description" --default "$DESC" --null --nc
-  sed -i 's/^'$C',.*/'${NAME}','"${DESC//,/ }"'/' ${CONF}/constant
+  sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
 }
 
@@ -683,6 +707,7 @@ function environment_application_remove {
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the application
   sed -i "/^$APP\$/d" $CONF/$LOC/$ENV
+  # so... this says it's going to unassign resources and whatnot.  we should actually do that here...
   commit_file $LOC/$ENV
 }
 
@@ -748,10 +773,9 @@ function environment_create {
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
   mkdir -p $CONF/template/patch/${NAME} $CONF/value/${NAME} >/dev/null 2>&1
-  printf -- "${NAME},${ALIAS},${DESC//,/ }\n" >>${CONF}/environment
+  printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
   touch $CONF/value/${NAME}/constant
   commit_file environment
-  refresh_dirs
 }
 
 function environment_delete {
@@ -776,12 +800,13 @@ function environment_show {
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
   # also show installed locations
-  NUM=$( find $CONF -name $NAME -type f |grep -vE '(template|value)' |wc -l )
+  NUM=$( find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\n\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
-    find $CONF -name $NAME -type f |grep -vE '(template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
+    find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
   fi
+  printf -- '\n'
 }
 
 function environment_update {
@@ -793,7 +818,7 @@ function environment_update {
   get_input DESC "Description" --default "$DESC" --null --nc
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
-  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC//,/ }"'/' ${CONF}/environment
+  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
   # handle rename
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
@@ -807,23 +832,66 @@ function environment_update {
   commit_file environment
 }
 
+# create a new file definition
+#
+# storage fields:
+#   name	  a unique name to reference this entry; sometimes the actual file name but since
+#                   there is only one namespace you may have to be creative.
+#   path          the path on the system this file will be deployed to.
+#   type          the type of entry, one of 'file', 'symlink', 'binary', 'copy', or 'download'.
+#   owner         user name
+#   group         group name
+#   octal         octal representation of the file permissions
+#   target        optional field; for type 'symlink', 'copy', or 'download' - what is the target
+#   description   a description for this entry. this is not used anywhere except "$0 file show <entry>"
+#
+# file types:
+#   file          a regular text file
+#   symlink       a symbolic link
+#   binary        a non-text file
+#   copy          a regular file that is not stored here. it will be copied by this application from
+#                   another location when it is deployed.  when auditing a remote system files of type
+#                   'copy' will only be audited for permissions and existence.
+#   download      a regular file that is not stored here. it will be retrieved by the remote system
+#                   when it is deployed.  when auditing a remote system files of type 'download' will
+#                   only be audited for permissions and existence.
+#
 function file_create {
   start_modify
+  # initialize optional values
+  TARGET=""
   # get user input and validate
   get_input NAME "Name (for reference)"
+  get_input TYPE "Type" --options file,symlink,binary,copy,download --default file
+  if [ "$TYPE" == "symlink" ]; then
+    get_input TARGET "Link Target" --nc
+  elif [ "$TYPE" == "copy" ]; then
+    get_input TARGET "Local or Remote Path" --nc
+  elif [ "$TYPE" == "download" ]; then
+    get_input TARGET "Remote Path/URL" --nc
+  fi
   get_input PTH "Full Path (for deployment)" --nc
   get_input DESC "Description" --nc --null
+  get_input OWNER "Permissions - Owner" --default root
+  get_input GROUP "Permissions - Group" --default root
+  get_input OCTAL "Permissions - Octal (e.g. 0755)" --default 0644 --regex '^[0-7]{3,4}$'
   # validate unique name
   grep -qE "^$NAME," ${CONF}/file && err "File already defined."
   # add
-  printf -- "${NAME},${PTH//,/_},${DESC//,/ }\n" >>${CONF}/file
+  printf -- "${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}\n" >>${CONF}/file
   # create base file
-  pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
-  mkdir template >/dev/null 2>&1
-  touch template/${NAME}
-  git add template/${NAME} >/dev/null 2>&1
-  git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
-  popd >/dev/null 2>&1
+  if [ "$TYPE" == "file" ]; then
+    pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
+    test -d template || mkdir template >/dev/null 2>&1
+    touch template/${NAME}
+    git add template/${NAME} >/dev/null 2>&1
+    git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
+    popd >/dev/null 2>&1
+  elif [ "$TYPE" == "binary" ]; then
+    printf -- "\nPlease copy the binary file to: /$CONF/binary/$NAME"
+  else
+    commit_file file
+  fi
 }
 
 function file_delete {
@@ -833,15 +901,14 @@ function file_delete {
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
     sed -i '/^'$C',/d' ${CONF}/file
+    sed -i '/^'$C',/d' ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
     git rm template/${C} >/dev/null 2>&1
-    git add file >/dev/null 2>&1
+    git rm binary/${C} >/dev/null 2>&1
+    git add file file-map >/dev/null 2>&1
     git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
     popd >/dev/null 2>&1
-    refresh_dirs
   fi
-# should also remove entry from file-map here
-#  sed -i "/^$F,$APP/d" $CONF/file-map
 }
 
 # general file editing function for both templates and applied template instances
@@ -853,6 +920,10 @@ function file_delete {
 function file_edit {
   start_modify
   generic_choose file "$1" C && shift
+  # load file data
+  IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
+  # only generic files can actually be edited
+  if [ "$TYPE" != "file" ]; then err "Can not edit file of type '$TYPE'"; fi
   if [[ ! -z "$1" && "$1" == "--environment" ]]; then
     generic_choose environment "$2" ENV
     # put the template in a temporary folder and patch it, if a patch exists already
@@ -959,30 +1030,75 @@ function file_list {
   awk 'BEGIN{FS=","}{print $1,$2}' ${CONF}/file |sort |column -t |sed 's/^/   /'
 }
 
+# show file details
+#
+# storage format (brief):
+#   name,path,type,owner,group,octal,target,description
+#
 function file_show {
   test $# -eq 1 || err "Provide the file name"
   grep -qE "^$1," ${CONF}/file || err "Unknown file" 
-  IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$1," ${CONF}/file )"
-  printf -- "Name: $NAME\nPath: $PTH\nDescription: $DESC"
+  IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$1," ${CONF}/file )"
+  if [ "$TYPE" == "symlink" ]; then
+    printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH -> $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
+  elif [ "$TYPE" == "copy" ]; then
+    printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH copy of $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
+  elif [ "$TYPE" == "download" ]; then
+    printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH download from $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
+  else
+    printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
+    [ "$TYPE" == "file" ] && printf -- "\nSize: `stat -c%s $CONF/template/$NAME` bytes"
+    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/binary/$NAME` bytes"
+  fi
+  printf -- '\n'
 }
 
 function file_update {
   start_modify
   generic_choose file "$1" C && shift
-  IFS="," read -r NAME PTH DESC <<< "$( grep -E "^$C," ${CONF}/file )"
+  IFS="," read -r NAME PTH T OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default "$NAME"
+  get_input TYPE "Type" --options file,symlink,binary,copy,download --default "$T"
+  if [ "$TYPE" == "symlink" ]; then
+    get_input TARGET "Link Target" --nc --default "$TARGET"
+  elif [ "$TYPE" == "copy" ]; then
+    get_input TARGET "Local or Remote Path" --nc --default "$TARGET"
+  elif [ "$TYPE" == "download" ]; then
+    get_input TARGET "Remote Path/URL" --nc --default "$TARGET"
+  fi
   get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
   get_input DESC "Description" --default "$DESC" --null --nc
+  get_input OWNER "Permissions - Owner" --default "$OWNER"
+  get_input GROUP "Permissions - Group" --default "$GROUP"
+  get_input OCTAL "Permissions - Octal (e.g. 0755)" --default "$OCTAL" --regex '^[0-7]{3,4}$'
   if [ "$NAME" != "$C" ]; then
     # validate unique name
     grep -qE "^$NAME," ${CONF}/file && err "File already defined."
     # move file
     pushd ${CONF} >/dev/null 2>&1
-    git mv template/$C template/$NAME >/dev/null 2>&1
+    if [ "$TYPE" == "file" ]; then
+      for DIR in `find template/ -type f -name $C -exec dirname {} \\;`; do
+        git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
+      done
+    elif [ "$TYPE" == "binary" ]; then
+      git mv binary/$C binary/$NAME >/dev/null 2>&1
+    fi
+    popd >/dev/null 2>&1
+    # update map
+    sed -ri 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+  fi
+  sed -i "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
+  # if type changed from "file" to something else, delete the template
+  if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
+    pushd $CONF >/dev/null 2>&1
+    find template/ -type f -name $C -exec git rm {} \; >/dev/null 2>&1
+    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
-  sed -i 's%^'$C',.*%'${NAME}','${PTH//,/_}','"${DESC//,/ }"'%' ${CONF}/file
-  sed -ri 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+  # notify if the file still doesn't exist
+  if ! [ -f $CONF/binary/$NAME ]; then
+    printf -- "\nPlease copy the binary file to: /$CONF/binary/$NAME"
+  fi
   commit_file file file-map
 }
 
@@ -996,9 +1112,8 @@ function location_create {
   # validate unique name
   grep -qE "^$CODE," $CONF/location && err "Location already defined."
   # add
-  printf -- "${CODE},${NAME//,/ },${DESC//,/ }\n" >>$CONF/location
+  printf -- "${CODE},${NAME},${DESC}\n" >>$CONF/location
   commit_file location
-  refresh_dirs
 }
 
 function location_delete {
@@ -1124,7 +1239,7 @@ function location_show {
   test $# -eq 1 || err "Provide the location name"
   grep -qE "^$1," ${CONF}/location || err "Unknown location" 
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$1," ${CONF}/location )"
-  printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC"
+  printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC\n"
 }
 
 function location_update {
@@ -1135,7 +1250,7 @@ function location_update {
   test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC//,/ }"'/' ${CONF}/location
+  sed -i 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
   # handle rename
   if [ "$CODE" != "$C" ]; then
     pushd $CONF >/dev/null 2>&1
@@ -1161,11 +1276,10 @@ function network_create {
   get_input GW "Gateway Address" --null
   get_input VLAN "VLAN Tag/Number" --null
   # add
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC//,/ }\n" >>$CONF/network
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
-  refresh_dirs
 }
 
 function network_delete {
@@ -1186,7 +1300,6 @@ function network_delete {
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
   fi
   commit_file network ${CONF}/${LOC}/network
-  refresh_dirs
 }
 
 function network_list {
@@ -1202,7 +1315,7 @@ function network_show {
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\n"
 }
 
 function network_update {
@@ -1232,7 +1345,7 @@ function network_update {
   get_input BITS "Subnet Bits" --default "$BITS"
   get_input GW "Gateway Address" --default "$GW" --null
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
-  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC//,/ }"'/' ${CONF}/network
+  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"'/' ${CONF}/network
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
     sed -i 's/^'${Z}','${A}',.*/'${ZONE}','${ALIAS}','${NET}'\/'${BITS}'/' ${CONF}/${LOC}/network
@@ -1335,7 +1448,7 @@ function resource_create {
   # validate unique value
   grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
-  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC//,/ }\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>$CONF/resource
   commit_file resource
 }
 
@@ -1389,7 +1502,7 @@ function resource_show {
   test $# -eq 1 || err "Provide the resource value"
   grep -qE ",$1," ${CONF}/resource || err "Unknown resource" 
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
-  printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO"
+  printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO\n"
 }
 
 function resource_update {
@@ -1404,7 +1517,7 @@ function resource_update {
     grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC//,/ }"'/' ${CONF}/resource
+  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -1519,7 +1632,12 @@ function system_release {
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
+  RELEASESCRIPT="$TMP/lpac-install.sh"
   FILES=()
+  # create the installation script
+  printf -- "!/bin/bash\n# lpac installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
+  printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
+  printf -- "logger -t lpac \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -1534,18 +1652,44 @@ function system_release {
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
-      P=$( grep -E "^${FILES[i]}," ${CONF}/file |awk 'BEGIN{FS=","}{print $2}' |sed 's%^/%%' )
-      test -z "$P" && continue
-      mkdir -p $TMP/`dirname $P`
-      cat $CONF/template/${FILES[i]} >$TMP/$P
-      # apply environment patch for this file if one exists
-      if [ -f $CONF/template/$EN/${FILES[i]} ]; then
-        patch -p0 $TMP/$P <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
-        test $? -eq 0 || err "Error applying $EN patch to ${FILES[i]}."
+      IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^$${FILES[i]}," ${CONF}/file )"
+      # remove leading '/' to make path relative
+      FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      # skip if path is null (implies an error occurred)
+      test -z "$FPTH" && continue
+      # ensure the relative path (directory) exists
+      mkdir -p $TMP/`dirname $FPTH`
+      # how the file is created differs by type
+      if [ "$FTYPE" == "file" ]; then
+        # copy the base template to the path
+        cat $CONF/template/${FILES[i]} >$TMP/$FPTH
+        # apply environment patch for this file if one exists
+        if [ -f $CONF/template/$EN/${FILES[i]} ]; then
+          patch -p0 $TMP/$FPTH <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
+          test $? -eq 0 || err "Error applying $EN patch to ${FILES[i]}."
+        fi
+        # process template variables
+        parse_template $TMP/$FPTH /tmp/app-config.$$ || err "Error parsing template data"
+      elif [ "$FTYPE" == "symlink" ]; then
+        # tar will preserve the symlink so go ahead and create it
+        ln -s $FTARGET $TMP/$FPTH
+      elif [ "$FTYPE" == "binary" ]; then
+        # simply copy the file, if it exists
+        test -f $CONF/binary/$FNAME || err "Error - binary file '$FNAME' does not exist"
+        cat $CONF/binary/$FNAME >$TMP/$FPTH
+      elif [ "$FTYPE" == "copy" ]; then
+        # copy the file using scp or fail
+        scp $FTARGET $TMP/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
+      elif [ "$FTYPE" == "download" ]; then
+        # add download to command script
+        printf -- "# download '$FNAME'\ncurl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
       fi
-      # process template variables
-      parse_template $TMP/$P /tmp/app-config.$$ || err "Error parsing template data"
+      # stage permissions for processing
+      printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
     done
+    # finalize installation script
+    printf -- "\nlogger -t lpac \"installation complete\"\n" >>$RELEASESCRIPT
+    chmod +x $RELEASESCRIPT
     # generate the release
     pushd $TMP >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE *
@@ -1592,7 +1736,7 @@ function system_create {
   # validate unique name
   grep -qE "^$NAME," $CONF/system && err "System already defined."
   # add
-  printf -- "${NAME},${BUILD//,/ },${IP},${LOC},${EN}\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
   commit_file system
 }
 
@@ -1642,13 +1786,14 @@ function system_show {
   done; fi |column -t |sed 's/^/   /'
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
-    echo -e "\nManaged configuration files:"
+    printf -- "\nManaged configuration files:"
     for ((i=0;i<${#FILES[*]};i++)); do
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
     done |sort |uniq
   else
-    echo -e "\nNo managed configuration files."
+    printf -- "\nNo managed configuration files."
   fi
+  printf -- '\n'
 }
 
 function system_update {
