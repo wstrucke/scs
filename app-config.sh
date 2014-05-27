@@ -889,7 +889,7 @@ function file_create {
     git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
     popd >/dev/null 2>&1
   elif [ "$TYPE" == "binary" ]; then
-    printf -- "\nPlease copy the binary file to: /$CONF/binary/$NAME"
+    printf -- "\nPlease copy the binary file to: $CONF/binary/$NAME\n"
   else
     commit_file file
   fi
