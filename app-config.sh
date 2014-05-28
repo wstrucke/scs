@@ -1565,6 +1565,8 @@ function system_audit {
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
+    # ignore lpac scripts
+    printf -- "$F" |grep -qE '^lpac-' && continue
     if [ -f $TMP/ACTUAL/$F ]; then
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=1
@@ -1633,9 +1635,14 @@ function system_release {
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
+  AUDITSCRIPT="$TMP/lpac-audit.sh"
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
   RELEASESCRIPT="$TMP/lpac-install.sh"
   FILES=()
+  # create the audit script
+  printf -- "#!/bin/bash\n# lpac audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
+  printf -- "# warn if not target host\ntest \"\`hostname\`\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
+  printf -- "PASS=0\n" >>$AUDITSCRIPT
   # create the installation script
   printf -- "#!/bin/bash\n# lpac installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
@@ -1657,6 +1664,8 @@ function system_release {
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      # alternate octal representation
+      FOCT=$( printf -- $FOCTAL |sed 's%^0%%' )
       # skip if path is null (implies an error occurred)
       test -z "$FPTH" && continue
       # ensure the relative path (directory) exists
@@ -1687,9 +1696,15 @@ function system_release {
         printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
         printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
       fi
-      # stage permissions for processing
+      # stage permissions for audit and processing
+      printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+      printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+      printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
       printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
     done
+    # finalize audit script
+    printf -- "\nif [ \$PASS -eq 0 ]; then echo \"Audit PASSED\"; else echo \"Audit FAILED\"; fi\nexit \$PASS\n" >>$AUDITSCRIPT
+    chmod +x $AUDITSCRIPT
     # finalize installation script
     printf -- "\nlogger -t lpac \"installation complete\"\n" >>$RELEASESCRIPT
     chmod +x $RELEASESCRIPT
