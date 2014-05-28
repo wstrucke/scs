@@ -65,10 +65,10 @@ function initialize_configuration {
 }
 
 function cleanup_and_exit {
+  local code=$?
   test -d $TMP && rm -rf $TMP
   test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
-#  printf -- "\n"
-  exit 0
+  exit $code
 }
 
 function diff_master {
