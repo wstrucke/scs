@@ -1506,8 +1506,16 @@ function resource_list {
   for R in $( resource_list_unformatted "$1" |tr ' ' ',' ); do
     IFS="," read -r NAME TYPE VAL <<< "$R"
     test -z "$NAME" && NAME="-"
+    printf -- "$NAME $TYPE $VAL"
     grep -E "^$TYPE,$VAL," ${CONF}/resource |grep -qE ',(host|application),'
-    test $? -eq 0 && printf -- "$NAME $TYPE $VAL\n" || printf -- "$NAME $TYPE $VAL unassigned\n"
+    if [ $? -eq 0 ]; then
+      # ok... load the resource so we can tell Chelsea what it's assigned to
+      IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^$TYPE,$VAL," ${CONF}/resource )"
+      printf -- " $ASSIGN_TYPE:$ASSIGN_TO" |sed 's/^ host/ system/'
+    else
+      printf -- " [unassigned]"
+    fi
+    printf -- "\n"
   done |column -t |sed 's/^/   /'
 }
 
