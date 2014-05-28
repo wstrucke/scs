@@ -224,7 +224,7 @@ function octal2text {
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; shift 2
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; CL=0; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --default) D="$2"; shift;;
     --nc) LC=0;;
@@ -234,16 +234,33 @@ function get_input {
     --comma) COMMA=1;;
     *) err;;
   esac; shift; done
+  # get the screen size or pick a reasonable default
+  local WIDTH=$( tput cols 2>/dev/null ); test -z "$WIDTH" && WIDTH=80
   # collect input until a valid entry is provided
   while [ -z "$RL" ]; do
     # output the prompt
-    printf -- "$P"
+    test $NUL -eq 0 && printf -- '*'; printf -- "$P"
     # output the list of valid options if one was provided
-    test ! -z "$OPT" && printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`)"
+    if ! [ -z "$OPT" ]; then
+      LEN=$( printf -- "$OPT" |wc -c )
+      if [ $LEN -gt $(( $WIDTH - 30 )) ]; then
+        printf -- " ( .. long list ..)"
+        tput smcup; clear; CL=1
+        printf -- "Select an option from the below list:\n"
+        for O in ${OPT//,/ }; do printf -- " - $O\n"; done
+        printf -- "\n\n"
+        test $NUL -eq 0 && printf -- '*'; printf -- "$P"
+      else
+        printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`"
+        if [ $NUL -eq 1 ]; then printf -- ", null)"; else printf -- ")"; fi
+      fi
+    fi
     # output the default option if one was provided
     test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
     # collect the input and force it to lowercase unless requested not to
     read -r RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
+    # if the scren was cleared, output the entered value
+    if [ $CL -eq 1 ]; then tput rmcup; printf -- ": $RL\n"; fi
     # if no input was provided and there is a default value, set the input to the default
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
     # special case to clear an existing value
@@ -553,7 +570,7 @@ function constant_update {
 # manipulate applications at a specific environment at a specific location
 #
 # application [<environment>] [--list] [<location>]
-# application [<environment>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<application>] [<location>]
+# application [<environment>] [--name <name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<application>] [<location>]
 # application [<environment>] [--name <name>] [--define|--undefine|--list-constant] [<application>]
 #
 function environment_application {
@@ -1369,16 +1386,23 @@ function network_update {
 #  $1 /path/to/template
 #  $2 file with space seperated variables and values
 #
+# optional:
+#  $3 value of "1" means output errors
+#
 # syntax:
 #  {% resource.name %}
 #  {% constant.name %}
 #  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
 function parse_template {
-  [[ $# -ne 2 || ! -f $1 || ! -f $2 ]] && return
+  [[ $# -lt 2 || ! -f $1 || ! -f $2 ]] && return
+  [[ $# -eq 3 && ! -z "$3" && "$3" == "1" ]] && local SHOWERROR=1 || local SHOWERROR=0
   while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
     NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
-    grep -qE "^$NAME " $2 || err "Error: Undefined variable $NAME"
+    grep -qE "^$NAME " $2
+    if [ $? -ne 0 ]; then
+      if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n"; return 1; else return 1; fi
+    fi
     VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
     sed -i s$'\001'"{% $NAME %}"$'\001'"$VAL"$'\001' $1
   done
@@ -1533,6 +1557,7 @@ function system_byname {
   # function
   case "$2" in
     --audit) system_audit $1;;
+    --check) system_check $1;;
     --release) system_release $1;;
     --vars) system_vars $1;;
   esac
@@ -1583,6 +1608,60 @@ function system_audit {
     fi
   done
   test $VALID -eq 0 && echo -e "\nSystem audit PASSED" || echo -e "\nSystem audit FAILED"
+  exit $VALID
+}
+
+# check system configuration for validity (does it look like it will deploy OK?)
+#
+function system_check {
+  test $# -gt 0 || err
+  VALID=0
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # look up the applications configured for the build assigned to this system
+  if ! [ -z "$BUILD" ]; then
+    # retrieve application related data
+    for APP in $( build_application_list "$BUILD" ); do
+      # get the file list per application
+      FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+    done
+  fi
+  # generate the system variables
+  system_vars $NAME >/tmp/app-config.$$
+  if [ ${#FILES[*]} -gt 0 ]; then
+    for ((i=0;i<${#FILES[*]};i++)); do
+      # get the file path based on the unique name
+      IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
+      # remove leading '/' to make path relative
+      FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      # skip if path is null (implies an error occurred)
+      if [ -z "$FPTH" ]; then printf -- "Error: $FNAME has not path. Critical error.\n"; VALID=1; continue; fi
+      # ensure the relative path (directory) exists
+      mkdir -p $TMP/`dirname $FPTH`
+      # how the file is created differs by type
+      if [ "$FTYPE" == "file" ]; then
+        # copy the base template to the path
+        cat $CONF/template/${FILES[i]} >$TMP/$FPTH
+        # apply environment patch for this file if one exists
+        if [ -f $CONF/template/$EN/${FILES[i]} ]; then
+          patch -p0 $TMP/$FPTH <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
+          if [ $? -ne 0 ]; then echo "Error applying $EN patch to ${FILES[i]}.\n"; VALID=1; continue; fi
+        fi
+        # process template variables
+        parse_template $TMP/$FPTH /tmp/app-config.$$ 1
+        if [ $? -ne 0 ]; then printf -- "Error replacing template variables, constants, and resources for ${FILES[i]}.\n"; VALID=1; continue; fi
+      elif [ "$FTYPE" == "binary" ]; then
+        # simply copy the file, if it exists
+        test -f $CONF/binary/$EN/$FNAME
+        if [ $? -ne 0 ]; then printf -- "Error: $FNAME does not exist for $EN.\n"; VALID=1; fi
+      elif [ "$FTYPE" == "copy" ]; then
+        # copy the file using scp or fail
+        scp $FTARGET $TMP/ >/dev/null 2>&1
+        if [ $? -ne 0 ]; then printf -- "Error: $FNAME is not available at '$FTARGET'\n"; VALID=1; fi
+      fi
+    done
+  fi
+  test $VALID -eq 0 && printf -- "System check PASSED\n" || printf -- "\nSystem check FAILED\n"
   exit $VALID
 }
 
@@ -1844,8 +1923,8 @@ Component:
   constant
   environment
     application [<environment>] [--list] [<location>]
-    application [<environment>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<application>] [<location>]
-    application [<environment>] [--name <name>] [--define|--undefine|--list-constant] [<application>]
+    application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+    application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
     edit [<name>] [--environment <name>]
@@ -1857,7 +1936,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--release|--vars]
+    <value> [--audit|--check|--release|--vars]
 
 Verbs - all top level components:
   create
