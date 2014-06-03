@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# LPAD Application Configuration
+# 2Checkout SCS System
 # Manage and deploy application configuration files
 #
 # William Strucke [wstrucke@gmail.com]
@@ -1643,8 +1643,10 @@ function system_check {
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      # missing file
+      if [ -z "$FNAME" ]; then printf -- "Error: '${FILES[i]}' is invalid. Critical error.\n"; VALID=1; continue; fi
       # skip if path is null (implies an error occurred)
-      if [ -z "$FPTH" ]; then printf -- "Error: $FNAME has not path. Critical error.\n"; VALID=1; continue; fi
+      if [ -z "$FPTH" ]; then printf -- "Error: '$FNAME' has no path (index $i). Critical error.\n"; VALID=1; continue; fi
       # ensure the relative path (directory) exists
       mkdir -p $TMP/`dirname $FPTH`
       # how the file is created differs by type
@@ -1934,7 +1936,8 @@ function system_update {
 }
 
 function usage {
-  echo "Manage application/server configurations and base templates across all environments.
+  echo "2Checkout SCS Application
+Manage application/server configurations and base templates across all environments.
 
 Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
