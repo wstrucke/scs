@@ -323,7 +323,7 @@ function generic_choose {
   [ "$1" == "resource" ] && M="," || M="^"
   test ! -z "$2" && grep -qiE "$M$2," ${CONF}/$1
   if [ $? -ne 0 ]; then
-    eval $1_list "$4"
+    eval $1_list \"$4\"
     printf -- "\n"
     get_input I "Please specify $AN $1"
     test "$1" == "constant" && I=$( printf -- $I |tr 'a-z' 'A-Z' )
@@ -657,9 +657,9 @@ function environment_application_byname_assign {
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # select an available resource to assign
-  generic_choose resource "$1" RES "^cluster_ip,.*,not assigned," && shift
+  generic_choose resource "$1" RES "^(cluster|ha)_ip,.*,not assigned," && shift
   # verify the resource is available for this purpose
-  grep -E ",${RES//,/}," $CONF/resource |grep -qE '^cluster_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
+  grep -E ",${RES//,/}," $CONF/resource |grep -qE '^(cluster|ha)_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
   # assign resource, update index
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
   sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$DESC"'/' ${CONF}/resource
@@ -1557,7 +1557,7 @@ function resource_update {
 
 # system functions
 #
-# <value> [--audit|--release|--vars]
+# <value> [--audit|--check|--deploy|--release|--vars]
 function system_byname {
   # input validation
   test $# -gt 1 || err "Provide the system name"
@@ -1566,6 +1566,7 @@ function system_byname {
   case "$2" in
     --audit) system_audit $1;;
     --check) system_check $1;;
+    --deploy) system_deploy $1;;
     --release) system_release $1;;
     --vars) system_vars $1;;
   esac
@@ -1805,6 +1806,24 @@ function system_release {
   fi
 }
 
+# deploy release to system
+#
+function system_deploy {
+  test $# -gt 0 || err
+  nc -z -w 2 $1 22 >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$1'\n"; exit 1; fi
+  printf -- "Generating release...\n"
+  FILE=$( system_release $1 2>/dev/null |tail -n1 )
+  if [ -z "$FILE" ]; then printf -- "Error generating release for '$1'\n"; exit 1; fi
+  if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
+  printf -- "Copying release to remote system...\n"
+  scp $FILE $1: >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
+  printf -- "Cleaning up...\n"
+  rm -f $FILE
+  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./lpac-install.sh\n\n"
+}
+
 # generate all system variables and settings
 #
 function system_vars {
@@ -1944,7 +1963,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--release|--vars]
+    <value> [--audit|--check|--deploy|--release|--vars]
 
 Verbs - all top level components:
   create
