@@ -873,6 +873,7 @@ function environment_update {
 #   copy          a regular file that is not stored here. it will be copied by this application from
 #                   another location when it is deployed.  when auditing a remote system files of type
 #                   'copy' will only be audited for permissions and existence.
+#   delete        ensure a file or directory DOES NOT EXIST on the target system.
 #   download      a regular file that is not stored here. it will be retrieved by the remote system
 #                   when it is deployed.  when auditing a remote system files of type 'download' will
 #                   only be audited for permissions and existence.
@@ -883,7 +884,7 @@ function file_create {
   TARGET=""
   # get user input and validate
   get_input NAME "Name (for reference)"
-  get_input TYPE "Type" --options file,symlink,binary,copy,download --default file
+  get_input TYPE "Type" --options file,symlink,binary,copy,delete,download --default file
   if [ "$TYPE" == "symlink" ]; then
     get_input TARGET "Link Target" --nc
   elif [ "$TYPE" == "copy" ]; then
@@ -891,11 +892,19 @@ function file_create {
   elif [ "$TYPE" == "download" ]; then
     get_input TARGET "Remote Path/URL" --nc
   fi
-  get_input PTH "Full Path (for deployment)" --nc
+  if [ "$TYPE" == "delete" ]; then
+    get_input PTH "Exact path to delete on target system" --nc
+  else
+    get_input PTH "Full Path (for deployment)" --nc
+  fi
   get_input DESC "Description" --nc --null
-  get_input OWNER "Permissions - Owner" --default root
-  get_input GROUP "Permissions - Group" --default root
-  get_input OCTAL "Permissions - Octal (e.g. 0755)" --default 0644 --regex '^[0-7]{3,4}$'
+  if [ "$TYPE" == "delete" ]; then
+    OWNER=root; GROUP=root; OCTAL=644
+  else
+    get_input OWNER "Permissions - Owner" --default root
+    get_input GROUP "Permissions - Group" --default root
+    get_input OCTAL "Permissions - Octal (e.g. 0755)" --default 0644 --regex '^[0-7]{3,4}$'
+  fi
   # validate unique name
   grep -qE "^$NAME," ${CONF}/file && err "File already defined."
   # add
@@ -1066,6 +1075,8 @@ function file_show {
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH copy of $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
   elif [ "$TYPE" == "download" ]; then
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH download from $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
+  elif [ "$TYPE" == "delete" ]; then
+    printf -- "Name: $NAME\nType: $TYPE\nRemove: $PTH\nDescription: $DESC"
   else
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
     [ "$TYPE" == "file" ] && printf -- "\nSize: `stat -c%s $CONF/template/$NAME` bytes"
@@ -1079,7 +1090,7 @@ function file_update {
   generic_choose file "$1" C && shift
   IFS="," read -r NAME PTH T OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default "$NAME"
-  get_input TYPE "Type" --options file,symlink,binary,copy,download --default "$T"
+  get_input TYPE "Type" --options file,symlink,binary,copy,delete,download --default "$T"
   if [ "$TYPE" == "symlink" ]; then
     get_input TARGET "Link Target" --nc --default "$TARGET"
   elif [ "$TYPE" == "copy" ]; then
@@ -1087,11 +1098,17 @@ function file_update {
   elif [ "$TYPE" == "download" ]; then
     get_input TARGET "Remote Path/URL" --nc --default "$TARGET"
   fi
-  get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
+  if [ "$TYPE" == "delete" ]; then
+    get_input PTH "Exact path to delete on target system" --default "$PTH" --nc
+  else
+    get_input PTH "Full Path (for deployment)" --default "$PTH" --nc
+  fi
   get_input DESC "Description" --default "$DESC" --null --nc
-  get_input OWNER "Permissions - Owner" --default "$OWNER"
-  get_input GROUP "Permissions - Group" --default "$GROUP"
-  get_input OCTAL "Permissions - Octal (e.g. 0755)" --default "$OCTAL" --regex '^[0-7]{3,4}$'
+  if [ "$TYPE" != "delete" ]; then
+    get_input OWNER "Permissions - Owner" --default "$OWNER"
+    get_input GROUP "Permissions - Group" --default "$GROUP"
+    get_input OCTAL "Permissions - Octal (e.g. 0755)" --default "$OCTAL" --regex '^[0-7]{3,4}$'
+  fi
   if [ "$NAME" != "$C" ]; then
     # validate unique name
     grep -qE "^$NAME," ${CONF}/file && err "File already defined."
@@ -1785,12 +1802,20 @@ function system_release {
         # add download to command script
         printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
         printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
+      elif [ "$FTYPE" == "delete" ]; then
+        # add delete to command script
+        printf -- "# delete '$FNAME' if it exists\n" >>$RELEASESCRIPT
+        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t lpac \"deleting path '/$FPTH'\"; fi\n" >>$RELEASESCRIPT
+        # add audit check 
+        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
       fi
       # stage permissions for audit and processing
-      printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
-      printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
-      printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
-      printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+      if [ "$FTYPE" != "delete" ]; then
+        printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+        printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+        printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+      fi
     done
     # finalize audit script
     printf -- "\nif [ \$PASS -eq 0 ]; then echo \"Audit PASSED\"; else echo \"Audit FAILED\"; fi\nexit \$PASS\n" >>$AUDITSCRIPT
