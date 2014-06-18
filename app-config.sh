@@ -192,7 +192,7 @@ function cancel_modify {
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
     git checkout master >/dev/null 2>&1
-    git branch -d $USERNAME >/dev/null 2>&1
+    git branch -D $USERNAME >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
 }
