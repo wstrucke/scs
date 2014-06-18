@@ -1618,7 +1618,7 @@ function system_audit {
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
     mkdir -p $TMP/ACTUAL/`dirname $F`
-    scp $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
+    scp -p $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
   done
   # review differences
   echo "Analyzing configuration..."
