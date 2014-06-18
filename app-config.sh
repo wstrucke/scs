@@ -123,7 +123,7 @@ function start_modify {
 #
 function stop_modify {
   # optional commit message
-  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="$2"; else MSG="$USERNAME completed modifications at `date`"; fi
+  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; else MSG="$USERNAME completed modifications at `date`"; fi
   # get the running user
   get_user
   # switch directories
