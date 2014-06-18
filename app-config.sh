@@ -77,6 +77,12 @@ function diff_master {
   popd >/dev/null 2>&1
 }
 
+function git_status {
+  pushd $CONF >/dev/null 2>&1
+  git status
+  popd >/dev/null 2>&1
+}
+
 # error / exit function
 #
 function err {
@@ -1968,7 +1974,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
-              $0 diff
+              $0 diff | status
 
 Run commit when complete to finalize changes.
 
@@ -2034,6 +2040,7 @@ SUBJ="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
+if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
 
 # get verb
 VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
