@@ -251,7 +251,7 @@ function get_input {
     if ! [ -z "$OPT" ]; then
       LEN=$( printf -- "$OPT" |wc -c )
       if [ $LEN -gt $(( $WIDTH - 30 )) ]; then
-        printf -- " ( .. long list ..)"
+        printf -- " ( .. long list .. )"
         tput smcup; clear; CL=1
         printf -- "Select an option from the below list:\n"
         for O in ${OPT//,/ }; do printf -- " - $O\n"; done
@@ -2010,6 +2010,39 @@ Verbs - all top level components:
   exit 1
 }
 
+function expand_verb_alias {
+  case "$1" in
+    a|ap|app) printf -- 'application';;
+    co|con|cons|const) printf -- 'constant';;
+    cr) printf -- 'create';;
+    d|de|del) printf -- 'delete';;
+    f) printf -- 'file';;
+    l|li|lis|ls) printf -- 'list';;
+    s|sh|sho) printf -- 'show';;
+    u|up|upd|updat) printf -- 'update';;
+    *) printf -- "$1";;
+  esac
+}
+
+function expand_subject_alias {
+  case "$1" in
+    a) printf -- 'application';;
+    b) printf -- 'build';;
+    ca|can) printf -- 'cancel';;
+    con|cons|const) printf -- 'constant';;
+    com) printf -- 'commit';;
+    d|di|dif) printf -- 'diff';;
+    e) printf -- 'environment';;
+    f) printf -- 'file';;
+    l) printf -- 'location';;
+    n) printf -- 'network';;
+    r) printf -- 'resource';;
+    st|sta|stat) printf -- 'status';;
+    sy|sys|syst) printf -- 'system';;
+    *) printf -- "$1";;
+  esac
+}
+
 # variables
 CONF=/usr/local/etc/lpad/app-config
 RELEASEDIR=/bkup1/lpad-releases
@@ -2034,7 +2067,7 @@ fi
 test $# -ge 1 || usage
 
 # get subject
-SUBJ="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
+SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
@@ -2043,7 +2076,7 @@ if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
 
 # get verb
-VERB="$( echo "$1" |tr 'A-Z' 'a-z' )"; shift
+VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
