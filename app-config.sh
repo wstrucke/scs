@@ -2026,17 +2026,17 @@ function expand_verb_alias {
 
 function expand_subject_alias {
   case "$1" in
-    a) printf -- 'application';;
-    b) printf -- 'build';;
+    a|ap|app) printf -- 'application';;
+    b|bld) printf -- 'build';;
     ca|can) printf -- 'cancel';;
     con|cons|const) printf -- 'constant';;
     com) printf -- 'commit';;
     d|di|dif) printf -- 'diff';;
-    e) printf -- 'environment';;
+    e|en|env) printf -- 'environment';;
     f) printf -- 'file';;
-    l) printf -- 'location';;
-    n) printf -- 'network';;
-    r) printf -- 'resource';;
+    l|lo|loc) printf -- 'location';;
+    n|ne|net) printf -- 'network';;
+    r|re|res) printf -- 'resource';;
     st|sta|stat) printf -- 'status';;
     sy|sys|syst) printf -- 'system';;
     *) printf -- "$1";;
