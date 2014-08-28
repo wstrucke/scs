@@ -55,7 +55,7 @@
 #   --storage:
 #
 #   build
-#   --format: name,role,description\n
+#   --format: name,role,description,os,arch\n
 #   --storage:
 #
 #   constant
@@ -123,8 +123,8 @@
 #   - adding, updating, or removing an IP from a system should interface with IPAM functions
 #   - validate IP addresses using the new valid_ip function
 #   - generate kickstart files
-#   - store OS, ARCH values
 #   - simplify IP management functions by reducing code duplication
+#   - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #
 
 
@@ -845,11 +845,13 @@ function build_create {
   # get user input and validate
   get_input NAME "Build"
   get_input ROLE "Role" --null
+  get_input OS "Operating System" --null --options $OSLIST
+  get_input ARCH "Architecture" --null --options $OSARCH
   get_input DESC "Description" --nc --null
   # validate unique name
   grep -qE "^$NAME," $CONF/build && err "Build already defined."
   # add
-  printf -- "${NAME},${ROLE},${DESC//,/}\n" >>$CONF/build
+  printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH}\n" >>$CONF/build
   commit_file build
 }
 
@@ -872,18 +874,20 @@ function build_list_unformatted {
 function build_show {
   test $# -eq 1 || err "Provide the build name"
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
-  IFS="," read -r NAME ROLE DESC <<< "$( grep -E "^$1," ${CONF}/build )"
-  printf -- "Build: $NAME\nRole: $ROLE\nDescription: $DESC\n"
+  IFS="," read -r NAME ROLE DESC OS ARCH <<< "$( grep -E "^$1," ${CONF}/build )"
+  printf -- "Build: $NAME\nRole: $ROLE\nOperating System: $OS-$ARCH\nDescription: $DESC\n"
 }
 
 function build_update {
   start_modify
   generic_choose build "$1" C && shift
-  IFS="," read -r NAME ROLE DESC <<< "$( grep -E "^$C," ${CONF}/build )"
+  IFS="," read -r NAME ROLE DESC OS ARCH <<< "$( grep -E "^$C," ${CONF}/build )"
   get_input NAME "Build" --default "$NAME"
   get_input ROLE "Role" --default "$ROLE" --null
+  get_input OS "Operating System" --default "$OS" --null --options $OSLIST
+  get_input ARCH "Architecture" --default "$ARCH" --null --options $OSARCH
   get_input DESC "Description" --default "$DESC" --nc --null
-  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"'/' ${CONF}/build
+  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}'/' ${CONF}/build
   commit_file build
 }
 
@@ -2653,6 +2657,13 @@ function system_vars {
 #
 # local root for scs storage files, settings, and git repository
 CONF=/usr/local/etc/lpad/app-config
+#
+# list of architectures for builds -- each arch in the list must be available
+#   for each OS version (below)
+OSARCH="i386,x86_64"
+#
+# list of operating systems for builds
+OSLIST="centos4,centos5,centos6"
 #
 # local path to store release archives
 RELEASEDIR=/bkup1/scs-release
