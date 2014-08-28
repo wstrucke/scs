@@ -153,6 +153,7 @@ function cdr2mask {
 }
 
 # return the number of possible IPs in a network based in the cidr mask
+#   this intentionally does not account for the network and broadcast address
 #
 # required:
 #   $1   X (where X is the CIDR mask: 0 <= X <= 32 )
@@ -575,6 +576,9 @@ function valid_mask() {
   [[ $i3 -gt 0 && $i3 -lt 255 && "$i1$i2$i4" != "2552550" ]] && return 1
   [[ $i2 -gt 0 && $i2 -lt 255 && "$i1$i3$i4" != "25500" ]] && return 1
   [[ $i1 -gt 0 && $i1 -lt 255 && "$i2$i3$i4" != "000" ]] && return 1
+  # verify each component of the mask is a valid mask
+  #   !!FIXME!! i am certain there is a much better way to do this but i could not
+  #             come up with it in the time allocated to developing this function
   printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i1 " || return 1
   printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i2 " || return 1
   printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
@@ -737,8 +741,8 @@ function application_delete {
   # delete from file-map as well
   sed -i "/^[^,]*,$APP\$/d" $CONF/file-map
   commit_file file-map
-# should also unassign resources
-# should also undefine constants
+# !!FIXME!! should also unassign resources
+# !!FIXME!! should also undefine constants
 }
 
 # file [--add|--remove|--list]
@@ -1787,6 +1791,7 @@ function network_ip {
 #   $2  hostname
 #
 function network_ip_assign {
+  start_modify
   test $# -eq 2 || err "An IP and hostname are required."
   valid_ip $1 || err "Invalid IP."
   local RET FILENAME=$( get_network $1 24 )
@@ -1816,6 +1821,7 @@ function network_ip_assign {
 # scan a subnet for used addresses and reserve them
 #
 function network_ip_scan {
+  start_modify
   # input validation
   test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
@@ -1848,6 +1854,7 @@ function network_ip_scan {
 #   $1  IP
 #
 function network_ip_unassign {
+  start_modify
   test $# -eq 1 || err "An IP is required."
   valid_ip $1 || err "Invalid IP."
   local FILENAME=$( get_network $1 24 )
@@ -1890,6 +1897,7 @@ function network_ipam {
 #   end-ip          optional end ip
 #
 function network_ipam_add_range {
+  start_modify
   # input validation
   test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
@@ -1945,6 +1953,7 @@ function network_ipam_add_range {
 #   end-ip          optional end ip
 #
 function network_ipam_remove_range {
+  start_modify
   # input validation
   test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
