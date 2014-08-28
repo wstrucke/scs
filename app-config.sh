@@ -636,6 +636,12 @@ function commit_file {
   popd >/dev/null 2>&1
 }
 
+function diff_master {
+  pushd $CONF >/dev/null 2>&1
+  git diff master
+  popd >/dev/null 2>&1
+}
+
 # output the status (modified, added, deleted files list)
 #
 function git_status {
