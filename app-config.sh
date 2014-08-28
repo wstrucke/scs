@@ -119,209 +119,22 @@
 # TO DO:
 #   - system audit should check ownership and permissions on files
 #   - deleting an application should also unassign resources and undefine constants
+#   - finish IPAM and IP allocation components
+#   - adding, updating, or removing an IP from a system should interface with IPAM functions
+#   - validate IP addresses using the new valid_ip function
+#   - generate kickstart files
+#   - store OS, ARCH values
+#   - simplify IP management functions by reducing code duplication
 #
 
-# first run function to init the configuration store
-#
-function initialize_configuration {
-  test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch $CONF/{binary,net,value}
-  git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
-  cd $CONF || err
-  printf -- "*\\.swp\nbinary\n" >.gitignore
-  git add *
-  git commit -a -m'initial commit' >/dev/null 2>&1
-  cd - >/dev/null 2>&1
-  return 0
-}
 
-function cleanup_and_exit {
-  local code=$?
-  test -d $TMP && rm -rf $TMP
-  test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
-  exit $code
-}
-
-function diff_master {
-  pushd $CONF >/dev/null 2>&1
-  git diff master
-  popd >/dev/null 2>&1
-}
-
-function git_status {
-  pushd $CONF >/dev/null 2>&1
-  git status
-  popd >/dev/null 2>&1
-}
-
-# error / exit function
-#
-function err {
-  popd >/dev/null 2>&1
-  test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
-  test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
-}
-
-# get the user name of the administrator running this script
-#
-# sets the variable USERNAME
-#
-function get_user {
-  if ! [ -z "$USERNAME" ]; then return; fi
-  if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
-    read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
-    U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
-  fi
-  test -z "$U" && err "A user name is required to make modifications."
-  USERNAME="$U"
-}
-
-# manage changes and locking with branches
-#
-function start_modify {
-  # get the running user
-  get_user
-  # the current branch must either be master or the name of this user to continue
-  cd $CONF || err
-  git branch |grep -E '^\*' |grep -q master
-  if [ $? -eq 0 ]; then
-    git branch $USERNAME >/dev/null 2>&1
-    git checkout $USERNAME >/dev/null 2>&1
-  else
-    git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
-  fi
-  return 0
-}
-
-# merge changes back into master and remove the branch
-#
-# optional:
-#  -m   commit message
-#
-function stop_modify {
-  # optional commit message
-  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
-  if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed 's/^..//g' ); shift; fi
-  # get the running user
-  get_user
-  # switch directories
-  pushd $CONF >/dev/null 2>&1 || err
-  # check for modifications
-  L=`git status -s |wc -l 2>/dev/null`
-  # check if the current branch is master
-  git branch |grep -E '^\*' |grep -q master
-  test $? -eq 0 && M=1 || M=0
-  # return if there are no modifications and we are on the master branch
-  if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
-  # error if master was modified
-  if [[ $L -ne 0 && $M -eq 1 ]]; then err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."; fi
-  if [ $L -gt 0 ]; then
-    # there are modifictions on a branch
-    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)? "
-    test "$DF" == "y" && git diff
-    get_yn DF "Do you want to commit the changes (y/n)? "
-    if [ "$DF" != "y" ]; then return 0; fi
-    git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
-  else
-    get_yn DF "Do you want to review the changes from master (y/n)? "
-    test "$DF" == "y" && git diff master
-    get_yn DF "Do you want to commit the changes (y/n)? "
-    if [ "$DF" != "y" ]; then return 0; fi
-  fi
-  if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
-    git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
-  fi
-  git checkout master >/dev/null 2>&1 || err "Error switching to master"
-  git merge --squash $USERNAME >/dev/null 2>&1
-  if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
-  git commit -a -m"$MSG" >/dev/null 2>&1
-  git branch -D $USERNAME >/dev/null 2>&1
-  popd >/dev/null 2>&1
-}
-
-# cancel changes and switch back to master
-#
-# optional:
-#   --force  force the cancel even if this isn't your branch
-#
-function cancel_modify {
-  # get the running user
-  get_user
-  # switch directories
-  pushd $CONF >/dev/null 2>&1 || err
-  # get change count
-  L=`git status -s |wc -l 2>/dev/null`
-  # make sure we are not on master
-  git branch |grep -E '^\*' |grep -q master; M=$?
-  if [[ $M -eq 0 && $L -gt 0 ]]; then err "Error -- changes on master branch must be resolved manually."; elif [ $M -eq 0 ]; then return; fi
-  # make sure we are on the correct branch...
-  git branch |grep -E '^\*' |grep -q $USERNAME
-  if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
-  # confirm
-  get_yn DF "Are you sure you want to discard outstanding changes (y/n)? "
-  if [ "$DF" == "y" ]; then
-    git clean -f >/dev/null 2>&1
-    git reset --hard >/dev/null 2>&1
-    git checkout master >/dev/null 2>&1
-    git branch -D $USERNAME >/dev/null 2>&1
-  fi
-  popd >/dev/null 2>&1
-}
-
-function octal2perm {
-  local N="$1" R=r W=w X=x
-  if ! [ -z "$2" ]; then local R=s W=s X=t; fi
-  if [ $(( $N - 4 )) -ge 0 ]; then N=$(( $N - 4 )); printf -- $R; else printf -- '-'; fi
-  if [ $(( $N - 2 )) -ge 0 ]; then N=$(( $N - 2 )); printf -- $W; else printf -- '-'; fi
-  if [ $(( $N - 1 )) -ge 0 ]; then N=$(( $N - 1 )); printf -- $X; else printf -- '-'; fi
-}
-
-function octal2text {
-  if [ -z "$1" ]; then local N="0000"; else local N="$1"; fi
-  printf -- "$N" |grep -qE '^[0-7]{3,4}$' || exit 1
-  printf -- "$N" |grep -qE '^[0-7]{4}$' || N="0$N"
-  octal2perm ${N:0:1} sticky
-  octal2perm ${N:1:1}
-  octal2perm ${N:2:1}
-  octal2perm ${N:3:1}
-}
-
-# get the network address for a given ip and subnet mask
-#
-# SOURCE:
-# http://stackoverflow.com/questions/15429420/given-the-ip-and-netmask-how-can-i-calculate-the-network-address-using-bash
-#
-# This is completely equivilent to `ipcalc -n $1 $2`, but that is not
-#   necessarily available on all operating systems.
-#
-# required:
-#   $1  ip address
-#   $2  subnet mask
-#
-function get_network {
-  test $# -eq 2 || return 1
-  valid_ip $1 || return 1
-  local J="$2"
-  test "$2" == "${2/[^0-9]/}" && J=$( cdr2mask $2 )
-  IFS=. read -r i1 i2 i3 i4 <<< "$1"
-  IFS=. read -r m1 m2 m3 m4 <<< "$J"
-  printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$(($i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
-  return 0
-}
-
-# return the number of possible IPs in a network based in the cidr mask
-#
-# required:
-#   $1   X (where X is the CIDR mask: 0 <= X <= 32 )
-#
-function cdr2size {
-  test $# -ne 1 && return 1
-  test "$1" != "${1/[^0-9]/}" && return 1
-  if [[ $1 -lt 0 || $1 -gt 32 ]]; then return 1; fi
-  echo $(( 1 << ( ( $1 - 32 ) * -1 ) ))
-  return 0
-}
+ #     # ####### ### #       ### ####### #     # 
+ #     #    #     #  #        #     #     #   #  
+ #     #    #     #  #        #     #      # #   
+ #     #    #     #  #        #     #       #    
+ #     #    #     #  #        #     #       #    
+ #     #    #     #  #        #     #       #    
+  #####     #    ### ####### ###    #       #
 
 # convert subnet mask bits into a network mask
 #   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
@@ -339,20 +152,26 @@ function cdr2mask {
   return 0
 }
 
-# convert subnet mask into subnet mask bits
-#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+# return the number of possible IPs in a network based in the cidr mask
 #
-# required
-#   $1    W.X.Y.Z (a valid subnet mask)
+# required:
+#   $1   X (where X is the CIDR mask: 0 <= X <= 32 )
 #
-function mask2cdr {
-  valid_mask "$1" || return 1
-  # Assumes there's no "255." after a non-255 byte in the mask
-  local x=${1##*255.}
-  set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
-  x=${1%%$3*}
-  echo $(( $2 + (${#x}/4) ))
+function cdr2size {
+  test $# -ne 1 && return 1
+  test "$1" != "${1/[^0-9]/}" && return 1
+  if [[ $1 -lt 0 || $1 -gt 32 ]]; then return 1; fi
+  echo $(( 1 << ( ( $1 - 32 ) * -1 ) ))
   return 0
+}
+
+# exit function called from trap
+#
+function cleanup_and_exit {
+  local code=$?
+  test -d $TMP && rm -rf $TMP
+  test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
+  exit $code
 }
 
 # convert a decimal value to an ipv4 address
@@ -371,82 +190,95 @@ function dec2ip {
   return 0
 }
 
-# convert an ip address to decimal value
+# error / exit function
 #
-# SOURCE: http://stackoverflow.com/questions/10768160/ip-address-converter
+function err {
+  popd >/dev/null 2>&1
+  test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
+  test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
+}
+
+function expand_subject_alias {
+  case "$1" in
+    a|ap|app) printf -- 'application';;
+    b|bld) printf -- 'build';;
+    ca|can) printf -- 'cancel';;
+    con|cons|const) printf -- 'constant';;
+    com) printf -- 'commit';;
+    d|di|dif) printf -- 'diff';;
+    e|en|env) printf -- 'environment';;
+    f) printf -- 'file';;
+    l|lo|loc) printf -- 'location';;
+    n|ne|net) printf -- 'network';;
+    r|re|res) printf -- 'resource';;
+    st|sta|stat) printf -- 'status';;
+    sy|sys|syst) printf -- 'system';;
+    *) printf -- "$1";;
+  esac
+}
+
+function expand_verb_alias {
+  case "$1" in
+    a|ap|app) printf -- 'application';;
+    co|con|cons|const) printf -- 'constant';;
+    cr) printf -- 'create';;
+    d|de|del) printf -- 'delete';;
+    f) printf -- 'file';;
+    l|li|lis|ls) printf -- 'list';;
+    s|sh|sho) printf -- 'show';;
+    u|up|upd|updat) printf -- 'update';;
+    *) printf -- "$1";;
+  esac
+}
+
+# generic choose function, since they are all exactly the same
 #
-# requires:
-#   $1  ip address
+# required:
+#  $1 name of file to search
+#  $2 value to search for in the list
+#  $3 variable to return
 #
-function ip2dec {
-  local a b c d ip=$1
-  IFS=. read -r a b c d <<< "$ip"
-  printf '%d\n' "$((a * 256 ** 3 + b * 256 ** 2 + c * 256 + d))"
+# optional:
+#  $4 value to pass to list function
+#
+function generic_choose {
+  printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
+  [ "$1" == "resource" ] && M="," || M="^"
+  test ! -z "$2" && grep -qiE "$M$2," ${CONF}/$1
+  if [ $? -ne 0 ]; then
+    eval $1_list \"$4\"
+    printf -- "\n"
+    get_input I "Please specify $AN $1"
+    test "$1" == "constant" && I=$( printf -- $I |tr 'a-z' 'A-Z' )
+    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
+    printf -- "\n"
+    eval $3="$I"
+    return 1
+  elif [ "$1" == "constant" ]; then
+    eval $3=$( printf -- $2 |tr 'a-z' 'A-Z' )
+  else
+    eval $3="$2"
+  fi
   return 0
 }
 
-# add or subtract an arbitrary number of addresses
-#   from an ip address
+# generic delete function, since they are all exactly the same
 #
-# this is explictely designed to ignore subnet boundaries
-#   but will always return a valid ip address
-#
-# requires:
-#   $1  ip address
-#   $2  integer value (+/- X)
-#
-function ipadd {
-  test $# -eq 2 || return 1
-  echo $( dec2ip $(( $( ip2dec $1 ) + $2 )) )
-  return 0
-}
-
-# Test an IP address for validity:
-# Usage:
-#      valid_ip IP_ADDRESS
-#      if [[ $? -eq 0 ]]; then echo good; else echo bad; fi
-#   OR
-#      if valid_ip IP_ADDRESS; then echo good; else echo bad; fi
-#
-# SOURCE: http://www.linuxjournal.com/content/validating-ip-address-bash-script
-#
-function valid_ip() {
-    local  ip=$1
-    local  stat=1
-
-    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        OIFS=$IFS; IFS='.'; ip=($ip); IFS=$OIFS
-        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
-            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
-        stat=$?
-    fi
-    return $stat
-}
-
-# Test a Network Mask for validity:
-# Usage:
-#      valid_mask NETMASK
-#      if [[ $? -et 0 ]]; then echo good; else echo bad; fi
-#   OR
-#      if valid_mask NETMASK; then echo good; else echo bad; fi
-#
-function valid_mask() {
-  test $# -eq 1 || return 1
-  # extract mask into four numbers
-  IFS=. read -r i1 i2 i3 i4 <<< "$1"
-  # verify each number is not null
-  [[ -z "$i1" || -z "$i2" || -z "$i3" || -z "$i4" ]] && return 1
-  # verify each value is numeric only and a positive integer
-  test "${1//[^0-9]/}" != "${i1}${i2}${i3}${i4}" && return 1
-  # verify any number less than 255 has 255s preceding and 0 following
-  [[ $i4 -gt 0 && $i4 -lt 255 && "$i1$i2$i3" != "255255255" ]] && return 1
-  [[ $i3 -gt 0 && $i3 -lt 255 && "$i1$i2$i4" != "2552550" ]] && return 1
-  [[ $i2 -gt 0 && $i2 -lt 255 && "$i1$i3$i4" != "25500" ]] && return 1
-  [[ $i1 -gt 0 && $i1 -lt 255 && "$i2$i3$i4" != "000" ]] && return 1
-  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i1 " || return 1
-  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i2 " || return 1
-  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
-  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i4 " || return 1
+function generic_delete {
+  test -z "$1" && return
+  start_modify
+  if [ -z "$2" ]; then
+    eval ${1}_list
+    printf -- "\n"
+    get_input C "`printf -- $1 |sed -e "s/\b\(.\)/\u\1/g"` to Delete"
+  else
+    C="$2"
+  fi
+  grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" != "y" ]; then return 1; fi
+  sed -i '/^'$C',/d' ${CONF}/$1
+  commit_file $1
   return 0
 }
 
@@ -519,6 +351,45 @@ function get_input {
   # set the provided variable value to the validated input
   eval "$V='$RL'"
 }
+
+# get the network address for a given ip and subnet mask
+#
+# SOURCE:
+# http://stackoverflow.com/questions/15429420/given-the-ip-and-netmask-how-can-i-calculate-the-network-address-using-bash
+#
+# This is completely equivilent to `ipcalc -n $1 $2`, but that is not
+#   necessarily available on all operating systems.
+#
+# required:
+#   $1  ip address
+#   $2  subnet mask
+#
+function get_network {
+  test $# -eq 2 || return 1
+  valid_ip $1 || return 1
+  local J="$2"
+  test "$2" == "${2/[^0-9]/}" && J=$( cdr2mask $2 )
+  IFS=. read -r i1 i2 i3 i4 <<< "$1"
+  IFS=. read -r m1 m2 m3 m4 <<< "$J"
+  printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$(($i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
+  return 0
+}
+
+# get the user name of the administrator running this script
+#
+# sets the variable USERNAME
+#
+function get_user {
+  if ! [ -z "$USERNAME" ]; then return; fi
+  if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
+    read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
+    U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
+  fi
+  test -z "$U" && err "A user name is required to make modifications."
+  USERNAME="$U"
+}
+
+# get yes or no input
 #
 # requires:
 #  $1 variable name (no spaces)
@@ -538,6 +409,217 @@ function get_yn {
   eval "$1='$RL'"
 }
 
+# first run function to init the configuration store
+#
+function initialize_configuration {
+  test -d $CONF && exit 2
+  mkdir -p $CONF/template/patch $CONF/{binary,net,value}
+  git init --quiet $CONF
+  touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
+  cd $CONF || err
+  printf -- "*\\.swp\nbinary\n" >.gitignore
+  git add *
+  git commit -a -m'initial commit' >/dev/null 2>&1
+  cd - >/dev/null 2>&1
+  return 0
+}
+
+# convert an ip address to decimal value
+#
+# SOURCE: http://stackoverflow.com/questions/10768160/ip-address-converter
+#
+# requires:
+#   $1  ip address
+#
+function ip2dec {
+  local a b c d ip=$1
+  IFS=. read -r a b c d <<< "$ip"
+  printf '%d\n' "$((a * 256 ** 3 + b * 256 ** 2 + c * 256 + d))"
+  return 0
+}
+
+# add or subtract an arbitrary number of addresses
+#   from an ip address
+#
+# this is explictely designed to ignore subnet boundaries
+#   but will always return a valid ip address
+#
+# requires:
+#   $1  ip address
+#   $2  integer value (+/- X)
+#
+function ipadd {
+  test $# -eq 2 || return 1
+  echo $( dec2ip $(( $( ip2dec $1 ) + $2 )) )
+  return 0
+}
+
+# convert subnet mask into subnet mask bits
+#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+#
+# required
+#   $1    W.X.Y.Z (a valid subnet mask)
+#
+function mask2cdr {
+  valid_mask "$1" || return 1
+  # Assumes there's no "255." after a non-255 byte in the mask
+  local x=${1##*255.}
+  set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
+  x=${1%%$3*}
+  echo $(( $2 + (${#x}/4) ))
+  return 0
+}
+
+function octal2perm {
+  local N="$1" R=r W=w X=x
+  if ! [ -z "$2" ]; then local R=s W=s X=t; fi
+  if [ $(( $N - 4 )) -ge 0 ]; then N=$(( $N - 4 )); printf -- $R; else printf -- '-'; fi
+  if [ $(( $N - 2 )) -ge 0 ]; then N=$(( $N - 2 )); printf -- $W; else printf -- '-'; fi
+  if [ $(( $N - 1 )) -ge 0 ]; then N=$(( $N - 1 )); printf -- $X; else printf -- '-'; fi
+}
+
+function octal2text {
+  if [ -z "$1" ]; then local N="0000"; else local N="$1"; fi
+  printf -- "$N" |grep -qE '^[0-7]{3,4}$' || exit 1
+  printf -- "$N" |grep -qE '^[0-7]{4}$' || N="0$N"
+  octal2perm ${N:0:1} sticky
+  octal2perm ${N:1:1}
+  octal2perm ${N:2:1}
+  octal2perm ${N:3:1}
+}
+
+function usage {
+  echo "2Checkout SCS Application
+Manage application/server configurations and base templates across all environments.
+
+Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
+              $0 commit [-m 'commit message']
+              $0 cancel [--force]
+              $0 diff | status
+
+Run commit when complete to finalize changes.
+
+Component:
+  application
+    file [--add|--remove|--list]
+  build
+  constant
+  environment
+    application [<environment>] [--list] [<location>]
+    application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+    application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+    constant [--define|--undefine|--list] [<environment>] [<constant>]
+  file
+    edit [<name>] [--environment <name>]
+  location
+    [<name>] [--assign|--unassign|--list]
+    [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+  network
+    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned|--scan]
+    <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+  resource
+    <value> [--assign] [<system>]
+    <value> [--unassign|--list]
+  system
+    <value> [--audit|--check|--deploy|--release|--vars]
+
+Verbs - all top level components:
+  create
+  delete [<name>]
+  list
+  show [<name>]
+  update [<name>]
+" >&2
+  exit 1
+}
+
+# Test an IP address for validity:
+# Usage:
+#      valid_ip IP_ADDRESS
+#      if [[ $? -eq 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_ip IP_ADDRESS; then echo good; else echo bad; fi
+#
+# SOURCE: http://www.linuxjournal.com/content/validating-ip-address-bash-script
+#
+function valid_ip() {
+    local  ip=$1
+    local  stat=1
+
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS; IFS='.'; ip=($ip); IFS=$OIFS
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
+            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
+# Test a Network Mask for validity:
+# Usage:
+#      valid_mask NETMASK
+#      if [[ $? -et 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_mask NETMASK; then echo good; else echo bad; fi
+#
+function valid_mask() {
+  test $# -eq 1 || return 1
+  # extract mask into four numbers
+  IFS=. read -r i1 i2 i3 i4 <<< "$1"
+  # verify each number is not null
+  [[ -z "$i1" || -z "$i2" || -z "$i3" || -z "$i4" ]] && return 1
+  # verify each value is numeric only and a positive integer
+  test "${1//[^0-9]/}" != "${i1}${i2}${i3}${i4}" && return 1
+  # verify any number less than 255 has 255s preceding and 0 following
+  [[ $i4 -gt 0 && $i4 -lt 255 && "$i1$i2$i3" != "255255255" ]] && return 1
+  [[ $i3 -gt 0 && $i3 -lt 255 && "$i1$i2$i4" != "2552550" ]] && return 1
+  [[ $i2 -gt 0 && $i2 -lt 255 && "$i1$i3$i4" != "25500" ]] && return 1
+  [[ $i1 -gt 0 && $i1 -lt 255 && "$i2$i3$i4" != "000" ]] && return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i1 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i2 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i4 " || return 1
+  return 0
+}
+
+
+  #####  ### #######       # #     #  #####   #####  
+ #     #  #     #         #  #     # #     # #     # 
+ #        #     #        #   #     # #       #       
+ #  ####  #     #       #    #     # #        #####  
+ #     #  #     #      #      #   #  #             # 
+ #     #  #     #     #        # #   #     # #     # 
+  #####  ###    #    #          #     #####   ##### 
+
+# cancel changes and switch back to master
+#
+# optional:
+#   --force  force the cancel even if this isn't your branch
+#
+function cancel_modify {
+  # get the running user
+  get_user
+  # switch directories
+  pushd $CONF >/dev/null 2>&1 || err
+  # get change count
+  L=`git status -s |wc -l 2>/dev/null`
+  # make sure we are not on master
+  git branch |grep -E '^\*' |grep -q master; M=$?
+  if [[ $M -eq 0 && $L -gt 0 ]]; then err "Error -- changes on master branch must be resolved manually."; elif [ $M -eq 0 ]; then return; fi
+  # make sure we are on the correct branch...
+  git branch |grep -E '^\*' |grep -q $USERNAME
+  if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
+  # confirm
+  get_yn DF "Are you sure you want to discard outstanding changes (y/n)? "
+  if [ "$DF" == "y" ]; then
+    git clean -f >/dev/null 2>&1
+    git reset --hard >/dev/null 2>&1
+    git checkout master >/dev/null 2>&1
+    git branch -D $USERNAME >/dev/null 2>&1
+  fi
+  popd >/dev/null 2>&1
+}
+
 # use this for anything that modifies a configuration file to keep changes committed
 #
 function commit_file {
@@ -550,56 +632,85 @@ function commit_file {
   popd >/dev/null 2>&1
 }
 
-# generic choose function, since they are all exactly the same
+# output the status (modified, added, deleted files list)
 #
-# required:
-#  $1 name of file to search
-#  $2 value to search for in the list
-#  $3 variable to return
+function git_status {
+  pushd $CONF >/dev/null 2>&1
+  git status
+  popd >/dev/null 2>&1
+}
+
+# manage changes and locking with branches
 #
-# optional:
-#  $4 value to pass to list function
-#
-function generic_choose {
-  printf -- $1 |grep -qE '^[aeiou]' && AN="an" || AN="a"
-  [ "$1" == "resource" ] && M="," || M="^"
-  test ! -z "$2" && grep -qiE "$M$2," ${CONF}/$1
-  if [ $? -ne 0 ]; then
-    eval $1_list \"$4\"
-    printf -- "\n"
-    get_input I "Please specify $AN $1"
-    test "$1" == "constant" && I=$( printf -- $I |tr 'a-z' 'A-Z' )
-    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
-    printf -- "\n"
-    eval $3="$I"
-    return 1
-  elif [ "$1" == "constant" ]; then
-    eval $3=$( printf -- $2 |tr 'a-z' 'A-Z' )
+function start_modify {
+  # get the running user
+  get_user
+  # the current branch must either be master or the name of this user to continue
+  cd $CONF || err
+  git branch |grep -E '^\*' |grep -q master
+  if [ $? -eq 0 ]; then
+    git branch $USERNAME >/dev/null 2>&1
+    git checkout $USERNAME >/dev/null 2>&1
   else
-    eval $3="$2"
+    git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
   fi
   return 0
 }
 
-# generic delete function, since they are all exactly the same
+# merge changes back into master and remove the branch
 #
-function generic_delete {
-  test -z "$1" && return
-  start_modify
-  if [ -z "$2" ]; then
-    eval ${1}_list
-    printf -- "\n"
-    get_input C "`printf -- $1 |sed -e "s/\b\(.\)/\u\1/g"` to Delete"
+# optional:
+#  -m   commit message
+#
+function stop_modify {
+  # optional commit message
+  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
+  if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed 's/^..//g' ); shift; fi
+  # get the running user
+  get_user
+  # switch directories
+  pushd $CONF >/dev/null 2>&1 || err
+  # check for modifications
+  L=`git status -s |wc -l 2>/dev/null`
+  # check if the current branch is master
+  git branch |grep -E '^\*' |grep -q master
+  test $? -eq 0 && M=1 || M=0
+  # return if there are no modifications and we are on the master branch
+  if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
+  # error if master was modified
+  if [[ $L -ne 0 && $M -eq 1 ]]; then err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."; fi
+  if [ $L -gt 0 ]; then
+    # there are modifictions on a branch
+    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)? "
+    test "$DF" == "y" && git diff
+    get_yn DF "Do you want to commit the changes (y/n)? "
+    if [ "$DF" != "y" ]; then return 0; fi
+    git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
   else
-    C="$2"
+    get_yn DF "Do you want to review the changes from master (y/n)? "
+    test "$DF" == "y" && git diff master
+    get_yn DF "Do you want to commit the changes (y/n)? "
+    if [ "$DF" != "y" ]; then return 0; fi
   fi
-  grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
-  get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" != "y" ]; then return 1; fi
-  sed -i '/^'$C',/d' ${CONF}/$1
-  commit_file $1
-  return 0
+  if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
+    git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
+  fi
+  git checkout master >/dev/null 2>&1 || err "Error switching to master"
+  git merge --squash $USERNAME >/dev/null 2>&1
+  if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
+  git commit -a -m"$MSG" >/dev/null 2>&1
+  git branch -D $USERNAME >/dev/null 2>&1
+  popd >/dev/null 2>&1
 }
+
+
+    #    ######  ######  #       ###  #####     #    ####### ### ####### #     # 
+   # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    # 
+  #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   # 
+ #     # ######  ######  #        #  #       #     #    #     #  #     # #  #  # 
+ ####### #       #       #        #  #       #######    #     #  #     # #   # # 
+ #     # #       #       #        #  #     # #     #    #     #  #     # #    ## 
+ #     # #       #       ####### ###  #####  #     #    #    ### ####### #     #
 
 function application_create {
   start_modify
@@ -709,6 +820,15 @@ function application_update {
   commit_file application
 }
 
+
+ ######  #     # ### #       ######  
+ #     # #     #  #  #       #     # 
+ #     # #     #  #  #       #     # 
+ ######  #     #  #  #       #     # 
+ #     # #     #  #  #       #     # 
+ #     # #     #  #  #       #     # 
+ ######   #####  ### ####### ######  
+
 # return all applications linked to a build
 #
 function build_application_list {
@@ -763,6 +883,15 @@ function build_update {
   commit_file build
 }
 
+
+  #####  ####### #     #  #####  #######    #    #     # ####### 
+ #     # #     # ##    # #     #    #      # #   ##    #    #    
+ #       #     # # #   # #          #     #   #  # #   #    #    
+ #       #     # #  #  #  #####     #    #     # #  #  #    #    
+ #       #     # #   # #       #    #    ####### #   # #    #    
+ #     # #     # #    ## #     #    #    #     # #    ##    #    
+  #####  ####### #     #  #####     #    #     # #     #    #
+
 function constant_create {
   start_modify
   # get user input and validate
@@ -789,6 +918,17 @@ function constant_list {
   awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |sed 's/^/   /'
 }
 
+# combine two sets of variables and values, only including the first instance of duplicates
+#
+# example on including duplicates from first file only:
+#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+#
+function constant_list_dedupe {
+  if ! [ -f $1 ]; then cat $2; return; fi
+  if ! [ -f $2 ]; then cat $1; return; fi
+  join -a1 -a2 -t',' <(sort -t',' -k1 $1) <(sort -t',' -k1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+}
+
 function constant_show {
   test $# -eq 1 || err "Provide the constant name"
   C="$( printf -- "$1" |tr 'a-z' 'A-Z' )"
@@ -808,6 +948,15 @@ function constant_update {
   sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
 }
+
+
+ ####### #     # #     # ### ######  ####### #     # #     # ####### #     # ####### 
+ #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #    
+ #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #    
+ #####   #  #  # #     #  #  ######  #     # #  #  # #  #  # #####   #  #  #    #    
+ #       #   # #  #   #   #  #   #   #     # #   # # #     # #       #   # #    #    
+ #       #    ##   # #    #  #    #  #     # #    ## #     # #       #    ##    #    
+ ####### #     #    #    ### #     # ####### #     # #     # ####### #     #    #
 
 # manipulate applications at a specific environment at a specific location
 #
@@ -1095,6 +1244,15 @@ function environment_update {
   commit_file environment
 }
 
+
+ ####### ### #       ####### 
+ #        #  #       #       
+ #        #  #       #       
+ #####    #  #       #####   
+ #        #  #       #       
+ #        #  #       #       
+ #       ### ####### ####### 
+
 # create a new file definition
 #
 # file types:
@@ -1369,6 +1527,15 @@ function file_update {
   commit_file file file-map
 }
 
+
+ #       #######  #####     #    ####### ### ####### #     # 
+ #       #     # #     #   # #      #     #  #     # ##    # 
+ #       #     # #        #   #     #     #  #     # # #   # 
+ #       #     # #       #     #    #     #  #     # #  #  # 
+ #       #     # #       #######    #     #  #     # #   # # 
+ #       #     # #     # #     #    #     #  #     # #    ## 
+ ####### #######  #####  #     #    #    ### ####### #     #
+
 function location_create {
   start_modify
   # get user input and validate
@@ -1528,6 +1695,15 @@ function location_update {
   commit_file location
 }
 
+
+ #     # ####### ####### #     # ####### ######  #    # 
+ ##    # #          #    #  #  # #     # #     # #   #  
+ # #   # #          #    #  #  # #     # #     # #  #   
+ #  #  # #####      #    #  #  # #     # ######  ###    
+ #   # # #          #    #  #  # #     # #   #   #  #   
+ #    ## #          #    #  #  # #     # #    #  #   #  
+ #     # #######    #     ## ##  ####### #     # #    #
+
 # network functions
 #
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
@@ -1543,6 +1719,47 @@ function network_byname {
     ipam) network_ipam $1 ${@:3};;
     *) network_show $1;;
   esac
+}
+
+function network_create {
+  start_modify
+  # get user input and validate
+  get_input LOC "Location Code" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input ZONE "Network Zone" --options core,edge
+  get_input ALIAS "Site Alias"
+  # validate unique name
+  grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
+  get_input DESC "Description" --nc --null
+  get_input NET "Network"
+  get_input MASK "Subnet Mask"
+  get_input BITS "Subnet Bits"
+  get_input GW "Gateway Address" --null
+  get_input VLAN "VLAN Tag/Number" --null
+  # add
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC}\n" >>$CONF/network
+  test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
+  printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
+  commit_file network ${CONF}/${LOC}/network
+}
+
+function network_delete {
+  start_modify
+  if [ -z "$1" ]; then
+    network_list
+    printf -- "\n"
+    get_input C "Network to Delete (loc-zone-alias)"
+  else
+    C="$1"
+  fi
+  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then
+    IFS="," read -r LOC ZONE ALIAS DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+    sed -i '/^'${C//-/,}',/d' ${CONF}/network
+    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
+  fi
+  commit_file network ${CONF}/${LOC}/network
 }
 
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
@@ -1776,47 +1993,6 @@ function network_ipam_remove_range {
   fi
 }
 
-function network_create {
-  start_modify
-  # get user input and validate
-  get_input LOC "Location Code" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input ZONE "Network Zone" --options core,edge
-  get_input ALIAS "Site Alias"
-  # validate unique name
-  grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
-  get_input DESC "Description" --nc --null
-  get_input NET "Network"
-  get_input MASK "Subnet Mask"
-  get_input BITS "Subnet Bits"
-  get_input GW "Gateway Address" --null
-  get_input VLAN "VLAN Tag/Number" --null
-  # add
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC}\n" >>$CONF/network
-  test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
-  printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
-  commit_file network ${CONF}/${LOC}/network
-}
-
-function network_delete {
-  start_modify
-  if [ -z "$1" ]; then
-    network_list
-    printf -- "\n"
-    get_input C "Network to Delete (loc-zone-alias)"
-  else
-    C="$1"
-  fi
-  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
-  get_yn RL "Are you sure (y/n)? "
-  if [ "$RL" == "y" ]; then
-    IFS="," read -r LOC ZONE ALIAS DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-    sed -i '/^'${C//-/,}',/d' ${CONF}/network
-    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
-  fi
-  commit_file network ${CONF}/${LOC}/network
-}
-
 function network_list {
   NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -1874,6 +2050,15 @@ function network_update {
   fi
 }
 
+
+ ####### ####### #     # ######  #          #    ####### ####### 
+    #    #       ##   ## #     # #         # #      #    #       
+    #    #       # # # # #     # #        #   #     #    #       
+    #    #####   #  #  # ######  #       #     #    #    #####   
+    #    #       #     # #       #       #######    #    #       
+    #    #       #     # #       #       #     #    #    #       
+    #    ####### #     # #       ####### #     #    #    #######
+
 # locate template variables and replace with actual data
 #
 # the template file WILL be modified!
@@ -1904,6 +2089,15 @@ function parse_template {
   done
   return 0
 }
+
+
+ ######  #######  #####  ####### #     # ######   #####  ####### 
+ #     # #       #     # #     # #     # #     # #     # #       
+ #     # #       #       #     # #     # #     # #       #       
+ ######  #####    #####  #     # #     # ######  #       #####   
+ #   #   #             # #     # #     # #   #   #       #       
+ #    #  #       #     # #     # #     # #    #  #     # #       
+ #     # #######  #####  #######  #####  #     #  #####  #######
 
 # manage or list resource assignments
 #
@@ -2051,6 +2245,15 @@ function resource_update {
   commit_file resource
 }
 
+
+  #####  #     #  #####  ####### ####### #     # 
+ #     #  #   #  #     #    #    #       ##   ## 
+ #         # #   #          #    #       # # # # 
+  #####     #     #####     #    #####   #  #  # 
+       #    #          #    #    #       #     # 
+ #     #    #    #     #    #    #       #     # 
+  #####     #     #####     #    ####### #     #
+
 # system functions
 #
 # <value> [--audit|--check|--deploy|--release|--vars]
@@ -2190,29 +2393,49 @@ function system_constant_list {
   rm -f $TMP/clist{,.1}
 }
 
-# combine two sets of variables and values, only including the first instance of duplicates
-#
-# example on including duplicates from first file only:
-#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
-#
-function constant_list_dedupe {
-  if ! [ -f $1 ]; then cat $2; return; fi
-  if ! [ -f $2 ]; then cat $1; return; fi
-  join -a1 -a2 -t',' <(sort -t',' -k1 $1) <(sort -t',' -k1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+function system_create {
+  start_modify
+  # get user input and validate
+  get_input NAME "Hostname"
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input IP "Primary IP"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  # validate unique name
+  grep -qE "^$NAME," $CONF/system && err "System already defined."
+  # add
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
+  commit_file system
 }
 
-# output list of resources assigned to a system
+function system_delete {
+  generic_delete system $1
+}
+
+# deploy release to system
 #
-function system_resource_list {
-  generic_choose system "$1" C && shift
-  # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
-  for APP in $( build_application_list "$BUILD" ); do
-    # get any localized resources for the application
-    grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2,5
-  done
-  # add any host assigned resources to the list
-  grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2,5
+function system_deploy {
+  test $# -gt 0 || err
+  nc -z -w 2 $1 22 >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$1'\n"; exit 1; fi
+  printf -- "Generating release...\n"
+  FILE=$( system_release $1 2>/dev/null |tail -n1 )
+  if [ -z "$FILE" ]; then printf -- "Error generating release for '$1'\n"; exit 1; fi
+  if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
+  printf -- "Copying release to remote system...\n"
+  scp $FILE $1: >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
+  printf -- "Cleaning up...\n"
+  rm -f $FILE
+  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./scs-install.sh\n\n"
+}
+
+function system_list {
+  NUM=$( wc -l ${CONF}/system |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined system${S}."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/system |sort |sed 's/^/   /'
 }
 
 function system_release {
@@ -2312,74 +2535,18 @@ function system_release {
   fi
 }
 
-# deploy release to system
+# output list of resources assigned to a system
 #
-function system_deploy {
-  test $# -gt 0 || err
-  nc -z -w 2 $1 22 >/dev/null 2>&1
-  if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$1'\n"; exit 1; fi
-  printf -- "Generating release...\n"
-  FILE=$( system_release $1 2>/dev/null |tail -n1 )
-  if [ -z "$FILE" ]; then printf -- "Error generating release for '$1'\n"; exit 1; fi
-  if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
-  printf -- "Copying release to remote system...\n"
-  scp $FILE $1: >/dev/null 2>&1
-  if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
-  printf -- "Cleaning up...\n"
-  rm -f $FILE
-  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./scs-install.sh\n\n"
-}
-
-# generate all system variables and settings
-#
-function system_vars {
-  test $# -eq 1 || err "System name required"
+function system_resource_list {
+  generic_choose system "$1" C && shift
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
-  # output system data
-  echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
-  # pull system resources
-  for R in $( system_resource_list $NAME ); do
-    IFS="," read -r TYPE VAL RN <<< "$R"
-    test -z "$RN" && RN="$TYPE"
-    if [ "$TYPE" == "cluster_ip" ]; then
-      echo "resource.$RN $VAL"
-    else
-      echo "system.$RN $VAL"
-    fi
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  for APP in $( build_application_list "$BUILD" ); do
+    # get any localized resources for the application
+    grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2,5
   done
-  # pull constants
-  for C in $( system_constant_list $NAME ); do
-    IFS="," read -r CN VAL <<< "$C"
-    echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
-  done
-}
-
-function system_create {
-  start_modify
-  # get user input and validate
-  get_input NAME "Hostname"
-  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input IP "Primary IP"
-  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  # validate unique name
-  grep -qE "^$NAME," $CONF/system && err "System already defined."
-  # add
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
-  commit_file system
-}
-
-function system_delete {
-  generic_delete system $1
-}
-
-function system_list {
-  NUM=$( wc -l ${CONF}/system |awk '{print $1}' )
-  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined system${S}."
-  test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/system |sort |sed 's/^/   /'
+  # add any host assigned resources to the list
+  grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2,5
 }
 
 function system_show {
@@ -2439,94 +2606,65 @@ function system_update {
   commit_file system
 }
 
-function usage {
-  echo "2Checkout SCS Application
-Manage application/server configurations and base templates across all environments.
-
-Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
-              $0 commit [-m 'commit message']
-              $0 cancel [--force]
-              $0 diff | status
-
-Run commit when complete to finalize changes.
-
-Component:
-  application
-    file [--add|--remove|--list]
-  build
-  constant
-  environment
-    application [<environment>] [--list] [<location>]
-    application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
-    application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
-    constant [--define|--undefine|--list] [<environment>] [<constant>]
-  file
-    edit [<name>] [--environment <name>]
-  location
-    [<name>] [--assign|--unassign|--list]
-    [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
-  network
-    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned|--scan]
-    <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
-  resource
-    <value> [--assign] [<system>]
-    <value> [--unassign|--list]
-  system
-    <value> [--audit|--check|--deploy|--release|--vars]
-
-Verbs - all top level components:
-  create
-  delete [<name>]
-  list
-  show [<name>]
-  update [<name>]
-" >&2
-  exit 1
+# generate all system variables and settings
+#
+function system_vars {
+  test $# -eq 1 || err "System name required"
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  # output system data
+  echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
+  # pull system resources
+  for R in $( system_resource_list $NAME ); do
+    IFS="," read -r TYPE VAL RN <<< "$R"
+    test -z "$RN" && RN="$TYPE"
+    if [ "$TYPE" == "cluster_ip" ]; then
+      echo "resource.$RN $VAL"
+    else
+      echo "system.$RN $VAL"
+    fi
+  done
+  # pull constants
+  for C in $( system_constant_list $NAME ); do
+    IFS="," read -r CN VAL <<< "$C"
+    echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
+  done
 }
 
-function expand_verb_alias {
-  case "$1" in
-    a|ap|app) printf -- 'application';;
-    co|con|cons|const) printf -- 'constant';;
-    cr) printf -- 'create';;
-    d|de|del) printf -- 'delete';;
-    f) printf -- 'file';;
-    l|li|lis|ls) printf -- 'list';;
-    s|sh|sho) printf -- 'show';;
-    u|up|upd|updat) printf -- 'update';;
-    *) printf -- "$1";;
-  esac
-}
 
-function expand_subject_alias {
-  case "$1" in
-    a|ap|app) printf -- 'application';;
-    b|bld) printf -- 'build';;
-    ca|can) printf -- 'cancel';;
-    con|cons|const) printf -- 'constant';;
-    com) printf -- 'commit';;
-    d|di|dif) printf -- 'diff';;
-    e|en|env) printf -- 'environment';;
-    f) printf -- 'file';;
-    l|lo|loc) printf -- 'location';;
-    n|ne|net) printf -- 'network';;
-    r|re|res) printf -- 'resource';;
-    st|sta|stat) printf -- 'status';;
-    sy|sys|syst) printf -- 'system';;
-    *) printf -- "$1";;
-  esac
-}
+  #####  ####### ####### ####### ### #     #  #####   #####  
+ #     # #          #       #     #  ##    # #     # #     # 
+ #       #          #       #     #  # #   # #       #       
+  #####  #####      #       #     #  #  #  # #  ####  #####  
+       # #          #       #     #  #   # # #     #       # 
+ #     # #          #       #     #  #    ## #     # #     # 
+  #####  #######    #       #    ### #     #  #####   ##### 
 
-# variables
+# settings
+#
+# local root for scs storage files, settings, and git repository
 CONF=/usr/local/etc/lpad/app-config
-RELEASEDIR=/bkup1/lpad-releases
+#
+# local path to store release archives
+RELEASEDIR=/bkup1/scs-release
+#
+# path to the temp file for patching configuration files
 TMP=/tmp/generate-patch.$$
-USERNAME=""
+
+
+ #     #    #    ### #     # 
+ ##   ##   # #    #  ##    # 
+ # # # #  #   #   #  # #   # 
+ #  #  # #     #  #  #  #  # 
+ #     # #######  #  #   # # 
+ #     # #     #  #  #    ## 
+ #     # #     # ### #     #
 
 # set local variables
 APP=""
 ENV=""
 FILE=""
+USERNAME=""
 
 trap cleanup_and_exit EXIT INT
 
