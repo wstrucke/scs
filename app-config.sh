@@ -18,6 +18,8 @@
 #     file-map                                             application to file map
 #     location                                             file
 #     network                                              file
+#     net                                                  directory
+#     net/a.b.c.0                                          file with IP index for IPAM component
 #     resource                                             file
 #     system                                               file
 #     template/                                            directory containing global application templates
@@ -53,7 +55,7 @@
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch $CONF/{binary,value}
+  mkdir -p $CONF/template/patch $CONF/{binary,net,value}
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
   cd $CONF || err
@@ -213,6 +215,169 @@ function octal2text {
   octal2perm ${N:1:1}
   octal2perm ${N:2:1}
   octal2perm ${N:3:1}
+}
+
+# get the network address for a given ip and subnet mask
+#
+# SOURCE:
+# http://stackoverflow.com/questions/15429420/given-the-ip-and-netmask-how-can-i-calculate-the-network-address-using-bash
+#
+# This is completely equivilent to `ipcalc -n $1 $2`, but that is not
+#   necessarily available on all operating systems.
+#
+# required:
+#   $1  ip address
+#   $2  subnet mask
+#
+function get_network {
+  test $# -eq 2 || return 1
+  valid_ip $1 || return 1
+  local J="$2"
+  test "$2" == "${2/[^0-9]/}" && J=$( cdr2mask $2 )
+  IFS=. read -r i1 i2 i3 i4 <<< "$1"
+  IFS=. read -r m1 m2 m3 m4 <<< "$J"
+  printf "%d.%d.%d.%d\n" "$((i1 & m1))" "$(($i2 & m2))" "$((i3 & m3))" "$((i4 & m4))"
+  return 0
+}
+
+# return the number of possible IPs in a network based in the cidr mask
+#
+# required:
+#   $1   X (where X is the CIDR mask: 0 <= X <= 32 )
+#
+function cdr2size {
+  test $# -ne 1 && return 1
+  test "$1" != "${1/[^0-9]/}" && return 1
+  if [[ $1 -lt 0 || $1 -gt 32 ]]; then return 1; fi
+  echo $(( 1 << ( ( $1 - 32 ) * -1 ) ))
+  return 0
+}
+
+# convert subnet mask bits into a network mask
+#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+#
+# required:
+#   $1    X (where X is greater than or equal to 0 and less than or equal to 32)
+#
+function cdr2mask {
+  test $# -ne 1 && return 1
+  test "$1" != "${1/[^0-9]/}" && return 1
+  if [[ $1 -lt 0 || $1 -gt 32 ]]; then return 1; fi
+  set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
+  [ $1 -gt 1 ] && shift $1 || shift
+  echo ${1-0}.${2-0}.${3-0}.${4-0}
+  return 0
+}
+
+# convert subnet mask into subnet mask bits
+#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+#
+# required
+#   $1    W.X.Y.Z (a valid subnet mask)
+#
+function mask2cdr {
+  valid_mask "$1" || return 1
+  # Assumes there's no "255." after a non-255 byte in the mask
+  local x=${1##*255.}
+  set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
+  x=${1%%$3*}
+  echo $(( $2 + (${#x}/4) ))
+  return 0
+}
+
+# convert a decimal value to an ipv4 address
+#
+# SOURCE: http://stackoverflow.com/questions/10768160/ip-address-converter
+#
+function dec2ip {
+  local ip delim dec=$1
+  for e in {3..0}; do
+    ((octet = dec / (256 ** e) ))
+    ((dec -= octet * 256 ** e))
+    ip+=$delim$octet
+    delim=.
+  done
+  printf '%s\n' "$ip"
+  return 0
+}
+
+# convert an ip address to decimal value
+#
+# SOURCE: http://stackoverflow.com/questions/10768160/ip-address-converter
+#
+# requires:
+#   $1  ip address
+#
+function ip2dec {
+  local a b c d ip=$1
+  IFS=. read -r a b c d <<< "$ip"
+  printf '%d\n' "$((a * 256 ** 3 + b * 256 ** 2 + c * 256 + d))"
+  return 0
+}
+
+# add or subtract an arbitrary number of addresses
+#   from an ip address
+#
+# this is explictely designed to ignore subnet boundaries
+#   but will always return a valid ip address
+#
+# requires:
+#   $1  ip address
+#   $2  integer value (+/- X)
+#
+function ipadd {
+  test $# -eq 2 || return 1
+  echo $( dec2ip $(( $( ip2dec $1 ) + $2 )) )
+  return 0
+}
+
+# Test an IP address for validity:
+# Usage:
+#      valid_ip IP_ADDRESS
+#      if [[ $? -eq 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_ip IP_ADDRESS; then echo good; else echo bad; fi
+#
+# SOURCE: http://www.linuxjournal.com/content/validating-ip-address-bash-script
+#
+function valid_ip() {
+    local  ip=$1
+    local  stat=1
+
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS; IFS='.'; ip=($ip); IFS=$OIFS
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
+            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
+# Test a Network Mask for validity:
+# Usage:
+#      valid_mask NETMASK
+#      if [[ $? -et 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_mask NETMASK; then echo good; else echo bad; fi
+#
+function valid_mask() {
+  test $# -eq 1 || return 1
+  # extract mask into four numbers
+  IFS=. read -r i1 i2 i3 i4 <<< "$1"
+  # verify each number is not null
+  [[ -z "$i1" || -z "$i2" || -z "$i3" || -z "$i4" ]] && return 1
+  # verify each value is numeric only and a positive integer
+  test "${1//[^0-9]/}" != "${i1}${i2}${i3}${i4}" && return 1
+  # verify any number less than 255 has 255s preceding and 0 following
+  [[ $i4 -gt 0 && $i4 -lt 255 && "$i1$i2$i3" != "255255255" ]] && return 1
+  [[ $i3 -gt 0 && $i3 -lt 255 && "$i1$i2$i4" != "2552550" ]] && return 1
+  [[ $i2 -gt 0 && $i2 -lt 255 && "$i1$i3$i4" != "25500" ]] && return 1
+  [[ $i1 -gt 0 && $i1 -lt 255 && "$i2$i3$i4" != "000" ]] && return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i1 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i2 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i4 " || return 1
+  return 0
 }
 
 # input functions
@@ -1304,6 +1469,110 @@ function location_update {
   commit_file location
 }
 
+# network functions
+#
+# <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
+# <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+function network_byname {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  # function
+  case "$2" in
+    ip) network_ip $1 ${@:3};;
+    ipam) network_ipam $1 ${@:3};;
+    *) network_show $1;;
+  esac
+}
+
+# <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
+function network_ip {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  # function
+  case "$2" in
+    --assign) echo "Not implemented";;
+    --unassign) echo "Not implemented";;
+    --list) echo "Not implemented: $@";;
+    --list-available) echo "Not implemented";;
+    --list-assigned) echo "Not implemented";;
+    *) echo "Not implemented: $@";;
+  esac
+}
+
+# <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+function network_ipam {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  # function
+  case "$2" in
+    --add-range) network_ipam_add_range $1 ${@:3};;
+    --remove-range) echo "Not implemented";;
+    --reserve-range) echo "Not implemented";;
+    --free-range) echo "Not implemented";;
+    *) echo "Not implemented: $@";;
+  esac
+}
+
+# add an available range of IPs
+#   can not exceed the size of the network
+#
+# arguments:
+#   loc-zone-alias  required
+#   start-ip/mask   optional ip and optional mask (or bits)
+#   end-ip          optional end ip
+#
+function network_ipam_add_range {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  test $# -gt 1 || err "An IP and mask or IP Range is required"
+  # initialize variables
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR; shift
+  local NETIP NETLAST NETCIDR
+  # first check if a mask was provided in the first address
+  printf -- "$1" |grep -q "/"
+  if [ $? -eq 0 ]; then
+    FIRST_IP=$( printf -- "$1" |sed 's%/.*%%' )
+    CIDR=$( printf -- "$1" |sed 's%.*/%%' )
+  else
+    FIRST_IP=$1
+  fi
+  # make sure the provided IP is legit
+  valid_ip $FIRST_IP || err "An invalid IP address was provided"
+  if [ ! -z "$2" ]; then LAST_IP=$2; fi
+  if [ ! -z "$CIDR" ]; then
+    # verify the first IP is the same as the network IP if a CIDR was provided
+    test "$( get_network $FIRST_IP $CIDR )" != "$FIRST_IP" && err "The provided address was not the first in the specified subnet. Use a range instead."
+    # get or override the last IP if a CIDR was provided
+    LAST_IP=$( ipadd $FIRST_IP $(( $( cdr2size $CIDR ) - 1 )) )
+  fi
+  # make sure the last IP is legit too
+  valid_ip $LAST_IP || err "An invalid IP address was provided"
+  # make sure both first and last are in the range for the provided network
+  read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # get the expected last ip in the network
+  NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
+  [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
+  [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # loop through the ip range and add each address to the appropriate file
+  for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
+    # get the file name
+    FILENAME=$( get_network $( dec2ip $i ) 24 )
+    grep -qE "^$i," ${CONF}/net/$FILENAME 2>/dev/null
+    if [ $? -eq 0 ]; then echo "Error: entry already exists for $( dec2ip $i ). Skipping..." >&2; continue; fi
+    printf -- "${i},$( dec2ip $i ),N,N,,,,,\n" >>${CONF}/net/$FILENAME
+  done
+  git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+  commit_file ${CONF}/net/$FILENAME
+}
+
 function network_create {
   start_modify
   # get user input and validate
@@ -1994,6 +2263,8 @@ Component:
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
   network
+    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
+    <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
   resource
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
@@ -2084,7 +2355,7 @@ if [ -z "$VERB" ]; then VERB="list"; fi
 # validate subject and verb
 printf -- " application build constant environment file location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
-if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" ]]; then
+if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" ]]; then
   printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
@@ -2109,6 +2380,11 @@ elif [ "$SUBJ" == "location" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
     *) location_environment "$VERB" $@;;
+  esac
+elif [ "$SUBJ" == "network" ]; then
+  case "$VERB" in
+    create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
+    *) network_byname "$VERB" $@;;
   esac
 else
   eval ${SUBJ}_${VERB} $@
