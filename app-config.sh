@@ -1512,7 +1512,7 @@ function network_ipam {
   # function
   case "$2" in
     --add-range) network_ipam_add_range $1 ${@:3};;
-    --remove-range) echo "Not implemented";;
+    --remove-range) network_ipam_remove_range $1 ${@:3};;
     --reserve-range) echo "Not implemented";;
     --free-range) echo "Not implemented";;
     *) echo "Not implemented: $@";;
@@ -1561,6 +1561,8 @@ function network_ipam_add_range {
   NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
   [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
   [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # make the directory if needed
+  test ! -d ${CONF}/net && mkdir ${CONF}/net
   # loop through the ip range and add each address to the appropriate file
   for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
     # get the file name
@@ -1571,6 +1573,62 @@ function network_ipam_add_range {
   done
   git add ${CONF}/net/$FILENAME >/dev/null 2>&1
   commit_file ${CONF}/net/$FILENAME
+}
+
+# remove a range of IPs and 'forget' the assignments
+#
+# arguments:
+#   loc-zone-alias  required
+#   start-ip/mask   optional ip and optional mask (or bits)
+#   end-ip          optional end ip
+#
+function network_ipam_remove_range {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  test $# -gt 1 || err "An IP and mask or IP Range is required"
+  # initialize variables
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR; shift
+  local NETIP NETLAST NETCIDR
+  # first check if a mask was provided in the first address
+  printf -- "$1" |grep -q "/"
+  if [ $? -eq 0 ]; then
+    FIRST_IP=$( printf -- "$1" |sed 's%/.*%%' )
+    CIDR=$( printf -- "$1" |sed 's%.*/%%' )
+  else
+    FIRST_IP=$1
+  fi
+  # make sure the provided IP is legit
+  valid_ip $FIRST_IP || err "An invalid IP address was provided"
+  if [ ! -z "$2" ]; then LAST_IP=$2; fi
+  if [ ! -z "$CIDR" ]; then
+    # verify the first IP is the same as the network IP if a CIDR was provided
+    test "$( get_network $FIRST_IP $CIDR )" != "$FIRST_IP" && err "The provided address was not the first in the specified subnet. Use a range instead."
+    # get or override the last IP if a CIDR was provided
+    LAST_IP=$( ipadd $FIRST_IP $(( $( cdr2size $CIDR ) - 1 )) )
+  fi
+  # make sure the last IP is legit too
+  valid_ip $LAST_IP || err "An invalid IP address was provided"
+  # make sure both first and last are in the range for the provided network
+  read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # get the expected last ip in the network
+  NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
+  [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
+  [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # confirm
+  echo "This operation will remove records for $(( $( ip2dec $LAST_IP ) - $( ip2dec $FIRST_IP ) + 1 )) ip address(es)!"
+  get_yn RL "Are you sure (y/n)? "
+  if [ "$RL" == "y" ]; then
+    # loop through the ip range and remove each address from the appropriate file
+    for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
+      # get the file name
+      FILENAME=$( get_network $( dec2ip $i ) 24 )
+      sed -i "/^$i,/d" ${CONF}/net/$FILENAME 2>/dev/null
+    done
+    git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+    commit_file ${CONF}/net/$FILENAME
+  fi
 }
 
 function network_create {
