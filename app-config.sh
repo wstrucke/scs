@@ -35,20 +35,90 @@
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
 #
-# Locks are taken by using git branches
+# Locks are taken by using git branches. This should be revisited and improved - the current method cleanly avoids most merge conflicts.
 #
 # A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
 # A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
 #
 # A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an application in an environment.
 #
-# Use constants and resources in configuration files -- this is the whole point of lpac, mind you -- with this syntax:
+# Use constants and resources in configuration files -- this is the whole point of scs, mind you -- with this syntax:
 #  {% resource.name %}
 #  {% constant.name %}
 #  {% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 #
+# Data storage format -- flat file schema:
+#   Overall requirement - files are stored in CSV format and no field can have a comma because we have no concept of an escape character.
+#
+#   application
+#   --format: name,alias,build,cluster\n
+#   --storage:
+#
+#   build
+#   --format: name,role,description\n
+#   --storage:
+#
+#   constant
+#   --format: name,description\n
+#   --storage:
+#
+#   file
+#   --format: name,path,type,owner,group,octal,target,description\n
+#   --storage:
+#   ----name	      a unique name to reference this entry; sometimes the actual file name but since
+#                       there is only one namespace you may have to be creative.
+#   ----path          the path on the system this file will be deployed to.
+#   ----type          the type of entry, one of 'file', 'symlink', 'binary', 'copy', or 'download'.
+#   ----owner         user name
+#   ----group         group name
+#   ----octal         octal representation of the file permissions
+#   ----target        optional field; for type 'symlink', 'copy', or 'download' - what is the target
+#   ----description   a description for this entry. this is not used anywhere except "$0 file show <entry>"
+#
+#   file-map
+#   --format: filename,application\n
+#   --storage:
+#
+#   location
+#   --format: code,name,description\n
+#   --storage:
+#
+#   network
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description\n
+#   --storage:
+#
+#   net/a.b.c.0
+#   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+#   --storage:
+#
+#   resource
+#   --format: type,value,assign_type,assign_to,name,description\n
+#   --storage:
+#
+#   system
+#   --format: name,build,ip,location,environment\n
+#   --storage:
+#
+#   value/constant
+#   --format: constant,value\n
+#   --storage:
+#
+#   value/<environment>/constant
+#   --format: constant,value\n
+#   --storage:
+#
+#   value/<location>/<environment>
+#   --format: constant,value\n
+#   --storage:
+#
+#   <location>/network
+#   --format: zone,alias,network/cidr\n
+#   --storage:
+#
+#
 # TO DO:
 #   - system audit should check ownership and permissions on files
+#   - deleting an application should also unassign resources and undefine constants
 #
 
 # first run function to init the configuration store
@@ -1026,17 +1096,6 @@ function environment_update {
 }
 
 # create a new file definition
-#
-# storage fields:
-#   name	  a unique name to reference this entry; sometimes the actual file name but since
-#                   there is only one namespace you may have to be creative.
-#   path          the path on the system this file will be deployed to.
-#   type          the type of entry, one of 'file', 'symlink', 'binary', 'copy', or 'download'.
-#   owner         user name
-#   group         group name
-#   octal         octal representation of the file permissions
-#   target        optional field; for type 'symlink', 'copy', or 'download' - what is the target
-#   description   a description for this entry. this is not used anywhere except "$0 file show <entry>"
 #
 # file types:
 #   file          a regular text file
@@ -2036,8 +2095,8 @@ function system_audit {
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
-    # ignore lpac scripts
-    printf -- "$F" |grep -qE '^lpac-' && continue
+    # ignore scs scripts
+    printf -- "$F" |grep -qE '^scs-' && continue
     if [ -f $TMP/ACTUAL/$F ]; then
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=1
@@ -2162,18 +2221,18 @@ function system_release {
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
-  AUDITSCRIPT="$TMP/lpac-audit.sh"
+  AUDITSCRIPT="$TMP/scs-audit.sh"
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
-  RELEASESCRIPT="$TMP/lpac-install.sh"
+  RELEASESCRIPT="$TMP/scs-install.sh"
   FILES=()
   # create the audit script
-  printf -- "#!/bin/bash\n# lpac audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
+  printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
   printf -- "# warn if not target host\ntest \"\`hostname\`\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
   printf -- "PASS=0\n" >>$AUDITSCRIPT
   # create the installation script
-  printf -- "#!/bin/bash\n# lpac installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
+  printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
-  printf -- "logger -t lpac \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
+  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -2221,11 +2280,11 @@ function system_release {
       elif [ "$FTYPE" == "download" ]; then
         # add download to command script
         printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
-        printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t lpac \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
+        printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t scs \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
       elif [ "$FTYPE" == "delete" ]; then
         # add delete to command script
         printf -- "# delete '$FNAME' if it exists\n" >>$RELEASESCRIPT
-        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t lpac \"deleting path '/$FPTH'\"; fi\n" >>$RELEASESCRIPT
+        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>$RELEASESCRIPT
         # add audit check 
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
       fi
@@ -2241,7 +2300,7 @@ function system_release {
     printf -- "\nif [ \$PASS -eq 0 ]; then echo \"Audit PASSED\"; else echo \"Audit FAILED\"; fi\nexit \$PASS\n" >>$AUDITSCRIPT
     chmod +x $AUDITSCRIPT
     # finalize installation script
-    printf -- "\nlogger -t lpac \"installation complete\"\n" >>$RELEASESCRIPT
+    printf -- "\nlogger -t scs \"installation complete\"\n" >>$RELEASESCRIPT
     chmod +x $RELEASESCRIPT
     # generate the release
     pushd $TMP >/dev/null 2>&1
@@ -2268,7 +2327,7 @@ function system_deploy {
   if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
   printf -- "Cleaning up...\n"
   rm -f $FILE
-  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./lpac-install.sh\n\n"
+  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./scs-install.sh\n\n"
 }
 
 # generate all system variables and settings
