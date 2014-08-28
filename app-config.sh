@@ -55,7 +55,7 @@
 #   --storage:
 #
 #   build
-#   --format: name,role,description,os,arch\n
+#   --format: name,role,description,os,arch,disk,ram\n
 #   --storage:
 #
 #   constant
@@ -853,11 +853,13 @@ function build_create {
   get_input ROLE "Role" --null
   get_input OS "Operating System" --null --options $OSLIST
   get_input ARCH "Architecture" --null --options $OSARCH
+  get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$'
+  get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$'
   get_input DESC "Description" --nc --null
   # validate unique name
   grep -qE "^$NAME," $CONF/build && err "Build already defined."
   # add
-  printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH}\n" >>$CONF/build
+  printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM}\n" >>$CONF/build
   commit_file build
 }
 
@@ -880,18 +882,20 @@ function build_list_unformatted {
 function build_show {
   test $# -eq 1 || err "Provide the build name"
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
-  IFS="," read -r NAME ROLE DESC OS ARCH <<< "$( grep -E "^$1," ${CONF}/build )"
-  printf -- "Build: $NAME\nRole: $ROLE\nOperating System: $OS-$ARCH\nDescription: $DESC\n"
+  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM <<< "$( grep -E "^$1," ${CONF}/build )"
+  printf -- "Build: $NAME\nRole: $ROLE\nOperating System: $OS-$ARCH\nDisk Size (GB): $DISK\nMemory (MB): $RAM\nDescription: $DESC\n"
 }
 
 function build_update {
   start_modify
   generic_choose build "$1" C && shift
-  IFS="," read -r NAME ROLE DESC OS ARCH <<< "$( grep -E "^$C," ${CONF}/build )"
+  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM <<< "$( grep -E "^$C," ${CONF}/build )"
   get_input NAME "Build" --default "$NAME"
   get_input ROLE "Role" --default "$ROLE" --null
   get_input OS "Operating System" --default "$OS" --null --options $OSLIST
   get_input ARCH "Architecture" --default "$ARCH" --null --options $OSARCH
+  get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$' --default "$DISK"
+  get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}'/' ${CONF}/build
   commit_file build
@@ -2663,6 +2667,13 @@ function system_vars {
 #
 # local root for scs storage files, settings, and git repository
 CONF=/usr/local/etc/lpad/app-config
+#
+# default size of a new system's HDD in GB
+DEF_HDD=40
+#
+# default amount of RAM for a new system in MB
+#
+DEF_MEM=1024
 #
 # list of architectures for builds -- each arch in the list must be available
 #   for each OS version (below)
