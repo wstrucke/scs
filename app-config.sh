@@ -1494,15 +1494,101 @@ function network_ip {
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   # function
   case "$2" in
-    --assign) echo "Not implemented";;
-    --unassign) echo "Not implemented";;
+    --assign) network_ip_assign ${@:3};;
+    --unassign) network_ip_unassign ${@:3};;
     --list) echo "Not implemented: $@";;
     --list-available) echo "Not implemented";;
     --list-assigned) echo "Not implemented";;
+    --scan) network_ip_scan $1;;
     *) echo "Not implemented: $@";;
   esac
 }
 
+# assign an ip address to a system
+#
+# required:
+#   $1  IP
+#   $2  hostname
+#
+function network_ip_assign {
+  test $# -eq 2 || err "An IP and hostname are required."
+  valid_ip $1 || err "Invalid IP."
+  local RET FILENAME=$( get_network $1 24 )
+  # validate address
+  grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
+  [ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" ] && err "The requested IP is reserved."
+  [ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )" == "" ] || err "The requested IP is already assigned."
+  # load the ip data
+  IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
+  # check if the ip is in use (last ditch effort)
+  if [ $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
+    # mark the address as reserved
+    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+    echo "The requested IP is in use."
+    RET=1
+  else
+    # assign
+    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,$C,$D,$2,$F,$G,$H,$I/" ${CONF}/net/${FILENAME}
+    RET=0
+  fi
+  # commit changes
+  git add ${CONF}/net/${FILENAME}
+  commit_file ${CONF}/net/${FILENAME}
+  return $RET
+}
+
+# scan a subnet for used addresses and reserve them
+#
+function network_ip_scan {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  # declare variables
+  local NETIP NETCIDR FILENAME
+  # load the network
+  read -r NETIP NETCIDR <<< "$( grep -E "^${1//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # loop through the ip range and check each address
+  for ((i=$( ip2dec $NETIP );i<$( ip2dec $( ipadd $NETIP $( cdr2size $NETCIDR ) ) );i++)); do
+    FILENAME=$( get_network $( dec2ip $i ) 24 )
+    # skip this address if the entire subnet is not configured
+    test -f ${CONF}/net/${FILENAME} || continue
+    # skip the address if it is already marked reserved
+    grep "^$i," ${CONF}/net/${FILENAME} |grep -qE '^[^,]*,[^,]*,y,' && continue
+    if [ $( /bin/ping -c4 -n -s8 -w3 -q $( dec2ip $i ) |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
+      # mark the address as reserved
+      IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
+      sed -i "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+      echo "Found device at $( dec2ip $i )"
+    fi
+  done
+  git add ${CONF}/net/${FILENAME}
+  commit_file ${CONF}/net/${FILENAME}
+}
+
+# unassign an ip address
+#
+# required:
+#   $1  IP
+#
+function network_ip_unassign {
+  test $# -eq 1 || err "An IP is required."
+  valid_ip $1 || err "Invalid IP."
+  local FILENAME=$( get_network $1 24 )
+  # validate address
+  grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
+  # unassign
+  IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
+  sed -i "s/^$( ip2dec $1 ),.*/$A,$B,$C,$D,,$F,$G,$H,$I/" ${CONF}/net/${FILENAME}
+  git add ${CONF}/net/${FILENAME}
+  commit_file ${CONF}/net/${FILENAME}
+}
+
+# network ipam component
+#
+# file storage net/a.b.c.0
+# format: octal,a.b.c.d,reserved,dhcp,hostname,interface,comment,interface-comment,owner
+#
 # <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
 function network_ipam {
   # input validation
@@ -1569,7 +1655,7 @@ function network_ipam_add_range {
     FILENAME=$( get_network $( dec2ip $i ) 24 )
     grep -qE "^$i," ${CONF}/net/$FILENAME 2>/dev/null
     if [ $? -eq 0 ]; then echo "Error: entry already exists for $( dec2ip $i ). Skipping..." >&2; continue; fi
-    printf -- "${i},$( dec2ip $i ),N,N,,,,,\n" >>${CONF}/net/$FILENAME
+    printf -- "${i},$( dec2ip $i ),n,n,,,,,\n" >>${CONF}/net/$FILENAME
   done
   git add ${CONF}/net/$FILENAME >/dev/null 2>&1
   commit_file ${CONF}/net/$FILENAME
@@ -2321,7 +2407,7 @@ Component:
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
   network
-    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
+    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned|--scan]
     <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
   resource
     <value> [--assign] [<system>]
