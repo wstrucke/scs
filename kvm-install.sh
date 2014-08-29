@@ -2,99 +2,231 @@
 
 # provision/deprovision kvm virtual machines
 #
+# William Strucke [wstrucke@gmail.com]
+# Version 1.0.0 - 2012-01-24
+# - initial release: https://scribe.2checkout.com/view.html?wid=32098
+# Version 1.1.0 - 2014-08-28
+# - near complete re-implementation and new options
+#
 
-function usage {
-  echo "Usage:"
-  echo "  $0 vm-name vm-ip [centos5|centos6] [i386|x86_64] [disk] [ram]"
-  echo
-  echo "  disk   10, or numeric size in GB"
-  echo "  ram    512, or numeric amount in MB"
-  echo
-  exit 0
+# error / exit function
+#
+function err {
+  test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
+  test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
 }
 
-# constants
+# help/usage function
+#
+function usage {
+  cat <<_EOF
+Usage: $0 [...args...] vm-name
+
+Options:
+  --ip <string>    specify static ip during build, default dhcp
+  --os <string>    operating system for build: either centos5 or centos6, default centos5
+  --arch <string>  system architecture: either i386 or x86_64, default i386
+  --cpu <int>      number of processors, default 1
+  --disk <int>     size of disk in GB, default 30
+  --ram <int>      amount of ram in MB, default 512
+  --mac <string>   physical address to assign, default auto-generate
+  --uuid <string>  specify the uuid to assign, default auto-generate
+  --ks <URL>       full URL to optional kick-start answer file
+  --no-console     do not automatically connect the console, useful for automation
+  --no-reboot      do not automatically restart the system following the install
+  --destroy        forcibly remove the VM if it already exists - DATA LOSS WARNING -
+  --dry-run        do not make any changes, simply output the expected commands
+  --yes-i-am-sure  do not prompt for confirmation of destructive changes
+
+_EOF
+  exit 2
+}
+
+# Test an IP address for validity:
+# Usage:
+#      valid_ip IP_ADDRESS
+#      if [[ $? -eq 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_ip IP_ADDRESS; then echo good; else echo bad; fi
+#
+# SOURCE: http://www.linuxjournal.com/content/validating-ip-address-bash-script
+#
+function valid_ip() {
+    local  ip=$1
+    local  stat=1
+
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS; IFS='.'; ip=($ip); IFS=$OIFS
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
+            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
+
+# local constants
+BUILD_NET_DNS="192.168.32.46"
+BUILD_NET_GW="192.168.32.10"
+BUILD_NET_MASK="255.255.254.0"
+BUILD_NET_INTERFACE="br3"
+HYPERVS="kvm-01 kvm-02 kvm-03"
 WEBROOT="http://192.168.32.39/centos"
 VMDIR=/san/virtual-machines
 
-# settings
-OS="$3"
-VMNAME="$1"
-VMIP="$2"
-VMSIZE="$5"
-VMRAM="$6"
+# global constants
+XMLDIR=/etc/libvirt/qemu
+centos4_i386_ks="${WEBROOT}/ks/generic-vm-4.cfg"
+centos4_i386_root="${WEBROOT}/4/os/"
+centos5_i386_ks="${WEBROOT}/ks/generic-vm-5.cfg"
+centos5_i386_root="${WEBROOT}/5/os/i386/"
+centos5_x86_64_ks="${WEBROOT}/ks/generic-vm-5x86_64.cfg"
+centos5_x86_64_root="${WEBROOT}/5/os/x86_64/"
+centos6_i386_ks="${WEBROOT}/ks/generic-vm-6.cfg"
+centos6_i386_root="${WEBROOT}/6/os/i386/"
+centos6_x86_64_ks="${WEBROOT}/ks/generic-vm-6-64.cfg"
+centos6_x86_64_root="${WEBROOT}/6/os/x86_64/"
+
+# argument validation
+ARCHLIST="i386 x86_64"
+OSLIST="centos4 centos5 centos6"
+
+# defaults
+DESTROY=0
+DRYRUN=0
+KSURL=""
+INSTALL_URL=""
+SURE=0
+VMADDR=""
+VMARCH="i386"
+VMCONSOLE=1
 VMCPUS=1
-VMARCH="$4"
+VMIP=""
+VMNAME=""
+VMOS="centos5"
+VMRAM=512
+VMREBOOT=1
+VMSIZE=30
+VMUUID=""
+
+# settings
+while [ $# -gt 0 ]; do case $1 in
+  -a|--arch) VMARCH="$2"; shift;;
+  -c|--cpu) VMCPUS="$2"; shift;;
+  -d|--disk) VMSIZE="$2"; shift;;
+  -k|--ks) KSURL="$2"; shift;;
+  -i|--ip) VMIP="$2"; shift;;
+  -m|--mac) VMADDR="$2"; shift;;
+  -o|--os) VMOS="$2"; shift;;
+  -r|--ram) VMRAM="$2"; shift;;
+  -u|--uuid) VMUUID="$2"; shift;;
+  --destroy) DESTROY=1;;
+  --dry-run) DRYRUN=1;;
+  --no-console) VMCONSOLE=0;;
+  --no-reboot) VMREBOOT=0;;
+  --yes-i-am-sure) SURE=1;;
+  *) test -z "$VMNAME" && VMNAME="$1" || usage;;
+esac; shift; done
+
 
 # restrictions
-if [ `whoami` != 'root' ]; then
-  echo "You must be root"; exit 1
-fi
-if [[ `hostname` != 'kvm-01' && `hostname` != 'kvm-02' && `hostname` != 'kvm-03' ]]; then
-  echo "Run on kvm"; exit 1
-fi
+test `whoami` != 'root' && err "You must be root"
+printf -- " $HYPERVS " |grep -q " `hostname` " || err "Run on kvm"
 
 # verification
-if [[ "$VMNAME" == "" || "$VMIP" == "" ]]; then usage; fi
-if [ "$OS" == "" ]; then OS="centos5"; fi
-if [ "$VMSIZE" == "" ]; then VMSIZE="15"; fi
-if [ "$VMRAM" == "" ]; then VMRAM=512; fi
-if [[ "$VMARCH" != "i386" && "$VMARCH" != "x86_64" ]]; then usage; fi
+test -z "$VMNAME" && usage
+test "${VMSIZE}${VMCPUS}${VMRAM}" != "${VMSIZE//[^0-9]/}${VMCPUS//[^0-9]/}${VMRAM//[^0-9]/}" && usage
+test $VMSIZE -lt 15 && err "Minimum disk size is 15 GB"
+test $VMCPUS -gt 48 && err "Maximum expected CPU value"
+test $VMRAM -lt 128 && err "Minimum system memory is 128MB. Yes, this is arbitrary."
+test $VMRAM -gt 131072 && err "Maximum system memory is 128GB. Yes, this is arbitrary."
+if [ ! -z "$VMIP" ]; then valid_ip $VMIP || err "Invalid IP address"; fi
+printf -- " $ARCHLIST " |grep -q " $VMARCH " || err "Invalid system architecture"
+printf -- " $OSLIST " |grep -q " $VMOS " || err "Invalid operating system"
+
+# check minimum system requirements
+if [[ "$VMOS" == "centos4" && "$VMARCH" != "i386" ]]; then err "Centos 4 only supports i386 architecture"; fi
+if [[ "$VMOS" == "centos6" && $VMRAM -lt 1024 ]]; then err "CentOS 6 requires at least 1GB of RAM"; fi
+if [[ "$VMOS" == "centos6" && $VMSIZE -lt 30 ]]; then err "CentOS 6 requires at least 30GB of disk"; fi
+
+# set up urls
+if [ -z "$KSURL" ]; then VAR="${VMOS}_${VMARCH}_ks"; KSURL=${!VAR}; fi
+VAR="${VMOS}_${VMARCH}_root"; INSTALL_URL=${!VAR}
 
 # protection
-if [ -f ${VMDIR}/${VMNAME}.img ]; then echo "VM Already Exists"; exit 1; fi
-
-# create the disk
-qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
-if [ $? -ne 0 ]; then echo "Error creating disk!"; exit 1; fi
-
-
-# create the virtual machine
-case ${OS} in
-centos5)
-  if [ $VMARCH == "i386" ]; then
-    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
-    --os-type=linux --os-variant=rhel5.4 --accelerate --hvm \
-    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
-    --network=bridge:br3 --location=${WEBROOT}/5/os/i386/ \
-    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-5.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
-    console=ttyS0"
+if [ -f ${VMDIR}/${VMNAME}.img ]; then
+  if [ $DESTROY -eq 0 ]; then
+    err "VM already exists"
   else
-    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
-    --arch=x86_64 --os-type=linux --os-variant=rhel5.4 --accelerate --hvm \
-    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
-    --network=bridge:br3 --location=${WEBROOT}/5/os/x86_64/ \
-    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-5x86_64.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
-    console=ttyS0"
+    if [ $DRYRUN -eq 1 ]; then
+      echo "DRY-RUN: Destroying existing virtual machine..."
+      virsh list --all |grep $VMNAME
+      ls -l ${XMLDIR}/${VMNAME}.xml ${VMDIR}/${VMNAME}.img
+    else
+      if [ $SURE -eq 0 ]; then
+        read -p "Are you sure (Y/n)? " Q
+        if [ "$Q" != "Y" ]; then err "'$Q' is not Y, aborting!"; fi
+      fi
+      echo "Destroying existing virtual machine..."
+      virsh destroy $VMNAME >/dev/null 2>&1
+      virsh undefine $VMNAME >/dev/null 2>&1
+      test -f ${XMLDIR}/${VMNAME}.xml && rm -f ${XMLDIR}/${VMNAME}.xml
+      test -f ${VMDIR}/${VMNAME}.img && rm -f ${VMDIR}/${VMNAME}.img
+    fi
   fi
-  ;;
-centos6)
-  if [ $VMRAM -lt 1024 ]; then VMRAM=1024; fi
-  if [ $VMARCH == "i386" ]; then
-    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
-    --arch=i686 --os-type=linux --os-variant=rhel6 --accelerate --hvm \
-    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
-    --network=bridge:br3 --location=${WEBROOT}/6/os/i386/ \
-    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
-    console=ttyS0"
-  else
-    virt-install --name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} \
-    --arch=x86_64 --os-type=linux --os-variant=rhel6 --accelerate --hvm \
-    --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
-    --network=bridge:br3 --location=${WEBROOT}/6/os/x86_64/ \
-    --nographics --extra-args="ks=${WEBROOT}/ks/generic-vm-6-64.cfg ksdevice=br3 \
-    ip=${VMIP} netmask=255.255.254.0 dns=192.168.32.46 gateway=192.168.32.10 \
-    console=ttyS0"
-  fi
-  ;;
- *)
-  echo "VM Type Error"; exit 1;;
+fi
+
+# build the installation arguments
+ARGS="--name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} --os-type=linux"
+
+case $VMARCH in
+  i386|i686) ARGS="$ARGS --arch=i686";;
+  x86_64) ARGS="$ARGS --arch=x86_64";;
 esac
 
-if [ $? -ne 0 ]; then echo "Error creating VM!"; exit 1; fi
+case $VMOS in
+  centos4) ARGS="$ARGS --os-variant=rhel4";;
+  centos5) ARGS="$ARGS --os-variant=rhel5.4";;
+  centos6) ARGS="$ARGS --os-variant=rhel6";;
+esac
 
-echo "Done"
+# add optional arguments
+test ! -z "$VMADDR" && ARGS="$ARGS --mac=${VMADDR}"
+test ! -z "$VMUUID" && ARGS="$ARGS --uuid=${VMUUID}"
+test $VMCONSOLE -eq 0 && ARGS="$ARGS --noautoconsole"
+test $VMREBOOT -eq 0 && ARGS="$ARGS --noreboot"
+
+ARGS="$ARGS --accelerate --hvm \
+--disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
+--network=bridge:${BUILD_NET_INTERFACE} --location=${INSTALL_URL} --nographics \
+--extra-args=\"ks=${KSURL} ksdevice=${BUILD_NET_INTERFACE}"
+
+# optionally append ip data if a static address was provided
+if [ ! -z "$VMIP" ]; then
+  ARGS="$ARGS ip=${VMIP} netmask=${BUILD_NET_MASK} dns=${BUILD_NET_DNS} gateway=${BUILD_NET_GW}"
+fi
+
+ARGS="$ARGS console=ttyS0\""
+
+# create the disk
+if [ $DRYRUN -eq 1 ]; then
+  echo "DRY-RUN: Create disk..."
+  echo "qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G"
+  echo
+else
+  qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
+  test $? -eq 0 || err "Error creating disk"
+echo
+fi
+
+# create the virtual machine
+if [ $DRYRUN -eq 1 ]; then
+  echo "DRY-RUN: Create virtual-machine and start install process..."
+  echo "virt-install $ARGS"
+  echo
+else
+  eval virt-install ${ARGS}
+  test $? -eq 0 || err "Error creating VM"
+fi
+
 exit 0
