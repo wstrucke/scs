@@ -12,30 +12,32 @@
 # error / exit function
 #
 function err {
-  test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
+  if [ $QUIET -ne 1 ]; then test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2; fi
   test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
 }
 
 # help/usage function
 #
 function usage {
+  test $QUIET -eq 1 && exit 2
   cat <<_EOF
 Usage: $0 [...args...] vm-name
 
 Options:
-  --ip <string>    specify static ip during build, default dhcp
-  --os <string>    operating system for build: either centos5 or centos6, default centos5
   --arch <string>  system architecture: either i386 or x86_64, default i386
   --cpu <int>      number of processors, default 1
+  --destroy        forcibly remove the VM if it already exists - DATA LOSS WARNING -
   --disk <int>     size of disk in GB, default 30
-  --ram <int>      amount of ram in MB, default 512
-  --mac <string>   physical address to assign, default auto-generate
-  --uuid <string>  specify the uuid to assign, default auto-generate
+  --dry-run        do not make any changes, simply output the expected commands
+  --ip <string>    specify static ip during build, default dhcp
   --ks <URL>       full URL to optional kick-start answer file
+  --mac <string>   physical address to assign, default auto-generate
   --no-console     do not automatically connect the console, useful for automation
   --no-reboot      do not automatically restart the system following the install
-  --destroy        forcibly remove the VM if it already exists - DATA LOSS WARNING -
-  --dry-run        do not make any changes, simply output the expected commands
+  --os <string>    operating system for build: either centos5 or centos6, default centos5
+  --quiet          silence as much output as possible
+  --ram <int>      amount of ram in MB, default 512
+  --uuid <string>  specify the uuid to assign, default auto-generate
   --yes-i-am-sure  do not prompt for confirmation of destructive changes
 
 _EOF
@@ -96,6 +98,7 @@ DESTROY=0
 DRYRUN=0
 KSURL=""
 INSTALL_URL=""
+QUIET=0
 SURE=0
 VMADDR=""
 VMARCH="i386"
@@ -118,6 +121,7 @@ while [ $# -gt 0 ]; do case $1 in
   -i|--ip) VMIP="$2"; shift;;
   -m|--mac) VMADDR="$2"; shift;;
   -o|--os) VMOS="$2"; shift;;
+  -q|--quiet) QUIET=1;;
   -r|--ram) VMRAM="$2"; shift;;
   -u|--uuid) VMUUID="$2"; shift;;
   --destroy) DESTROY=1;;
@@ -164,10 +168,11 @@ if [ -f ${VMDIR}/${VMNAME}.img ]; then
       ls -l ${XMLDIR}/${VMNAME}.xml ${VMDIR}/${VMNAME}.img
     else
       if [ $SURE -eq 0 ]; then
+	echo "This operation will permanently remove an existing VM."
         read -p "Are you sure (Y/n)? " Q
         if [ "$Q" != "Y" ]; then err "'$Q' is not Y, aborting!"; fi
       fi
-      echo "Destroying existing virtual machine..."
+      test $QUIET -eq 0 && echo "Destroying existing virtual machine..."
       virsh destroy $VMNAME >/dev/null 2>&1
       virsh undefine $VMNAME >/dev/null 2>&1
       test -f ${XMLDIR}/${VMNAME}.xml && rm -f ${XMLDIR}/${VMNAME}.xml
@@ -214,7 +219,11 @@ if [ $DRYRUN -eq 1 ]; then
   echo "qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G"
   echo
 else
-  qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
+  if [ $QUIET -eq 1 ]; then
+    qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G >/dev/null 2>&1
+  else
+    qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
+  fi
   test $? -eq 0 || err "Error creating disk"
 echo
 fi
@@ -225,7 +234,11 @@ if [ $DRYRUN -eq 1 ]; then
   echo "virt-install $ARGS"
   echo
 else
-  eval virt-install ${ARGS}
+  if [[ $QUIET -eq 1 && $VMCONSOLE -eq 0 ]]; then
+    eval virt-install ${ARGS} >/dev/null 2>&1
+  else
+    eval virt-install ${ARGS}
+  fi
   test $? -eq 0 || err "Error creating VM"
 fi
 
