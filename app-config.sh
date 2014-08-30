@@ -84,7 +84,7 @@
 #   --storage:
 #
 #   network
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
 #   --storage:
 #
 #   net/a.b.c.0
@@ -112,9 +112,18 @@
 #   --storage:
 #
 #   <location>/network
-#   --format: zone,alias,network/cidr\n
+#   --format: zone,alias,network/cidr,build,default-build\n
 #   --storage:
+#   ----zone          network zone; must be identical to the entry in 'network'
+#   ----alias         network alias; must be identical to the entry in 'network'
+#   ----network/      network ip address (e.g. 192.168.0.0) followed by a forward slash
+#   ----cidr          the CIDR mask bits (e.g. 24)
+#   ----build         'y' or 'n', is this network used to build servers
+#   ----default-build 'y' or 'n', should this be the DEFAULT network at the location for builds
 #
+# External requirements:
+#   Linux stuff - which, awk, sed, tr, echo, git, tput
+#   My stuff - kvm-uuid.sh
 #
 # TO DO:
 #   - system audit should check ownership and permissions on files
@@ -125,6 +134,10 @@
 #   - generate kickstart files
 #   - simplify IP management functions by reducing code duplication
 #   - system_audit and system_deploy both delete the generated release. reconsider keeping it.
+#   - add detailed help section for each function
+#   - add concept of 'instance' to environments and define 'stacks'
+#   - move install_build and sysbuild_install into scs
+#   - get_yn should pass options (such as --default) to get_input
 #
 
 
@@ -209,6 +222,7 @@ function expand_subject_alias {
     d|di|dif) printf -- 'diff';;
     e|en|env) printf -- 'environment';;
     f) printf -- 'file';;
+    h|?) printf -- 'help';;
     l|lo|loc) printf -- 'location';;
     n|ne|net) printf -- 'network';;
     r|re|res) printf -- 'resource';;
@@ -410,6 +424,24 @@ function get_yn {
   eval "$1='$RL'"
 }
 
+# help wrapper
+#
+function help {
+  local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+  local VERB=""
+  if [ $# -gt 0 ]; then
+    VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+  fi
+  test -z "$VERB" && local HELPER="${SUBJ}_help" || local HELPER="${SUBJ}_${VERB}_help"
+  {
+    eval ${HELPER} $@ 2>/dev/null
+  } || {
+    echo "Help section not available for '$SUBJ'."; echo
+    usage
+  }
+  exit 0
+}
+
 # first run function to init the configuration store
 #
 function initialize_configuration {
@@ -493,12 +525,14 @@ function usage {
   echo "2Checkout SCS Application
 Manage application/server configurations and base templates across all environments.
 
-Usage $0 component (sub-component|verb) [--option1] [--option2] [...]
+Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
               $0 diff | status
 
 Run commit when complete to finalize changes.
+
+HINT - Follow any command with '?' for more detailed usage information.
 
 Component:
   application
@@ -512,6 +546,7 @@ Component:
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
     edit [<name>] [--environment <name>]
+  help
   location
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
@@ -530,6 +565,9 @@ Verbs - all top level components:
   list
   show [<name>]
   update [<name>]
+
+Options:
+  --config <string>   Specify an alternative configuration directory
 " >&2
   exit 1
 }
@@ -741,6 +779,19 @@ function application_create {
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
 }
+function application_create_help { cat <<_EOF
+Add a new application to SCS.
+
+Usage: $0 application create
+
+Fields:
+  Name - a unique name for the application, such as 'purchase'.
+  Alias - a common alias for the application.  this field is not currently utilized.
+  Build - the name of the system build this application is installed to.
+  LVS Support - whether or not this application can sit behind a load balancer with more than one node.
+
+_EOF
+}
 
 function application_delete {
   generic_delete application $1 || return
@@ -749,6 +800,15 @@ function application_delete {
   commit_file file-map
 # !!FIXME!! should also unassign resources
 # !!FIXME!! should also undefine constants
+}
+function application_delete_help { cat <<_EOF
+Delete an application and its references from SCS.
+
+Usage: $0 application delete [name]
+
+If the name of the application is not provided as an argument you will be prompted to select it from a list.
+
+_EOF
 }
 
 # file [--add|--remove|--list]
@@ -1753,10 +1813,29 @@ function network_create {
   get_input BITS "Subnet Bits"
   get_input GW "Gateway Address" --null
   get_input VLAN "VLAN Tag/Number" --null
+  get_yn BUILD "Use network for system builds (y/n)? "
+  if [ "$BUILD" == "y" ]; then
+    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? "
+    # when adding a new default build network make sure we prompt if another exists, since it will be replaced
+    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -ne 0 ]]; then
+      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
+      if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
+    fi
+  else
+    DEFAULT_BUILD="n"
+  fi
   # add
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC}\n" >>$CONF/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
-  printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
+  #   --format: zone,alias,network/cidr,build,default-build\n
+  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -gt 0 ]]; then
+    # get the current default network (if any) and update it
+    IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' )"
+    sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y$%\1,y,n%' ${CONF}/network
+    sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
+  fi
+  printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
 }
 
@@ -2028,8 +2107,8 @@ function network_show {
   test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\n"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\n"
 }
 
 function network_update {
@@ -2045,7 +2124,7 @@ function network_update {
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  IFS="," read -r L Z A NET MASK BITS GW VLAN DESC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NET MASK BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2059,16 +2138,36 @@ function network_update {
   get_input BITS "Subnet Bits" --default "$BITS"
   get_input GW "Gateway Address" --default "$GW" --null
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
-  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"'/' ${CONF}/network
+  get_yn BUILD "Use network for system builds (y/n)? " --default "$BUILD"
+  if [ "$BUILD" == "y" ]; then
+    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? " --default "$DEFAULT_BUILD"
+    # when adding a new default build network make sure we prompt if another exists, since it will be replaced
+    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -ne 0 ]]; then
+      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
+      if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
+    fi
+  else
+    DEFAULT_BUILD="n"
+  fi
+  # make sure to remove any other default build network
+  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -gt 0 ]]; then
+    # get the current default network (if any) and update it
+    IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' )"
+    sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
+    sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
+  fi
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
+  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${BUILD}','${DEFAULT_BUILD}'/' ${CONF}/network
+  #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
-    sed -i 's/^'${Z}','${A}',.*/'${ZONE}','${ALIAS}','${NET}'\/'${BITS}'/' ${CONF}/${LOC}/network
+    sed -i 's/^'${Z}','${A}',.*/'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'/' ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
-    printf -- "${ZONE},${ALIAS},${NET}/${BITS}\n" >>${CONF}/${LOC}/network
+    printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
   fi
 }
@@ -2675,6 +2774,9 @@ DEF_HDD=40
 #
 DEF_MEM=1024
 #
+# path to kvm-uuid.sh, required for full build automation tasks
+KVMUUID=/home/wstrucke/ESG/home/wstrucke/scripts/kvm-uuid.sh
+#
 # list of architectures for builds -- each arch in the list must be available
 #   for each OS version (below)
 OSARCH="i386,x86_64"
@@ -2708,12 +2810,25 @@ trap cleanup_and_exit EXIT INT
 # initialize
 test "`whoami`" == "root" || err "What madness is this? Ye art not auth'riz'd to doeth that."
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
+test -x $KVMUUID || err "kvm-uuid.sh was not found at the expected path and is required for some operations"
+test $# -ge 1 || usage
+
+# the path to the configuration is configurable as an argument
+if [[ "$1" == "-c" || "$1" == "--config" ]]; then
+  shift;
+  test -d "`dirname $1`" && CONF="$1" || usage
+  shift; echo "chroot: $CONF"
+fi
+
+# first run check
 if ! [ -d $CONF ]; then
   read -r -p "Configuration not found - this appears to be the first time running this script.  Do you want to initialize the configuration (y/n)? " P
   P=$( echo "$P" |tr 'A-Z' 'a-z' )
   test "$P" == "y" && initialize_configuration || exit 1
 fi
-test $# -ge 1 || usage
+
+# special case for detailed help without a space
+if [[ "${!#}" =~ \?$ ]]; then help $@; exit 0; fi
 
 # get subject
 SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
@@ -2723,6 +2838,7 @@ if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
+if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
