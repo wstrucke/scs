@@ -122,7 +122,7 @@
 #   ----default-build 'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -1914,7 +1914,7 @@ function network_ip_assign {
 # list unassigned and unreserved ip addresses in a network
 #
 # optional arguments:
-#   --limit X   limit to top X number of results
+#   --limit X   limit to X number of randomized results
 #
 function network_ip_list_available {
   # input validation
@@ -1922,7 +1922,7 @@ function network_ip_list_available {
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   if [[ "$2" == "--limit" && "${3//[^0-9]/}" == "$3" && $3 -gt 0 ]]; then
-    network_ip_list_available $1 |head -n $3
+    network_ip_list_available $1 |shuf |head -n $3
     return
   fi
   # load the network
