@@ -122,7 +122,7 @@
 #   ----default-build 'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -1808,9 +1808,9 @@ function network_create {
   # validate unique name
   grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
   get_input DESC "Description" --nc --null
-  get_input NET "Network"
-  get_input MASK "Subnet Mask"
-  get_input BITS "Subnet Bits"
+  while ! $(valid_ip "$NET"); do get_input NET "Network"; done
+  get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
+  while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
   get_input VLAN "VLAN Tag/Number" --null
   get_yn BUILD "Use network for system builds (y/n)? "
@@ -1934,8 +1934,8 @@ function network_ip_list_available {
     FILENAME=$( get_network $( dec2ip $(( $( ip2dec $NETIP ) + ( $i * 256 ) )) ) 24 )
     # skip this address if the entire subnet is not configured
     test -f ${CONF}/net/${FILENAME} || continue
-    # 'free' IPs are those with 'n' in the third column
-    grep -E '^[^,]*,[^,]*,n,' ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $2}'
+    # 'free' IPs are those with 'n' in the third column and an empty fifth column
+    grep -E '^[^,]*,[^,]*,n,' ${CONF}/net/${FILENAME} |grep -E '^[^,]*,[^,]*,[yn],[yn],,' |awk 'BEGIN{FS=","}{print $2}'
   done
 }
 
@@ -2154,7 +2154,7 @@ function network_update {
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  IFS="," read -r L Z A NET MASK BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NETORIG MASKORIG BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2163,9 +2163,9 @@ function network_update {
     grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
-  get_input NET "Network" --default "$NET"
-  get_input MASK "Subnet Mask" --default "$MASK"
-  get_input BITS "Subnet Bits" --default "$BITS"
+  while ! $(valid_ip "$NET"); do get_input NET "Network" --default "$NETORIG"; done
+  get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$' --default "$BITS"
+  while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
   get_yn BUILD "Use network for system builds (y/n)? " --default "$BUILD"
