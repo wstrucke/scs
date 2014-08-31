@@ -122,7 +122,7 @@
 #   ----default-build 'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -1817,7 +1817,7 @@ function network_create {
   if [ "$BUILD" == "y" ]; then
     get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? "
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
-    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -ne 0 ]]; then
+    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
@@ -1829,9 +1829,9 @@ function network_create {
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
-  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -gt 0 ]]; then
+  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
     # get the current default network (if any) and update it
-    IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' )"
+    IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
@@ -2175,7 +2175,7 @@ function network_update {
   if [ "$BUILD" == "y" ]; then
     get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? " --default "$DEFAULT_BUILD"
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
-    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -ne 0 ]]; then
+    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
@@ -2183,18 +2183,18 @@ function network_update {
     DEFAULT_BUILD="n"
   fi
   # make sure to remove any other default build network
-  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' |wc -l` -gt 0 ]]; then
+  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
     # get the current default network (if any) and update it
-    IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE '^${ZONE},${ALIAS},' )"
+    IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
-  sed -i 's/^'${C//-/,}',.*/'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${BUILD}','${DEFAULT_BUILD}'/' ${CONF}/network
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
-    sed -i 's/^'${Z}','${A}',.*/'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'/' ${CONF}/${LOC}/network
+    sed -i 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
