@@ -1870,7 +1870,7 @@ function network_ip {
     --assign) network_ip_assign ${@:3};;
     --unassign) network_ip_unassign ${@:3};;
     --list) echo "Not implemented: $@";;
-    --list-available) echo "Not implemented";;
+    --list-available) network_ip_list_available $1 ${@:3};;
     --list-assigned) echo "Not implemented";;
     --scan) network_ip_scan $1;;
     *) echo "Not implemented: $@";;
@@ -1911,6 +1911,34 @@ function network_ip_assign {
   return $RET
 }
 
+# list unassigned and unreserved ip addresses in a network
+#
+# optional arguments:
+#   --limit X   limit to top X number of results
+#
+function network_ip_list_available {
+  # input validation
+  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  if [[ "$2" == "--limit" && "${3//[^0-9]/}" == "$3" && $3 -gt 0 ]]; then
+    network_ip_list_available $1 |head -n $3
+    return
+  fi
+  # load the network
+  read -r NETIP NETCIDR <<< "$( grep -E "^${1//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # networks are stored as /24s so adjust the netmask if it's smaller than that
+  test $NETCIDR -gt 24 && NETCIDR=24
+  # look at each /24 in the network
+  for ((i=0;i<$(( 2**(24 - $NETCIDR) ));i++)); do
+    FILENAME=$( get_network $( dec2ip $(( $( ip2dec $NETIP ) + ( $i * 256 ) )) ) 24 )
+    # skip this address if the entire subnet is not configured
+    test -f ${CONF}/net/${FILENAME} || continue
+    # 'free' IPs are those with 'n' in the third column
+    grep -E '^[^,]*,[^,]*,n,' ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $2}'
+  done
+}
+
 # scan a subnet for used addresses and reserve them
 #
 function network_ip_scan {
@@ -1928,6 +1956,8 @@ function network_ip_scan {
     FILENAME=$( get_network $( dec2ip $i ) 24 )
     # skip this address if the entire subnet is not configured
     test -f ${CONF}/net/${FILENAME} || continue
+    # skip the address if it is registered
+    grep -q "^$i," ${CONF}/net/${FILENAME} || continue
     # skip the address if it is already marked reserved
     grep "^$i," ${CONF}/net/${FILENAME} |grep -qE '^[^,]*,[^,]*,y,' && continue
     if [ $( /bin/ping -c4 -n -s8 -w3 -q $( dec2ip $i ) |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
@@ -1937,7 +1967,7 @@ function network_ip_scan {
       echo "Found device at $( dec2ip $i )"
     fi
   done
-  git add ${CONF}/net/${FILENAME}
+  git add ${CONF}/net/${FILENAME} >/dev/null 2>&1
   commit_file ${CONF}/net/${FILENAME}
 }
 
