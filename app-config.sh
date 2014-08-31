@@ -2054,6 +2054,9 @@ function network_ipam_add_range {
   NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
   [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
   [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # special case where first IP is the actual network address and the last ip is the broadcast
+  if [ $( ip2dec $FIRST_IP ) -eq $( ip2dec $NETIP ) ]; then FIRST_IP=$( dec2ip $(( $( ip2dec $FIRST_IP ) + 1 )) ); fi
+  if [ $( ip2dec $LAST_IP ) -eq $( ip2dec $NETLAST ) ]; then LAST_IP=$( dec2ip $(( $( ip2dec $LAST_IP ) - 1 )) ); fi
   # make the directory if needed
   test ! -d ${CONF}/net && mkdir ${CONF}/net
   # loop through the ip range and add each address to the appropriate file
