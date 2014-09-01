@@ -84,7 +84,7 @@
 #   --storage:
 #
 #   network
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
 #   --storage:
 #
 #   net/a.b.c.0
@@ -138,6 +138,8 @@
 #   - add concept of 'instance' to environments and define 'stacks'
 #   - move install_build and sysbuild_install into scs
 #   - get_yn should pass options (such as --default) to get_input
+#   - add hypervisors
+#   - populate reserved IP addresses from IP-Scheme.xlsx
 #
 
 
@@ -1821,12 +1823,18 @@ function network_create {
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
+    get_input REPO_ADDR "Repository IP or Host Name" --nc
+    get_input REPO_PATH "Repository Local Path" --nc
+    get_input REPO_URL "Repository URL" --nc
   else
     DEFAULT_BUILD="n"
+    REPO_ADDR=""
+    REPO_PATH=""
+    REPO_URL=""
   fi
   # add
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
@@ -2140,8 +2148,9 @@ function network_show {
   test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\n"
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
 }
 
 function network_update {
@@ -2157,7 +2166,7 @@ function network_update {
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  IFS="," read -r L Z A NETORIG MASKORIG BITS GW VLAN DESC BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NETORIG MASKORIG BITS GW VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2179,8 +2188,14 @@ function network_update {
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
+    get_input REPO_ADDR "Repository IP or Host Name" --default "$REPO_ADDR" --nc
+    get_input REPO_PATH "Repository Local Path" --default "$REPO_PATH" --nc
+    get_input REPO_URL "Repository URL" --default "$REPO_URL" --nc
   else
     DEFAULT_BUILD="n"
+    REPO_ADDR=""
+    REPO_PATH=""
+    REPO_URL=""
   fi
   # make sure to remove any other default build network
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
@@ -2189,8 +2204,8 @@ function network_update {
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,build,default-build\n
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
