@@ -171,7 +171,7 @@
 #   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -2483,11 +2483,22 @@ function resource_update {
 
 #   --format: environment,hypervisor
 function hypervisor_add_environment {
-  echo "Not implemented"
+  start_modify
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # get the environment
+  generic_choose environment "$2" ENV
+  # verify this mapping does not already exist
+  grep -qE "^$ENV,$1\$" ${CONF}/hv-environment && err "That environment is already linked"
+  # add mapping
+  printf -- "$ENV,$1\n" >>${CONF}/hv-environment
+  commit_file hv-environment
 }
 
 #   --format: loc-zone-alias,hv-name,interface
 function hypervisor_add_network {
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   echo "Not implemented"
 }
 
@@ -2578,7 +2589,16 @@ function hypervisor_poll {
 }
 
 function hypervisor_remove_environment {
-  echo "Not implemented"
+  start_modify
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # get the environment
+  generic_choose environment "$2" ENV
+  # verify this mapping exists
+  grep -qE "^$ENV,$1\$" ${CONF}/hv-environment || return
+  # remove mapping
+  sed -i '/^'$ENV','$1'/d' ${CONF}/hv-environment
+  commit_file hv-environment
 }
 
 function hypervisor_remove_network {
@@ -2594,6 +2614,10 @@ function hypervisor_show {
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # output the status/summary
   printf -- "Name: $NAME\nManagement Address: $IP\nLocation: $LOC\nVM Storage: $VMPATH\nReserved Disk (MB): $MINDISK\nReserved Memory (MB): $MINMEM\nEnabled: $ENABLED\n"
+  # get environments
+  printf -- "\nLinked Environments:\n"
+  grep -E ",$1\$" ${CONF}/hv-environment |sed 's/^/  /; s/,.*//' |sort
+  echo
 }
 
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
