@@ -171,14 +171,13 @@
 #   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
 #   - system audit should check ownership and permissions on files
 #   - deleting an application should also unassign resources and undefine constants
 #   - finish IPAM and IP allocation components
-#   - adding, updating, or removing an IP from a system should interface with IPAM functions
 #   - validate IP addresses using the new valid_ip function
 #   - generate kickstart files
 #   - simplify IP management functions by reducing code duplication
@@ -261,6 +260,16 @@ function err {
   popd >/dev/null 2>&1
   test ! -z "$1" && echo $1 >&2 || echo "An error occurred" >&2
   test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
+}
+
+# return the exit code from an arbitrary function as a string
+#
+function exit_status {
+  test $# -gt 0 || return 1
+  eval $1 ${@:2}
+  RC=$?
+  printf -- $RC
+  return $RC
 }
 
 function expand_subject_alias {
@@ -611,7 +620,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--deploy|--release|--vars]
+    <value> [--audit|--check|--deploy|--deprovision|--provision|--release|--vars]
 
 Verbs - all top level components:
   create
@@ -2192,12 +2201,44 @@ function network_ipam_remove_range {
   fi
 }
 
+# list configured networks
+#
+# optional:
+#   --build <loc>  output a list of available build networks at the specified location
+#   --match <ip>   output the configured network that includes the specific IP, if any
+#
 function network_list {
-  NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
-  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined network${S}."
-  test $NUM -eq 0 && return
-  ( printf -- "Site Alias Network\n"; awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort ) |column -t |sed 's/^/   /'
+  if [ $# -gt 0 ]; then
+    case "$1" in
+      --build)
+        test -z "$2" && return
+        DEFAULT=$( grep -E "^$2," ${CONF}/network |grep -E ',y,y$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' )
+        ALL=$( grep -E "^$2," ${CONF}/network |grep -E ',y,[yn]$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' |tr '\n' ' ' )
+        test ! -z "$DEFAULT" && printf -- "default: $DEFAULT\n"
+        test ! -z "$ALL" && printf -- "available: $ALL\n"
+        ;;
+      --match)
+        $( valid_ip $2 ) || err "Invalid IP"
+        DEC=$( ip2dec $2 )
+        printf -- "$( awk 'BEGIN{FS=","}{print $1"-"$2"-"$3,$4,$6}' ${CONF}/network )" | while read -r NAME IP CIDR; do
+          FIRST_IP=$( ip2dec $IP )
+          LAST_IP=$(( $FIRST_IP + $( cdr2size $CIDR ) - 1 ))
+          if [[ $FIRST_IP -le $DEC && $LAST_IP -ge $DEC ]]; then printf -- "$NAME\n"; break; fi
+        done
+        ;;
+      *) err "Invalid argument";;
+    esac
+  else
+    NUM=$( wc -l ${CONF}/network |awk '{print $1}' )
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo "There ${A} ${NUM} defined network${S}."
+    test $NUM -eq 0 && return
+    ( printf -- "Site Alias Network\n"; network_list_unformatted ) |column -t |sed 's/^/   /'
+  fi
+}
+
+function network_list_unformatted {
+  awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort
 }
 
 function network_show {
@@ -2621,6 +2662,15 @@ function hypervisor_poll {
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # test the connection
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
+  # collect memory usage
+  FREEMEM=$( ssh $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
+  MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed 's/\..*//' )
+  # optionally only return memory
+  if [ "$2" == "--mem" ]; then
+    # if memory is at or below minimum mask it as 0
+    if [ $(( $FREEMEM - $MINMEM )) -le 0 ]; then printf -- "0"; else printf -- "$FREEMEM"; fi
+    return 0
+  fi
   # collect disk usage
   N=$( ssh $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
   case "${N: -1}" in
@@ -2633,15 +2683,45 @@ function hypervisor_poll {
   esac
   FREEDISK=$( echo "${N%?} $M" |bc ) 
   DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |sed 's/\..*//' )
-  if [ "$2" == "--disk" ]; then printf -- "$FREEDISK"; return 0; fi
-  # collect memory usage
-  FREEMEM=$( ssh $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
-  MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed 's/\..*//' )
-  if [ "$2" == "--mem" ]; then printf -- "$FREEMEM"; return 0; fi
+  # optionally only return disk space
+  if [ "$2" == "--disk" ]; then
+    # if disk is at or below minimum mask it as 0
+    if [ $(( $FREEDISK - $MINDISK )) -le 0 ]; then printf -- "0"; else printf -- "$FREEDISK"; fi
+    return 0
+  fi
   # collect load data
   IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh $IP "uptime |sed 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
+}
+
+# given a list of one or more hypervisors return the top ranked system based on
+#   available resources
+#
+function hypervisor_rank {
+  test -z "$1" && return 1
+  # create an array from the input list of hosts
+  LIST=( $@ )
+  # special case where only one host is provided
+  if [ ${#LIST[@]} -eq 1 ]; then printf -- ${LIST[0]}; return 0; fi
+  # start comparing at zero so first result is always the first best
+  local DISK=0 MEM=0 D=0 M=0 SEL=""
+  for ((i=0;i<${#LIST[@]};i++)); do
+    # get the stats from the host
+    D=$( hypervisor_poll ${LIST[$i]} --disk 2>/dev/null )
+    test -z "$D" && continue
+    M=$( hypervisor_poll ${LIST[$i]} --mem 2>/dev/null )
+    # this is the tricky part -- how to we determine which is 'better' ?
+    # what if one host has lots of free disk space but no memory?
+    # I am going to rank free memory higher than CPU -- the host with the most memory unless they are very close
+    C=$( echo "scale=2; (($M + 1) - ($MEM + 1)) / ($MEM + 1) * 100" |bc |sed 's/\..*//' )
+    if [ $C -gt 5 ]; then
+      # greater than 5% more memory on this hypervisor, set it as preferred
+      MEM=$M; DISK=$D
+      SEL=${LIST[$i]}
+    fi
+  done
+  printf -- $SEL
 }
 
 function hypervisor_remove_environment {
@@ -2739,6 +2819,8 @@ function system_byname {
     --audit) system_audit $1;;
     --check) system_check $1;;
     --deploy) system_deploy $1;;
+    --deprovision) system_deprovision $1;;
+    --provision) system_provision $1;;
     --release) system_release $1;;
     --vars) system_vars $1;;
   esac
@@ -2871,18 +2953,30 @@ function system_create {
   # get user input and validate
   get_input NAME "Hostname"
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  while ! $(valid_ip "$IP"); do get_input IP "Primary IP"; done
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  while [[ "$IP" != "auto" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (auto to auto-select)"; done
+  # automatic IP selection
+  if [ "$IP" == "auto" ]; then
+    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )"
+    IP=$( network_ip_list_available $NETNAME --limit 1 )
+    valid_ip $IP || err "Automatic IP selection failed"
+  fi
   # validate unique name
   grep -qE "^$NAME," $CONF/system && err "System already defined."
+  # assign/reserve IP
+  network_ip_assign $IP $NAME || err "Unable to assign IP address"
   # add
   printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
   commit_file system
 }
 
 function system_delete {
-  generic_delete system $1
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  generic_delete system $1 || return
+  # free IP address assignment
+  network_ip_unassign $IP
 }
 
 # deploy release to system
@@ -2901,6 +2995,93 @@ function system_deploy {
   printf -- "Cleaning up...\n"
   rm -f $FILE
   printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./scs-install.sh\n\n"
+}
+
+# destroy and permantantly delete a system
+#
+function system_deprovision {
+  echo "Not implemented"
+}
+
+# create a system
+#
+function system_provision {
+  generic_choose system "$1" C && shift
+  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  #  - verify system is not already deployed
+  nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
+  if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
+  grep -qE '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts
+  if [ $? -eq 0 ]; then
+    grep -E '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$NAME" || err "Another system with this IP is already configured in /etc/hosts."
+  fi
+  #  - look up the network for this IP
+  NETNAME=$( network_list --match $IP )
+  test -z "$NETNAME" && err "No network was found matching this system's IP address"
+  #  - lookup the build network for this system
+  network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
+  if [ $? -eq 0 ]; then
+    BUILDNET=$NETNAME
+  else
+    BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
+  fi
+  #  - locate available HVs
+  LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+  test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+  #  - poll list of HVs for availability then rank for free storage, free mem, and load
+  HV=$( hypervisor_rank $LIST )
+  test -z "$HV" && err "There are no available hypervisors at this time"
+  #  - get the build and dest interfaces on the hypervisor
+  HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
+  #  - assign a temporary IP as needed
+  if [ "$NETNAME" != "$BUILDNET" ]; then
+    BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
+    valid_ip $IP || err "Automatic IP selection failed"
+    # assign/reserve IP
+    network_ip_assign $BUILDIP $NAME || err "Unable to assign IP address"
+  else
+    BUILDIP=$IP
+  fi
+  #  - load the architecture and operating system for the build
+  IFS="," read -r OS ARCH DISK RAM <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+  test -z "$OS" && err "Error loading build"
+  #  - generate KS and deploy to local build server
+  
+
+
+printf -- "OS: $OS\nArch: $ARCH\nDisk: $DISK\nRAM: $RAM\nServer: $HV\nBuild IP: $BUILDIP on HV interface $HV_BUILD_INT\nFinal IP: $IP on HV interface $HV_FINAL_INT\n"; exit
+ 
+  #  - kick off provision system
+  #    - when complete launch nc -l 80 to send a file back to the provisioning server - install success/failure
+  #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
+  #  - sleep 30 or so
+  #  - connect to hypervisor, wait until vm is off
+  #  - virsh start
+  #  - wait for vm to come up
+  #  - install_build
+  #  - sysbuild_install (do not change the IP here)
+  #    - when complete launch nc -l 80 to send response back to provisioning server - install success/failure
+  #  - background task to monitor install
+  #  - sleep 60 or so
+  #  - wait for vm to come up
+  #  - ship over scs configuration
+  #  * - ship over latest code release
+  #  - install configuration
+  #  - install code
+  #  - update vm network configuration for permanent address and vlan
+  #    - if necessary, free temporary IP (unassign)
+  #  - shut off vm
+  #  - sleep 30 or so
+  #  - connect to hypervisor, wait until vm is off
+  #  - change VM vlan and redefine
+  #  - start vm
+  #  - fin
+  #  
+
+
+  echo "Not implemented"
 }
 
 function system_list {
@@ -3069,13 +3250,18 @@ function system_show {
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD ORIGIP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  while ! $(valid_ip "$IP"); do get_input IP "Primary IP" --default "$IP"; done
+  while ! $(valid_ip "$IP"); do get_input IP "Primary IP" --default "$ORIGIP"; done
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}'/' ${CONF}/system
+  # handle IP change
+  if [ "$IP" != "$ORIGIP" ]; then
+    network_ip_unassign $ORIGIP
+    network_ip_assign $IP $NAME
+  fi
   commit_file system
 }
 
