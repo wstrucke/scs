@@ -2558,12 +2558,52 @@ function hypervisor_delete {
   commit_file hv-environment hv-network
 }
 
+# show the configured hypervisors
+#
+# optional:
+#   --location <string>     limit to the specified location
+#   --environment <string>  limit to the specified environment
+#   --network <string>      limit to the specified network (may be specified up to two times)
+#
 function hypervisor_list {
-  NUM=$( wc -l ${CONF}/hypervisor |awk '{print $1}' )
-  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined hypervisor${S}."
-  test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |sort |sed 's/^/   /'
+ NUM=$( wc -l ${CONF}/hypervisor |awk '{print $1}' )
+  if [ $# -eq 0 ]; then
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo "There ${A} ${NUM} defined hypervisor${S}."
+    test $NUM -eq 0 && return
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |sort |sed 's/^/   /'
+  else
+    if [ $NUM -eq 0 ]; then return; fi
+    LIST="$( awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |tr '\n' ' ' )"
+    while [ $# -gt 0 ]; do case "$1" in
+      --location)
+        NL=""
+        for N in $LIST; do
+          grep -qE '^'$N',[^,]*,'$2',' ${CONF}/hypervisor && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
+      --environment)
+        NL=""
+        for N in $LIST; do
+          grep -qE '^'$2','$N'$' ${CONF}/hv-environment && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
+      --network)
+        NL=""
+        for N in $LIST; do
+          grep -qE '^'$2','$N',' ${CONF}/hv-network && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
+      *) err "Invalid argument";;
+    esac; shift; done
+    for N in $LIST; do printf -- "$N\n"; done
+  fi
 }
 
 # poll the hypervisor for current system status
