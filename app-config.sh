@@ -3028,6 +3028,11 @@ function system_provision {
   else
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
+  #  - lookup network details for the build network (used in the kickstart configuration)
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  read -r NETMASK GATEWAY DNS REPO_ADDR <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$8,$11}' )"
+  valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
+  valid_ip $DNS || err "Build network does not have a defined DNS server"
   #  - locate available HVs
   LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
   test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
@@ -3052,19 +3057,19 @@ function system_provision {
   test -z "$OS" && err "Error loading build"
   #  - generate KS and deploy to local build server
   mkdir -p ${TMP}
-  cp ${KSTEMPLATE}/${OS}-${ARCH}.tpl ${TMP}/
+  cp ${KSTEMPLATE}/${OS}.tpl ${TMP}/${NAME}.cfg
   cat <<_EOF >${TMP}/${NAME}.const
 system.name $NAME
 system.ip $BUILDIP
-system.netmask
-system.gateway
-system.dns
-resource.sm-web
+system.netmask $NETMASK
+system.gateway $GATEWAY
+system.dns $DNS
+system.arch $ARCH
+resource.sm-web $REPO_ADDR
 _EOF
-
-# - get kickstart templates from sysbuild folder?  need that below anyway...
-  
-
+  parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
+  # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
+  if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.const; fi
 
 printf -- "OS: $OS\nArch: $ARCH\nDisk: $DISK\nRAM: $RAM\nServer: $HV\nBuild IP: $BUILDIP on HV interface $HV_BUILD_INT\nFinal IP: $IP on HV interface $HV_FINAL_INT\n"; exit
  
