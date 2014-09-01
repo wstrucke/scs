@@ -189,7 +189,6 @@
 #   - get_yn should pass options (such as --default) to get_input
 #   - populate reserved IP addresses from IP-Scheme.xlsx
 #   - rename operations should update map files (hv stuff specifically for net/env/loc)
-#   - implement hypervisor network/environment functions
 #
 
 
@@ -2497,9 +2496,26 @@ function hypervisor_add_environment {
 
 #   --format: loc-zone-alias,hv-name,interface
 function hypervisor_add_network {
+  start_modify
   test $# -ge 1 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
-  echo "Not implemented"
+  # get the network
+  if [ -z "$2" ]; then
+    network_list
+    printf -- "\n"
+    get_input C "Network to Modify (loc-zone-alias)"
+  else
+    test `printf -- "$2" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    C="$2"
+  fi
+  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
+  # verify this mapping does not already exists
+  grep -qE "^$C,$1," ${CONF}/hv-network && err "That network is already linked"
+  # get the interface
+  if [ -z "$3" ]; then get_input IFACE "Network Interface"; else IFACE="$3"; fi
+  # add mapping
+  printf -- "$C,$1,$IFACE\n" >>${CONF}/hv-network
+  commit_file hv-network
 }
 
 #   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll]
@@ -2602,7 +2618,24 @@ function hypervisor_remove_environment {
 }
 
 function hypervisor_remove_network {
-  echo "Not implemented"
+  start_modify
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # get the network
+  if [ -z "$2" ]; then
+    network_list
+    printf -- "\n"
+    get_input C "Network to Modify (loc-zone-alias)"
+  else
+    test `printf -- "$2" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    C="$2"
+  fi
+  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
+  # verify this mapping already exists
+  grep -qE "^$C,$1," ${CONF}/hv-network || return
+  # remove mapping
+  sed -i '/^'$C','$1',/d' ${CONF}/hv-network
+  commit_file hv-network
 }
 
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
@@ -2614,6 +2647,9 @@ function hypervisor_show {
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # output the status/summary
   printf -- "Name: $NAME\nManagement Address: $IP\nLocation: $LOC\nVM Storage: $VMPATH\nReserved Disk (MB): $MINDISK\nReserved Memory (MB): $MINMEM\nEnabled: $ENABLED\n"
+  # get networks
+  printf -- "\nNetwork Interfaces:\n"
+  grep -E ",$1," ${CONF}/hv-network |awk 'BEGIN{FS=","}{print $3":",$1}' |sed 's/^/  /' |sort
   # get environments
   printf -- "\nLinked Environments:\n"
   grep -E ",$1\$" ${CONF}/hv-environment |sed 's/^/  /; s/,.*//' |sort
