@@ -16,6 +16,9 @@
 #     environment                                          file
 #     file                                                 file
 #     file-map                                             application to file map
+#     hv-environment                                       file
+#     hv-network                                           file
+#     hypervisor                                           file
 #     location                                             file
 #     network                                              file
 #     net                                                  directory
@@ -51,78 +54,124 @@
 #   Overall requirement - files are stored in CSV format and no field can have a comma because we have no concept of an escape character.
 #
 #   application
+#   --description: application details
 #   --format: name,alias,build,cluster\n
 #   --storage:
+#   ----name            a unique name for the application
+#   ----alias           an alias for the application (currently unused)
+#   ----build           the build the application is installed on
+#   ----cluster         y/n - whether or not the application supports load balancing
 #
 #   build
+#   --description: server builds
 #   --format: name,role,description,os,arch,disk,ram\n
 #   --storage:
 #
 #   constant
+#   --description: variables used to generate configurations
 #   --format: name,description\n
 #   --storage:
 #
 #   file
+#   --description: files installed on servers
 #   --format: name,path,type,owner,group,octal,target,description\n
 #   --storage:
-#   ----name	      a unique name to reference this entry; sometimes the actual file name but since
-#                       there is only one namespace you may have to be creative.
-#   ----path          the path on the system this file will be deployed to.
-#   ----type          the type of entry, one of 'file', 'symlink', 'binary', 'copy', or 'download'.
-#   ----owner         user name
-#   ----group         group name
-#   ----octal         octal representation of the file permissions
-#   ----target        optional field; for type 'symlink', 'copy', or 'download' - what is the target
-#   ----description   a description for this entry. this is not used anywhere except "$0 file show <entry>"
+#   ----name	        a unique name to reference this entry; sometimes the actual file name but since
+#                         there is only one namespace you may have to be creative.
+#   ----path            the path on the system this file will be deployed to.
+#   ----type            the type of entry, one of 'file', 'symlink', 'binary', 'copy', or 'download'.
+#   ----owner           user name
+#   ----group           group name
+#   ----octal           octal representation of the file permissions
+#   ----target          optional field; for type 'symlink', 'copy', or 'download' - what is the target
+#   ----description     a description for this entry. this is not used anywhere except "$0 file show <entry>"
 #
 #   file-map
+#   --description: map of files to applications
 #   --format: filename,application\n
 #   --storage:
 #
+#   hv-environment
+#   --description: hypervisor/environment map
+#   --format: environment,hypervisor
+#   --storage:
+#   ----environment     the name of the 'environment'
+#   ----hypervisor      the name of the 'hypervisor'
+#
+#   hv-network
+#   --description: hypervisor/network map
+#   --format: loc-zone-alias,hv-name,interface
+#   --storage:
+#   ----loc-zone-alias  network 'location,zone,alias' in the usual format
+#   ----hv-name         the hostname of the hypervisor
+#   ----interface       the name of the interface on the hypervisor for this network
+#
+#   hypervisor
+#   --description: virtual machine host servers
+#   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+#   --storage:
+#   ----name	        the hostname
+#   ----management-ip   the ip the scs server will use to manage the hypervisor
+#   ----location        name of the location of the hv (matches 'location')
+#   ----vm-path         path on the file system to the virtual-machine images (e.g. '/usr/local/vm')
+#   ----vm-min-disk     the minimum amount of disk space to leave available (in MB)
+#   ----min-free-mem    the minimum amount of memory to leave available (in MB)
+#   ----enabled         y/n - if 'n' do not add any virtual-machines to this host
+#
 #   location
+#   --description: sites or locations
 #   --format: code,name,description\n
 #   --storage:
 #
 #   network
+#   --description: network registry
 #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
 #   --storage:
 #
 #   net/a.b.c.0
+#   --description: subnet ip assignment registry
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
 #   --storage:
 #
 #   resource
+#   --description: arbitrary 'things' (such as IP addresses for a specific purpose) assigned to
+#                    systems and used to generate configs
 #   --format: type,value,assign_type,assign_to,name,description\n
 #   --storage:
 #
 #   system
+#   --description: servers
 #   --format: name,build,ip,location,environment\n
 #   --storage:
 #
 #   value/constant
+#   --description: global values for constants
 #   --format: constant,value\n
 #   --storage:
 #
 #   value/<environment>/constant
+#   --description: environment scoped values for constants
 #   --format: constant,value\n
 #   --storage:
 #
 #   value/<location>/<environment>
+#   --description: enironment at a specific site scoped values for constants
 #   --format: constant,value\n
 #   --storage:
 #
 #   <location>/network
+#   --description: network details for a specific location
 #   --format: zone,alias,network/cidr,build,default-build\n
 #   --storage:
-#   ----zone          network zone; must be identical to the entry in 'network'
-#   ----alias         network alias; must be identical to the entry in 'network'
-#   ----network/      network ip address (e.g. 192.168.0.0) followed by a forward slash
-#   ----cidr          the CIDR mask bits (e.g. 24)
-#   ----build         'y' or 'n', is this network used to build servers
-#   ----default-build 'y' or 'n', should this be the DEFAULT network at the location for builds
+#   ----zone            network zone; must be identical to the entry in 'network'
+#   ----alias           network alias; must be identical to the entry in 'network'
+#   ----network/        network ip address (e.g. 192.168.0.0) followed by a forward slash
+#   ----cidr            the CIDR mask bits (e.g. 24)
+#   ----build           'y' or 'n', is this network used to build servers
+#   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -138,8 +187,9 @@
 #   - add concept of 'instance' to environments and define 'stacks'
 #   - move install_build and sysbuild_install into scs
 #   - get_yn should pass options (such as --default) to get_input
-#   - add hypervisors
 #   - populate reserved IP addresses from IP-Scheme.xlsx
+#   - rename operations should update map files (hv stuff specifically for net/env/loc)
+#   - implement hypervisor network/environment functions
 #
 
 
@@ -224,7 +274,8 @@ function expand_subject_alias {
     d|di|dif) printf -- 'diff';;
     e|en|env) printf -- 'environment';;
     f) printf -- 'file';;
-    h|?) printf -- 'help';;
+    he|?) printf -- 'help';;
+    hv|hy|hyp|hyper) printf -- 'hypervisor';;
     l|lo|loc) printf -- 'location';;
     n|ne|net) printf -- 'network';;
     r|re|res) printf -- 'resource';;
@@ -450,7 +501,7 @@ function initialize_configuration {
   test -d $CONF && exit 2
   mkdir -p $CONF/template/patch $CONF/{binary,net,value}
   git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file,file-map,location,network,resource,system}
+  touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network},hypervisor,location,network,resource,system}
   cd $CONF || err
   printf -- "*\\.swp\nbinary\n" >.gitignore
   git add *
@@ -549,6 +600,8 @@ Component:
   file
     edit [<name>] [--environment <name>]
   help
+  hypervisor
+    [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll]
   location
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
@@ -1270,8 +1323,11 @@ function environment_create {
 
 function environment_delete {
   generic_delete environment $1 || return
-  test -d $CONF/binary/$1 && rm -rf $CONF/binary/$1
-  # also delete value folder
+  cd $CONF >/dev/null 2>&1 || return
+  test -d binary/$1 && git rm -r binary/$1
+  test -d value/$1 && git rm -r value/$1
+  sed -i "/^$1,/d" $CONF/hv-environment
+  commit_file hv-environment
 }
 
 function environment_list {
@@ -1863,8 +1919,9 @@ function network_delete {
     IFS="," read -r LOC ZONE ALIAS DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
     sed -i '/^'${C//-/,}',/d' ${CONF}/network
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
+    sed -i '/^'${C//-/,}',/d' ${CONF}/hv-network
   fi
-  commit_file network ${CONF}/${LOC}/network
+  commit_file network ${CONF}/${LOC}/network ${CONF}/hv-network
 }
 
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
@@ -2416,6 +2473,152 @@ function resource_update {
 }
 
 
+ #     # #     # ######  ####### ######  #     # ###  #####  ####### ######
+ #     #  #   #  #     # #       #     # #     #  #  #     # #     # #     #
+ #     #   # #   #     # #       #     # #     #  #  #       #     # #     #
+ #######    #    ######  #####   ######  #     #  #   #####  #     # ######
+ #     #    #    #       #       #   #    #   #   #        # #     # #   #
+ #     #    #    #       #       #    #    # #    #  #     # #     # #    #
+ #     #    #    #       ####### #     #    #    ###  #####  ####### #     #
+
+#   --format: environment,hypervisor
+function hypervisor_add_environment {
+  echo "Not implemented"
+}
+
+#   --format: loc-zone-alias,hv-name,interface
+function hypervisor_add_network {
+  echo "Not implemented"
+}
+
+#   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll]
+function hypervisor_byname {
+  # input validation
+  test $# -gt 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  case "$2" in
+    --add-environment) hypervisor_add_environment $1 ${@:3};;
+    --add-network) hypervisor_add_network $1 ${@:3};;
+    --poll) hypervisor_poll $1 ${@:3};;
+    --remove-environment) hypervisor_remove_environment $1 ${@:3};;
+    --remove-network) hypervisor_remove_network $1 ${@:3};;
+  esac
+}
+
+#   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+function hypervisor_create {
+  start_modify
+  # get user input and validate
+  get_input NAME "Hostname"
+  # validate unique name
+  grep -qE "^$NAME," $CONF/hypervisor && err "Hypervisor already defined."
+  while ! $(valid_ip "$IP"); do get_input IP "Management IP"; done
+  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input VMPATH "VM Storage Path"
+  get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$'
+  get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$'
+  get_yn ENABLED "Enabled (y/n): "
+  # add
+  printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>$CONF/hypervisor
+  commit_file hypervisor
+}
+
+function hypervisor_delete {
+  generic_delete hypervisor $1 || return
+  # also delete from hv-environment and hv-network
+  sed -i "/^[^,]*,$1\$/d" $CONF/hv-environment
+  sed -i "/^[^,]*,$1,/d" $CONF/hv-network
+  commit_file hv-environment hv-network
+}
+
+function hypervisor_list {
+  NUM=$( wc -l ${CONF}/hypervisor |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined hypervisor${S}."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |sort |sed 's/^/   /'
+}
+
+# poll the hypervisor for current system status
+#   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+#
+# optional:
+#   --disk   only display free disk in MB
+#   --mem    only display free memory in MB
+#
+function hypervisor_poll {
+  # input validation
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # load the host
+  IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
+  # test the connection
+  nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
+  # collect disk usage
+  N=$( ssh $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
+  case "${N: -1}" in
+    T) M="* 1024 * 1024";;
+    G) M="* 1024";;
+    M) M="* 1";;
+    k) M="/ 1024";;
+    b) M="/ 1024 / 1024";;
+    *) err "Unknown size qualifer in '$N'";;
+  esac
+  FREEDISK=$( echo "${N%?} $M" |bc ) 
+  DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |sed 's/\..*//' )
+  if [ "$2" == "--disk" ]; then printf -- "$FREEDISK"; return 0; fi
+  # collect memory usage
+  FREEMEM=$( ssh $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
+  MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed 's/\..*//' )
+  if [ "$2" == "--mem" ]; then printf -- "$FREEMEM"; return 0; fi
+  # collect load data
+  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh $IP "uptime |sed 's/.* load average: //'" )"
+  # output results
+  printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
+}
+
+function hypervisor_remove_environment {
+  echo "Not implemented"
+}
+
+function hypervisor_remove_network {
+  echo "Not implemented"
+}
+
+#   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+function hypervisor_show {
+  # input validation
+  test $# -gt 0 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # load the host
+  IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
+  # output the status/summary
+  printf -- "Name: $NAME\nManagement Address: $IP\nLocation: $LOC\nVM Storage: $VMPATH\nReserved Disk (MB): $MINDISK\nReserved Memory (MB): $MINMEM\nEnabled: $ENABLED\n"
+}
+
+#   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+function hypervisor_update {
+  start_modify
+  generic_choose hypervisor "$1" C && shift
+  IFS="," read -r NAME ORIGIP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$C," ${CONF}/hypervisor )"
+  get_input NAME "Hostname" --default "$NAME"
+  # validate unique name if it is changed
+  test "$NAME" != "$C" && grep -qE "^$NAME," $CONF/hypervisor && err "Hypervisor already defined."
+  while ! $(valid_ip "$IP"); do get_input IP "Management IP" --default "$ORIGIP" ; done
+  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --default "$LOC"
+  get_input VMPATH "VM Storage Path" --default "$VMPATH"
+  get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$' --default "$MINDISK"
+  get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
+  get_yn ENABLED "Enabled (y/n): " --default "$ENABLED"
+  sed -i 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
+  if [ "$NAME" != "$C" ]; then
+    sed -i "s/,$C\$/,$NAME/" ${CONF}/hv-environment
+    sed -ri 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
+  fi
+  commit_file hypervisor hv-environment hv-network
+}
+
+
   #####  #     #  #####  ####### ####### #     # 
  #     #  #   #  #     #    #    #       ##   ## 
  #         # #   #          #    #       # # # # 
@@ -2568,7 +2771,7 @@ function system_create {
   # get user input and validate
   get_input NAME "Hostname"
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input IP "Primary IP"
+  while ! $(valid_ip "$IP"); do get_input IP "Primary IP"; done
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # validate unique name
@@ -2769,7 +2972,7 @@ function system_update {
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input IP "Primary IP" --default "$IP"
+  while ! $(valid_ip "$IP"); do get_input IP "Primary IP" --default "$IP"; done
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}'/' ${CONF}/system
@@ -2895,9 +3098,9 @@ VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 if [ -z "$VERB" ]; then VERB="list"; fi
 
 # validate subject and verb
-printf -- " application build constant environment file location network resource system " |grep -q " $SUBJ "
+printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
-if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" ]]; then
+if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" && "$SUBJ" != "hypervisor" ]]; then
   printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
@@ -2922,6 +3125,11 @@ elif [ "$SUBJ" == "location" ]; then
   case "$VERB" in
     create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
     *) location_environment "$VERB" $@;;
+  esac
+elif [ "$SUBJ" == "hypervisor" ]; then
+  case "$VERB" in
+    create|delete|list|show|update) eval ${SUBJ}_${VERB} $@;;
+    *) hypervisor_byname "$VERB" $@;;
   esac
 elif [ "$SUBJ" == "network" ]; then
   case "$VERB" in
