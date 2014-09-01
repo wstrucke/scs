@@ -125,7 +125,7 @@
 #
 #   network
 #   --description: network registry
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
 #   --storage:
 #
 #   net/a.b.c.0
@@ -188,6 +188,7 @@
 #   - get_yn should pass options (such as --default) to get_input
 #   - populate reserved IP addresses from IP-Scheme.xlsx
 #   - rename operations should update map files (hv stuff specifically for net/env/loc)
+#   - reduce the number of places files are read directly. eventually use an actual DB.
 #
 
 
@@ -1878,6 +1879,7 @@ function network_create {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
+  get_input DNS "DNS Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
   get_yn BUILD "Use network for system builds (y/n)? "
   if [ "$BUILD" == "y" ]; then
@@ -1897,8 +1899,8 @@ function network_create {
     REPO_URL=""
   fi
   # add
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
@@ -2245,9 +2247,9 @@ function network_show {
   test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
 }
 
 function network_update {
@@ -2276,6 +2278,7 @@ function network_update {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$' --default "$BITS"
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
+  get_input DNS "DNS Server Address" --null --default "$DNS"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
   get_yn BUILD "Use network for system builds (y/n)? " --default "$BUILD"
   if [ "$BUILD" == "y" ]; then
@@ -2301,8 +2304,8 @@ function network_update {
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -3048,6 +3051,18 @@ function system_provision {
   IFS="," read -r OS ARCH DISK RAM <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
   #  - generate KS and deploy to local build server
+  mkdir -p ${TMP}
+  cp ${KSTEMPLATE}/${OS}-${ARCH}.tpl ${TMP}/
+  cat <<_EOF >${TMP}/${NAME}.const
+system.name $NAME
+system.ip $BUILDIP
+system.netmask
+system.gateway
+system.dns
+resource.sm-web
+_EOF
+
+# - get kickstart templates from sysbuild folder?  need that below anyway...
   
 
 
@@ -3310,6 +3325,9 @@ DEF_HDD=40
 # default amount of RAM for a new system in MB
 #
 DEF_MEM=1024
+#
+# path to kickstart templates (centos6-i386.tpl, etc...)
+KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
 #
 # path to kvm-uuid.sh, required for full build automation tasks
 KVMUUID=/home/wstrucke/ESG/home/wstrucke/scripts/kvm-uuid.sh
