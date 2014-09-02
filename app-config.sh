@@ -171,7 +171,7 @@
 #   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping
+#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -230,6 +230,11 @@ function cdr2size {
   return 0
 }
 
+function check_abort {
+  if [ $# -gt 0 ]; then MSG=" $1"; else MSG=""; fi
+  if [ -f $ABORTFILE ]; then errlog "ERROR - abort file appeared, halting execution.$MSG"; fi
+}
+
 # exit function called from trap
 #
 function cleanup_and_exit {
@@ -263,11 +268,20 @@ function err {
   test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
 }
 
+# error / exit function for daemon processes
+#
+function errlog {
+  test ! -z "$1" && MSG="$1" || MSG="An error occurred"
+  echo "$MSG" >&2
+  /usr/bin/logger -t "scs" "$MSG"
+  exit 1
+}
+
 # return the exit code from an arbitrary function as a string
 #
 function exit_status {
   test $# -gt 0 || return 1
-  eval $1 ${@:2}
+  eval $1 ${@:2} >/dev/null 2>&1
   RC=$?
   printf -- $RC
   return $RC
@@ -621,7 +635,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--deploy|--deprovision|--provision|--release|--vars]
+    <value> [--audit|--check|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--vars]
 
 Verbs - all top level components:
   create
@@ -2349,12 +2363,12 @@ function parse_template {
   [[ $# -lt 2 || ! -f $1 || ! -f $2 ]] && return
   [[ $# -eq 3 && ! -z "$3" && "$3" == "1" ]] && local SHOWERROR=1 || local SHOWERROR=0
   while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
-    NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
+    local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2
     if [ $? -ne 0 ]; then
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n"; return 1; else return 1; fi
     fi
-    VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
+    local VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
     sed -i s$'\001'"{% $NAME %}"$'\001'"$VAL"$'\001' $1
   done
   return 0
@@ -2823,8 +2837,10 @@ function system_byname {
     --check) system_check $1;;
     --deploy) system_deploy $1;;
     --deprovision) system_deprovision $1;;
-    --provision) system_provision $1;;
+    --provision) system_provision $1 ${@:3};;
+    --push-build-scripts) system_push_build_scripts $1 ${@:3};;
     --release) system_release $1;;
+    --start-remote-build) system_start_remote_build $1 ${@:3};;
     --vars) system_vars $1;;
   esac
 }
@@ -3009,6 +3025,16 @@ function system_deprovision {
 # create a system
 #
 function system_provision {
+  # abort handler
+  test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
+  # phase handler
+  if [ $# -gt 1 ]; then
+    case "$2" in
+      --phase-2) system_provision_phase2 $1 ${@:3};;
+      *) err "Invalid argument"
+    esac
+  fi
+  # select and validate the system
   generic_choose system "$1" C && shift
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
   #  - verify system is not already deployed
@@ -3030,7 +3056,7 @@ function system_provision {
   fi
   #  - lookup network details for the build network (used in the kickstart configuration)
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  read -r NETMASK GATEWAY DNS REPO_ADDR <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$8,$11}' )"
+  read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$8,$11,$12,$13}' )"
   valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
   valid_ip $DNS || err "Build network does not have a defined DNS server"
   #  - locate available HVs
@@ -3069,20 +3095,67 @@ resource.sm-web $REPO_ADDR
 _EOF
   parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
   # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
-  if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.const; fi
-
-printf -- "OS: $OS\nArch: $ARCH\nDisk: $DISK\nRAM: $RAM\nServer: $HV\nBuild IP: $BUILDIP on HV interface $HV_BUILD_INT\nFinal IP: $IP on HV interface $HV_FINAL_INT\n"; exit
- 
+  if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
+  #  - send custom kickstart file over to the local sm-web repo/mirror
+  ssh -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
+  scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server"
+  KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
+  #  - get disk size and memory
+  test -z "$DISK" && DISK=$DEF_HDD
+  test -z "$RAM" && RAM=$DEF_MEM
+  #  - get globally unique mac address and uuid for the new server
+  read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
   #  - kick off provision system
-  #    - when complete launch nc -l 80 to send a file back to the provisioning server - install success/failure
+  echo "Creating virtual machine..."
+  ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
+  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN </dev/null >/dev/null 2>&1 &
+  #  - phase 1 complete
+  echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
+  return 0
+}
+
+# build phase 2
+#
+function system_provision_phase2 {
+  # load arguments passed in from phase1
+  read -r NAME HV BUILDIP IP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME BUILD LOC EN <<< "$@"
+  # wait a few minutes before even trying to connect
+  sleep 180
+  /usr/bin/logger -t "scs" "starting build phase 2 for $NAME at $BUILDIP"
+  # max iterations, wait 60 minutes or 4 per min x 60 = 240
+  #local i=0
+  # confirm with targer server that base build is complete
+  #while [ "$( nc $BUILDIP 80 )" != "OK" ]; do
+  #  sleep 15
+  #  i=$(( $i + 1 ))
+  #  if [ $i -ge 240 ]; then errlog "Unable to connect to server $NAME at $BUILDIP for build phase 2"; fi
+  #  check_abort "Was waiting for server $NAME at $BUILDIP to finish CentOS install"
+  #done
   #  - sleep 30 or so
-  #  - connect to hypervisor, wait until vm is off
-  #  - virsh start
+  #sleep 30
+  #  - connect to hypervisor, wait until vm is off, then start it up again
+  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  /usr/bin/logger -t "scs" "successfully started $NAME"
+  #  - check for abort
+  check_abort
   #  - wait for vm to come up
+  sleep 30
+  while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "ssh connection succeeded to $NAME"
+  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "$NAME verified UP"
+  #  - load the role
+  ROLE=$( grep -E "^$BUILD," ${CONF}/build |awk 'BEGIN{FS=","}{print $2}' )
   #  - install_build
+  system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
+  /usr/bin/logger -t "scs" "build scripts deployed to $NAME"
   #  - sysbuild_install (do not change the IP here)
+  system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
   #    - when complete launch nc -l 80 to send response back to provisioning server - install success/failure
+
+errlog "finished base system build but phase2 is incomplete.  $NAME should be online at $BUILDIP"
+
   #  - background task to monitor install
   #  - sleep 60 or so
   #  - wait for vm to come up
@@ -3099,9 +3172,34 @@ printf -- "OS: $OS\nArch: $ARCH\nDisk: $DISK\nRAM: $RAM\nServer: $HV\nBuild IP: 
   #  - start vm
   #  - fin
   #  
+}
 
-
-  echo "Not implemented"
+# deploy the current system build scripts to a remote server
+#   this function replaces 'install_build' previously found in /root/.bashrc
+#
+function system_push_build_scripts {
+  if [[ $# -lt 1 || $# -gt 2 ]]; then echo -e "Usage: install_build hostname|ip [path]\n"; return 1; fi
+  if [ "`whoami`" != "root" ]; then echo "You must be root"; return 2; fi
+  if ! [ -z "$2" ]; then
+    test -d "$2" || return 3
+    SRCDIR="$2"
+  else
+    SRCDIR=$BUILDSRC
+  fi
+  test -d "$SRCDIR" || return 4
+  nc -z -w2 $1 22
+  if [ $? -ne 0 ]; then
+    echo "Remote host did not respond to initial request; attempting to force network discovery..." >&2
+    ping -c 2 -q $1 >/dev/null 2>&1
+    nc -z -w2 $1 22 || return 5
+  fi
+  cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
+  sed -i "/$( printf -- "$1" |sed 's/\./\\./g' )/d" /root/.ssh/known_hosts
+  ssh -o "StrictHostKeyChecking no" $1 mkdir ESG 2>/dev/null
+  scp -p -r "$SRCDIR" $1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
+  cat /root/.ssh/known_hosts.$$ >/root/.ssh/known_hosts
+  /bin/rm /root/.ssh/known_hosts.$$
+  return 0
 }
 
 function system_list {
@@ -3267,6 +3365,26 @@ function system_show {
   printf -- '\n'
 }
 
+function system_start_remote_build {
+  if [[ $# -eq 0 || -z "$1" ]]; then echo -e "Usage: sysbuild_install current-ip [role]\n"; return 1; fi
+  if [ "`whoami`" != "root" ]; then echo "You must be root"; return 2; fi
+  valid_ip $1 || return 1
+  # confirm availabilty
+  nc -z -w2 $1 22
+  if [ $? -ne 0 ]; then echo "Host is down. Aborted."; return 2; fi
+  # remove any stored keys for the current and target IPs since this is a new build
+  cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
+  sed -i "/$( printf -- "$1" |sed 's/\./\\./g' )/d" /root/.ssh/known_hosts
+  diff /root/.ssh/known_hosts{.$$,}; rm -f /root/.ssh/known_hosts.$$
+  # kick-off install and return
+  if [ -z "$2" ]; then
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh >/dev/null 2>&1 </dev/null &"
+  else
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh $2 >/dev/null 2>&1 </dev/null &"
+  fi
+  return 0
+}
+
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
@@ -3283,6 +3401,39 @@ function system_update {
     network_ip_assign $IP $NAME
   fi
   commit_file system
+}
+
+function system_update_push_hosts {
+  # !!FIXME!! extracted from original sysbuild_install -- needs updated and revised
+exit 1
+#  if [ "`hostname`" != "hqpcore-bkup01" ]; then echo "Run from hqpcore-bkup01"; return 3; fi
+#  # hostname and IP should either both be unique, or both registered together
+#  ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' /etc/hosts ); H=$?
+#  echo "$ENTRY" |grep -qE '^'${2//\./\\.}'[ '$'\t'']';      I=$?
+#  grep -qE '^'${2//\./\\.}'[ '$'\t'']' /etc/hosts;          J=$?
+#  if [ $(( $H + $I )) -eq 0 ]; then
+#    # found together; this is an existing host
+#    echo "Host entry exists."
+#  elif [ $(( $H + $J )) -eq 2 ]; then
+#    echo "Adding host entry..."
+#    cat /etc/hosts >/etc/hosts.sysbuild
+#    echo -e "$2\t$1\t\t$1.2checkout.com" >>/etc/hosts
+#    diff /etc/hosts{.sysbuild,}; echo
+#    # sync
+#    /usr/local/etc/push-hosts.sh
+#  elif [ $H -eq 0 ]; then
+#    echo "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted."
+#    return 1
+#  elif [ $J -eq 0 ]; then
+#    echo "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted."
+#    return 1
+#  fi
+#  # add host to lpad as needed
+#  grep -qE '^'$1':' /usr/local/etc/lpad/hosts/managed-hosts
+#  if [ $? -ne 0 ]; then
+#    echo "Adding lpad entry..."
+#    echo "$1:linux" >>/usr/local/etc/lpad/hosts/managed-hosts
+#  fi
 }
 
 # generate all system variables and settings
@@ -3320,6 +3471,14 @@ function system_vars {
   #####  #######    #       #    ### #     #  #####   ##### 
 
 # settings
+#
+# file to look for to immediately abort all background tasks
+#
+ABORTFILE=/tmp/scs-abort-all
+#
+# path to build scripts
+#
+BUILDSRC=/home/wstrucke/ESG/system-builds
 #
 # local root for scs storage files, settings, and git repository
 CONF=/usr/local/etc/lpad/app-config
