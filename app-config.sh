@@ -184,7 +184,6 @@
 #   - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #   - add detailed help section for each function
 #   - add concept of 'instance' to environments and define 'stacks'
-#   - move install_build and sysbuild_install into scs
 #   - get_yn should pass options (such as --default) to get_input
 #   - populate reserved IP addresses from IP-Scheme.xlsx
 #   - rename operations should update map files (hv stuff specifically for net/env/loc)
