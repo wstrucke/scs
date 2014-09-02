@@ -72,6 +72,11 @@
 #   --format: name,description\n
 #   --storage:
 #
+#   environment
+#   --description: 'stacks' or groups of instances of all or a subset of 2CO applications
+#   --format: name,alias,description\n
+#   --storage:
+#
 #   file
 #   --description: files installed on servers
 #   --format: name,path,type,owner,group,octal,target,description\n
