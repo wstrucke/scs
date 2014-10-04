@@ -184,7 +184,6 @@
 #   - deleting an application should also unassign resources and undefine constants
 #   - finish IPAM and IP allocation components
 #   - validate IP addresses using the new valid_ip function
-#   - generate kickstart files
 #   - simplify IP management functions by reducing code duplication
 #   - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #   - add detailed help section for each function
@@ -193,6 +192,7 @@
 #   - populate reserved IP addresses from IP-Scheme.xlsx
 #   - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - reduce the number of places files are read directly. eventually use an actual DB.
+#   - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #
 
 
@@ -1603,6 +1603,9 @@ function file_edit {
     popd >/dev/null 2>&1
   fi
 }
+function file_edit_help {
+  echo "HELP NOT AVAILABLE -- YOU ARE ON YOUR OWN"
+}
 
 function file_list {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
@@ -2401,7 +2404,7 @@ function resource_byval {
 
 # assign a resource to a host
 # - it only makes sense to assign an ip to a host, ha/cluster ips should
-#   be assigned to an application and environment
+#   be assigned to an application and environment or build and environment
 #
 # requires:
 #   $1  resource
@@ -3023,6 +3026,7 @@ function system_deploy {
 # destroy and permantantly delete a system
 #
 function system_deprovision {
+  # !!FIXME!!
   echo "Not implemented"
 }
 
@@ -3160,6 +3164,7 @@ function system_provision_phase2 {
 
 errlog "finished base system build but phase2 is incomplete.  $NAME should be online at $BUILDIP"
 
+  #  - clean up kickstart file
   #  - background task to monitor install
   #  - sleep 60 or so
   #  - wait for vm to come up
@@ -3174,6 +3179,7 @@ errlog "finished base system build but phase2 is incomplete.  $NAME should be on
   #  - connect to hypervisor, wait until vm is off
   #  - change VM vlan and redefine
   #  - start vm
+  #  - update /etc/hosts and push-hosts (system_update_push_hosts)
   #  - fin
   #  
 }
