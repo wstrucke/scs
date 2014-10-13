@@ -1303,7 +1303,7 @@ function environment_constant_define {
   grep -qE "^$C," ${CONF}/value/$ENV/constant
   if [ $? -eq 0 ]; then
     # already define, update value
-    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/constant
+    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/$ENV/constant
   else
     # not defined, add
     printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/constant
@@ -1822,7 +1822,7 @@ function location_environment_constant_define {
   grep -qE "^$C," $CONF/value/$LOC/$ENV
   if [ $? -eq 0 ]; then
     # already define, update value
-    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' $CONF/value/$LOC/$ENV
+    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/value/$LOC/$ENV
   else
     # not defined, add
     printf -- "$C,$VAL\n" >>$CONF/value/$LOC/$ENV
@@ -2028,20 +2028,23 @@ function network_ip {
 # required:
 #   $1  IP
 #   $2  hostname
+#   --force to assign the address and ignore checks
 #
 function network_ip_assign {
   start_modify
-  test $# -eq 2 || err "An IP and hostname are required."
+  test $# -ge 2 || err "An IP and hostname are required."
   valid_ip $1 || err "Invalid IP."
-  local RET FILENAME=$( get_network $1 24 )
+  local RET FILENAME=$( get_network $1 24 ) FORCE=0 ASSN
+  if [[ $# -ge 3 && "$3" == "--force" ]]; then FORCE=1; fi
   # validate address
   grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
   [ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" ] && err "The requested IP is reserved."
-  [ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )" == "" ] || err "The requested IP is already assigned."
+  ASSN="$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )"
+  if [[ "$ASSN" != "" && "$ASSN" != "$2" ]]; then err "The requested IP is already assigned."; fi
   # load the ip data
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # check if the ip is in use (last ditch effort)
-  if [ $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
+  if [[ $FORCE -eq 0 && "$ASSN" == "" && $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]]; then
     # mark the address as reserved
     sed -i "s/^$( ip2dec $1 ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
@@ -2131,7 +2134,7 @@ function network_ip_unassign {
   grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
   # unassign
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
-  sed -i "s/^$( ip2dec $1 ),.*/$A,$B,$C,$D,,$F,$G,$H,$I/" ${CONF}/net/${FILENAME}
+  sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
 }
@@ -2426,7 +2429,7 @@ function parse_template {
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n"; return 1; else return 1; fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
-    sed -i s$'\001'"{% $NAME %}"$'\001'"$VAL"$'\001' $1
+    sed -i s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
   done
   return 0
 }
