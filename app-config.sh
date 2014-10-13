@@ -315,9 +315,11 @@ function expand_subject_alias {
 function expand_verb_alias {
   case "$1" in
     a|ap|app) printf -- 'application';;
+    ca) printf -- 'cat';;
     co|con|cons|const) printf -- 'constant';;
     cr) printf -- 'create';;
     d|de|del) printf -- 'delete';;
+    e|ed) printf -- 'edit';;
     f) printf -- 'file';;
     l|li|lis|ls) printf -- 'list';;
     s|sh|sho) printf -- 'show';;
@@ -344,13 +346,10 @@ function generic_choose {
     eval $1_list \"$4\"
     printf -- "\n"
     get_input I "Please specify $AN $1"
-    test "$1" == "constant" && I=$( printf -- $I |tr 'a-z' 'A-Z' )
     grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
     printf -- "\n"
     eval $3="$I"
     return 1
-  elif [ "$1" == "constant" ]; then
-    eval $3=$( printf -- $2 |tr 'a-z' 'A-Z' )
   else
     eval $3="$2"
   fi
@@ -625,6 +624,7 @@ Component:
     application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
+    cat [<name>] [--environment <name>] [--vars <system>] [--silent]
     edit [<name>] [--environment <name>]
   help
   hypervisor
@@ -1057,8 +1057,8 @@ function constant_create {
   # get user input and validate
   get_input NAME "Name" --nc
   get_input DESC "Description" --nc --null
-  # force uppercase for constants
-  NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
+  # force lowercase for constants
+  NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   # validate unique name
   grep -qE "^$NAME," $CONF/constant && err "Constant already defined."
   # add
@@ -1086,13 +1086,13 @@ function constant_list {
 function constant_list_dedupe {
   if ! [ -f $1 ]; then cat $2; return; fi
   if ! [ -f $2 ]; then cat $1; return; fi
-  join -a1 -a2 -t',' <(sort -t',' -k1 $1) <(sort -t',' -k1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+  join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
 }
 
 function constant_show {
   test $# -eq 1 || err "Provide the constant name"
-  C="$( printf -- "$1" |tr 'a-z' 'A-Z' )"
-  grep -qE "^$C," ${CONF}/constant || err "Unknown constant"
+  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
+  grep -qiE "^$C," ${CONF}/constant || err "Unknown constant"
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   printf -- "Name: $NAME\nDescription: $DESC\n"
 }
@@ -1102,8 +1102,8 @@ function constant_update {
   generic_choose constant "$1" C && shift
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   get_input NAME "Name" --default "$NAME"
-  # force uppercase for constants
-  NAME=$( printf -- "$NAME" | tr 'a-z' 'A-Z' )
+  # force lowercase for constants
+  NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
@@ -1415,6 +1415,56 @@ function environment_update {
  #        #  #       #       
  #        #  #       #       
  #       ### ####### ####### 
+
+# output a (text) file contents to stdout
+#
+# cat [<name>] [--environment <name>] [--vars <system>] [--silent]
+#
+function file_cat {
+  # get file name to show
+  generic_choose file "$1" C && shift
+  # set defaults
+  local EN=""
+  local PARSE=""
+  local SILENT=0
+  # get any other provided options
+  while [ $# -gt 0 ]; do case $1 in
+    --environment) EN="$2"; shift;;
+    --vars) PARSE="$2"; shift;;
+    --silent) SILENT=1;;
+    *) usage;;
+  esac; shift; done
+  # load file data
+  IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
+  # only handle plain text files here
+  if [ "$TYPE" != "file" ]; then err "Invalid type for cat: $TYPE"; fi
+  # create the temporary directory
+  mkdir -p $TMP
+  # copy the base template to the path
+  cat $CONF/template/$C >$TMP/$C
+  # optionally patch the file for the environment
+  if ! [ -z "$EN" ]; then
+    # apply environment patch for this file if one exists
+    if [ -f $CONF/template/$EN/$C ]; then
+      patch -p0 $TMP/$C <$CONF/template/$EN/$C >/dev/null 2>&1
+      test $? -eq 0 || err "Error applying $EN patch to $C."
+    fi
+  fi
+  # optionally replace variables
+  if ! [ -z "$PARSE" ]; then
+    # generate the system variables
+    system_vars $PARSE >$TMP/systemvars.$$
+    # process template variables
+    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT
+    if [ $? -ne 0 ]; then test $SILENT -ne 1 && err "Error parsing template" || return 1; fi
+  fi
+  # output the file and remove it
+  cat $TMP/$C
+  rm -f $TMP/$C
+}
+function file_cat_help {
+  echo "help tbd"
+}
 
 # create a new file definition
 #
@@ -2915,8 +2965,6 @@ function system_check {
       FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
     done
   fi
-  # generate the system variables
-  system_vars $NAME >/tmp/app-config.$$
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
@@ -2931,16 +2979,9 @@ function system_check {
       mkdir -p $TMP/`dirname $FPTH`
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
-        # copy the base template to the path
-        cat $CONF/template/${FILES[i]} >$TMP/$FPTH
-        # apply environment patch for this file if one exists
-        if [ -f $CONF/template/$EN/${FILES[i]} ]; then
-          patch -p0 $TMP/$FPTH <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
-          if [ $? -ne 0 ]; then echo "Error applying $EN patch to ${FILES[i]}.\n"; VALID=1; continue; fi
-        fi
-        # process template variables
-        parse_template $TMP/$FPTH /tmp/app-config.$$ 1
-        if [ $? -ne 0 ]; then printf -- "Error replacing template variables, constants, and resources for ${FILES[i]}.\n"; VALID=1; continue; fi
+        # generate the file for this environment
+        file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/$FPTH
+        if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n"; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
         test -f $CONF/binary/$EN/$FNAME
@@ -3246,8 +3287,6 @@ function system_release {
       FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
     done
   fi
-  # generate the system variables
-  system_vars $NAME >/tmp/app-config.$$
   # generate the release configuration files
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
@@ -3263,15 +3302,8 @@ function system_release {
       mkdir -p $TMP/`dirname $FPTH`
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
-        # copy the base template to the path
-        cat $CONF/template/${FILES[i]} >$TMP/$FPTH
-        # apply environment patch for this file if one exists
-        if [ -f $CONF/template/$EN/${FILES[i]} ]; then
-          patch -p0 $TMP/$FPTH <$CONF/template/$EN/${FILES[i]} >/dev/null 2>&1
-          test $? -eq 0 || err "Error applying $EN patch to ${FILES[i]}."
-        fi
-        # process template variables
-        parse_template $TMP/$FPTH /tmp/app-config.$$ || err "Error parsing template data"
+        # generate the file for this environment
+        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/$FPTH || err "Error generating $EN file for ${FILES[i]}"
       elif [ "$FTYPE" == "symlink" ]; then
         # tar will preserve the symlink so go ahead and create it
         ln -s $FTARGET $TMP/$FPTH
@@ -3465,8 +3497,8 @@ function system_vars {
     fi
   done
   # pull constants
-  for C in $( system_constant_list $NAME ); do
-    IFS="," read -r CN VAL <<< "$C"
+  for CNST in $( system_constant_list $NAME ); do
+    IFS="," read -r CN VAL <<< "$CNST"
     echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
   done
 }
@@ -3579,10 +3611,11 @@ if [ -z "$VERB" ]; then VERB="list"; fi
 printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" && "$SUBJ" != "hypervisor" ]]; then
-  printf -- " create delete list show update edit file application constant environment " |grep -q " $VERB "
+  printf -- " create delete list show update edit file application constant environment cat " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
+[[ "$VERB" == "cat" && "$SUBJ" != "file" ]] && usage
 [[ "$VERB" == "file" && "$SUBJ" != "application" ]] && usage
 [[ "$VERB" == "application" && "$SUBJ" != "environment" ]] && usage
 [[ "$VERB" == "constant" && "$SUBJ" != "environment" ]] && usage
