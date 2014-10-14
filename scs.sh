@@ -1,13 +1,28 @@
 #!/bin/bash
 #
-# 2Checkout SCS System
-# Manage and deploy application configuration files
+# Simple Configuration [Management] System
+# Manage and deploy application configuration files to multiple environments
 #
 # William Strucke [wstrucke@gmail.com]
 # Version 1.0.0, May 2014
 #
+# Copyright 2014
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
 # Configuration Storage:
-#   /usr/local/etc/lpad/app-config/
+#   ./app-config/
 #     application                                          file
 #     binary                                               directory
 #     binary/<environment>/                                environment binary files
@@ -73,7 +88,7 @@
 #   --storage:
 #
 #   environment
-#   --description: 'stacks' or groups of instances of all or a subset of 2CO applications
+#   --description: 'stacks' or groups of instances of all or a subset of applications
 #   --format: name,alias,description\n
 #   --storage:
 #
@@ -601,7 +616,7 @@ function octal2text {
 }
 
 function usage {
-  echo "2Checkout SCS Application
+  echo "Simple Configuration [Management] System
 Manage application/server configurations and base templates across all environments.
 
 Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
@@ -3472,7 +3487,7 @@ exit 1
 #  elif [ $(( $H + $J )) -eq 2 ]; then
 #    echo "Adding host entry..."
 #    cat /etc/hosts >/etc/hosts.sysbuild
-#    echo -e "$2\t$1\t\t$1.2checkout.com" >>/etc/hosts
+#    echo -e "$2\t$1\t\t$1.example.com" >>/etc/hosts
 #    diff /etc/hosts{.sysbuild,}; echo
 #    # sync
 #    /usr/local/etc/push-hosts.sh
@@ -3549,7 +3564,7 @@ DEF_MEM=1024
 KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
 #
 # path to kvm-uuid.sh, required for full build automation tasks
-KVMUUID=/home/wstrucke/ESG/home/wstrucke/scripts/kvm-uuid.sh
+KVMUUID="`dirname $0`/kvm-uuid"
 #
 # list of architectures for builds -- each arch in the list must be available
 #   for each OS version (below)
