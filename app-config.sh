@@ -624,7 +624,7 @@ Component:
     application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
-    cat [<name>] [--environment <name>] [--vars <system>] [--silent]
+    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
     edit [<name>] [--environment <name>]
   help
   hypervisor
@@ -1418,20 +1418,19 @@ function environment_update {
 
 # output a (text) file contents to stdout
 #
-# cat [<name>] [--environment <name>] [--vars <system>] [--silent]
+# cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
 #
 function file_cat {
   # get file name to show
   generic_choose file "$1" C && shift
   # set defaults
-  local EN=""
-  local PARSE=""
-  local SILENT=0
+  local EN="" PARSE="" SILENT=0 VERBOSE=0
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
     --vars) PARSE="$2"; shift;;
     --silent) SILENT=1;;
+    --verbose) VERBOSE=1;;
     *) usage;;
   esac; shift; done
   # load file data
@@ -1455,8 +1454,8 @@ function file_cat {
     # generate the system variables
     system_vars $PARSE >$TMP/systemvars.$$
     # process template variables
-    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT
-    if [ $? -ne 0 ]; then test $SILENT -ne 1 && err "Error parsing template" || return 1; fi
+    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
+    if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
   fi
   # output the file and remove it
   cat $TMP/$C
@@ -2413,6 +2412,7 @@ function network_update {
 #
 # optional:
 #  $3 value of "1" means output errors
+#  $4 value of "1" means output verbose info on missing variables
 #
 # syntax:
 #  {% resource.name %}
@@ -2421,17 +2421,27 @@ function network_update {
 #
 function parse_template {
   [[ $# -lt 2 || ! -f $1 || ! -f $2 ]] && return
-  [[ $# -eq 3 && ! -z "$3" && "$3" == "1" ]] && local SHOWERROR=1 || local SHOWERROR=0
+  [[ $# -ge 3 && ! -z "$3" && "$3" == "1" ]] && local SHOWERROR=1 || local SHOWERROR=0
+  [[ $# -ge 4 && ! -z "$4" && "$4" == "1" ]] && local VERBOSE=1 || local VERBOSE=0
+  local RETVAL=0
   while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
     local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2
     if [ $? -ne 0 ]; then
-      if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n"; return 1; else return 1; fi
+      if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
+      if [ $VERBOSE -eq 1 ]; then
+        printf -- "  Missing Variable: '$NAME'\n"
+        sed -i s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
+        RETVAL=1
+        continue
+       else
+         return 1
+       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
     sed -i s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
   done
-  return 0
+  return $RETVAL
 }
 
 
