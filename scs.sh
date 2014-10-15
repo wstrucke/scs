@@ -195,7 +195,6 @@
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
-#   - system audit should check ownership and permissions on files
 #   - deleting an application should also unassign resources and undefine constants
 #   - finish IPAM and IP allocation components
 #   - validate IP addresses using the new valid_ip function
@@ -1448,6 +1447,8 @@ function file_cat {
     --verbose) VERBOSE=1;;
     *) usage;;
   esac; shift; done
+  # validate system name
+  if ! [ -z "$PARSE" ]; then grep -qE "^$1," ${CONF}/system || err "Unknown system"; fi
   # load file data
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   # only handle plain text files here
@@ -1474,7 +1475,7 @@ function file_cat {
   fi
   # output the file and remove it
   cat $TMP/$C
-  rm -f $TMP/$C
+  rm -f $TMP/$C $TMP/systemvars.$$
 }
 function file_cat_help {
   echo "help tbd"
@@ -2945,20 +2946,24 @@ function system_audit {
   echo "Extracting..."
   mkdir -p $TMP/{REFERENCE,ACTUAL}
   tar xzf $FILE -C $TMP/REFERENCE/ || err "Error extracting release to local directory"
-  # clean up temporary file
+  # clean up temporary release archive
   rm -f $FILE
+  # switch to the release root
   pushd $TMP/REFERENCE >/dev/null 2>&1
+  # move the stat file out of the way
+  mv scs-stat ../
+  # remove scs deployment scripts for audit
+  rm -f scs-*
   # pull down the files to audit
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
     mkdir -p $TMP/ACTUAL/`dirname $F`
     scp -p $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
   done
+  ssh $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/scs-actual
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
-    # ignore scs scripts
-    printf -- "$F" |grep -qE '^scs-' && continue
     if [ -f $TMP/ACTUAL/$F ]; then
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=1
@@ -2974,6 +2979,9 @@ function system_audit {
       VALID=1
     fi
   done
+  echo "Analyzing permissions..."
+  diff $TMP/scs-stat $TMP/scs-actual
+  if [ $? -ne 0 ]; then VALID=1; fi
   test $VALID -eq 0 && echo -e "\nSystem audit PASSED" || echo -e "\nSystem audit FAILED"
   exit $VALID
 }
@@ -3298,6 +3306,7 @@ function system_release {
   AUDITSCRIPT="$TMP/scs-audit.sh"
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
   RELEASESCRIPT="$TMP/scs-install.sh"
+  STATFILE="$TMP/scs-stat"
   FILES=()
   # create the audit script
   printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
@@ -3307,6 +3316,8 @@ function system_release {
   printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
   printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
+  # create the stat file
+  touch $STATFILE
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -3355,10 +3366,17 @@ function system_release {
       fi
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
+        # audit
         printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
         printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
         printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
         printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+        # stat
+        if [ "$FTYPE" == "symlink" ]; then
+          printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |sed 's/binary$/file/' >>$STATFILE
+        else
+          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |sed 's/binary$/file/' >>$STATFILE
+        fi
       fi
     done
     # finalize audit script
