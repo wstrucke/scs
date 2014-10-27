@@ -979,8 +979,8 @@ function application_show {
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
-      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
-    done |sort |uniq
+      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+    done |sort |uniq |column -t |sed 's/^/   /'
   else
     printf -- "\nNo managed configuration files."
   fi
@@ -3463,8 +3463,8 @@ function system_show {
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
-      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
-    done |sort |uniq
+      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+    done |sort |uniq |column -t |sed 's/^/   /'
   else
     printf -- "\nNo managed configuration files."
   fi
