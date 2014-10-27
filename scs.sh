@@ -207,6 +207,7 @@
 #   - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - reduce the number of places files are read directly. eventually use an actual DB.
 #   - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
+#   - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #
 
 
@@ -972,6 +973,18 @@ function application_show {
   grep -qE "^$APP," $CONF/application || err "Invalid application"
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
+  # retrieve file list
+  FILES=( `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+  # output linked configuration file list
+  if [ ${#FILES[*]} -gt 0 ]; then
+    printf -- "\nManaged configuration files:\n"
+    for ((i=0;i<${#FILES[*]};i++)); do
+      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $2}' |sed 's/^/   /'
+    done |sort |uniq
+  else
+    printf -- "\nNo managed configuration files."
+  fi
+  printf -- '\n'
 }
 
 function application_update {
@@ -1040,6 +1053,11 @@ function build_show {
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM <<< "$( grep -E "^$1," ${CONF}/build )"
   printf -- "Build: $NAME\nRole: $ROLE\nOperating System: $OS-$ARCH\nDisk Size (GB): $DISK\nMemory (MB): $RAM\nDescription: $DESC\n"
+  # look up the applications configured for this build
+  NUM=$( build_application_list "$1" |wc -l )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo -e "\nThere ${A} ${NUM} linked application${S}."
+  if [ $NUM -gt 0 ]; then build_application_list "$1" |sed 's/^/   /'; fi
 }
 
 function build_update {
@@ -1448,7 +1466,7 @@ function file_cat {
     *) usage;;
   esac; shift; done
   # validate system name
-  if ! [ -z "$PARSE" ]; then grep -qE "^$1," ${CONF}/system || err "Unknown system"; fi
+  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   # load file data
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   # only handle plain text files here
