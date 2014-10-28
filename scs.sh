@@ -145,7 +145,7 @@
 #
 #   network
 #   --description: network registry
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
 #   --storage:
 #
 #   net/a.b.c.0
@@ -208,6 +208,7 @@
 #   - reduce the number of places files are read directly. eventually use an actual DB.
 #   - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #   - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
+#   - add support for static routes for a network
 #
 
 
@@ -1512,6 +1513,7 @@ function file_cat_help {
 #   download      a regular file that is not stored here. it will be retrieved by the remote system
 #                   when it is deployed.  when auditing a remote system files of type 'download' will
 #                   only be audited for permissions and existence.
+#   directory     a directory (useful for enforcing permissions)
 #
 function file_create {
   start_modify
@@ -1519,7 +1521,7 @@ function file_create {
   TARGET=""
   # get user input and validate
   get_input NAME "Name (for reference)"
-  get_input TYPE "Type" --options file,symlink,binary,copy,delete,download --default file
+  get_input TYPE "Type" --options file,directory,symlink,binary,copy,delete,download --default file
   if [ "$TYPE" == "symlink" ]; then
     get_input TARGET "Link Target" --nc
   elif [ "$TYPE" == "copy" ]; then
@@ -1728,7 +1730,7 @@ function file_update {
   generic_choose file "$1" C && shift
   IFS="," read -r NAME PTH T OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default "$NAME"
-  get_input TYPE "Type" --options file,symlink,binary,copy,delete,download --default "$T"
+  get_input TYPE "Type" --options file,directory,symlink,binary,copy,delete,download --default "$T"
   if [ "$TYPE" == "symlink" ]; then
     get_input TARGET "Link Target" --nc --default "$TARGET"
   elif [ "$TYPE" == "copy" ]; then
@@ -1984,6 +1986,7 @@ function network_create {
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
   get_input DNS "DNS Server Address" --null
+  get_input NTP "NTP Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
   get_yn BUILD "Use network for system builds (y/n)? "
   if [ "$BUILD" == "y" ]; then
@@ -2003,8 +2006,8 @@ function network_create {
     REPO_URL=""
   fi
   # add
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD}\n" >>$CONF/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
@@ -2355,8 +2358,8 @@ function network_show {
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
 }
 
 function network_update {
@@ -2372,7 +2375,7 @@ function network_update {
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  IFS="," read -r L Z A NETORIG MASKORIG BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NETORIG MASKORIG BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2386,6 +2389,7 @@ function network_update {
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
   get_input DNS "DNS Server Address" --null --default "$DNS"
+  get_input NTP "NTP Server Address" --null --default "$NTP"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
   get_yn BUILD "Use network for system builds (y/n)? " --default "$BUILD"
   if [ "$BUILD" == "y" ]; then
@@ -2411,8 +2415,8 @@ function network_update {
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -2802,7 +2806,7 @@ function hypervisor_poll {
     b) M="/ 1024 / 1024";;
     *) err "Unknown size qualifer in '$N'";;
   esac
-  FREEDISK=$( echo "${N%?} $M" |bc ) 
+  FREEDISK=$( echo "${N%?} $M" |bc |sed 's/\..*//' ) 
   DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |sed 's/\..*//' )
   # optionally only return disk space
   if [ "$2" == "--disk" ]; then
@@ -2842,6 +2846,7 @@ function hypervisor_rank {
       SEL=${LIST[$i]}
     fi
   done
+  if [ -z "$SEL" ]; then err "Error ranking hypervisors"; fi
   printf -- $SEL
 }
 
@@ -3115,7 +3120,7 @@ function system_deploy {
   if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
   printf -- "Cleaning up...\n"
   rm -f $FILE
-  printf -- "\nInstall like this:\ntar xzf /root/`basename $FILE` -C /\ncd /\n./scs-install.sh\n\n"
+  printf -- "\nInstall like this:\n  ssh $1 \"tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh\"\n\n"
 }
 
 # destroy and permantantly delete a system
@@ -3361,6 +3366,8 @@ function system_release {
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
         file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/$FPTH || err "Error generating $EN file for ${FILES[i]}"
+      elif [ "$FTYPE" == "directory" ]; then
+        mkdir -p $TMP/$FPTH
       elif [ "$FTYPE" == "symlink" ]; then
         # tar will preserve the symlink so go ahead and create it
         ln -s $FTARGET $TMP/$FPTH
@@ -3550,6 +3557,16 @@ function system_vars {
   IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
+  # output network data, if available
+  local SYSNET=$( network_list --match $IP )
+  if [ ! -z "$SYSNET" ]; then
+    IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
+    echo -e "system.zone ${ZONE}-${ALIAS}\nsystem.network $NET\nsystem.netmask $MASK\nsystem.gateway $GW"
+    echo "system.broadcast $( ipadd $NET $(( $( cdr2size $BITS ) -1 )) )"
+    if [ ! -z "$DNS" ]; then echo "system.dns $DNS"; fi
+    if [ ! -z "$NTP" ]; then echo "system.ntp $NTP"; fi
+    if [ ! -z "$VLAN" ]; then echo "system.vlan $VLAN"; fi
+  fi
   # pull system resources
   for R in $( system_resource_list $NAME ); do
     IFS="," read -r TYPE VAL RN <<< "$R"
