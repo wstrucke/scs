@@ -3395,7 +3395,11 @@ function system_release {
         printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
         printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
         printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
-        printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+        if [ "$FTYPE" == "symlink" ]; then
+          printf -- "# set permissions on '$FNAME'\nchown -h $FOWNER:$FGROUP /$FPTH\n" >>$RELEASESCRIPT
+        else
+          printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+        fi
         # stat
         if [ "$FTYPE" == "symlink" ]; then
           printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |sed 's/binary$/file/' >>$STATFILE
