@@ -2823,14 +2823,21 @@ function hypervisor_poll {
 # given a list of one or more hypervisors return the top ranked system based on
 #   available resources
 #
+# [--avoid <string>]  optional string to match on each hypervisor.  if all hosts are valid, exclude any
+#                     with running VMs matching this string. if all available hosts match the string,
+#                     then ignore it entirely.
+#
 function hypervisor_rank {
   test -z "$1" && return 1
+  local AVOID
+  # optional --avoid argument, to avoid putting a vm alongside another
+  if [ "$1" == "--avoid" ]; then AVOID="$2"; shift 2; fi
   # create an array from the input list of hosts
   LIST=( $@ )
   # special case where only one host is provided
   if [ ${#LIST[@]} -eq 1 ]; then printf -- ${LIST[0]}; return 0; fi
   # start comparing at zero so first result is always the first best
-  local DISK=0 MEM=0 D=0 M=0 SEL=""
+  local DISK=0 MEM=0 D=0 M=0 SEL="" BACKUPSEL=""
   for ((i=0;i<${#LIST[@]};i++)); do
     # get the stats from the host
     D=$( hypervisor_poll ${LIST[$i]} --disk 2>/dev/null )
@@ -2842,10 +2849,20 @@ function hypervisor_rank {
     C=$( echo "scale=2; (($M + 1) - ($MEM + 1)) / ($MEM + 1) * 100" |bc |sed 's/\..*//' )
     if [ $C -gt 5 ]; then
       # greater than 5% more memory on this hypervisor, set it as preferred
-      MEM=$M; DISK=$D
-      SEL=${LIST[$i]}
+      # ... but first check for avoidance
+      if [[ ! -z "$AVOID" && ! -z "$( hypervisor_search ${LIST[$i]} $AVOID )" ]]; then
+        # found a match, don't use this HV
+        # since it already checked out set is a the backup if there is not one already
+        test -z "$BACKUPSEL" && BACKUPSEL=${LIST[$i]}
+      else
+        MEM=$M; DISK=$D
+        SEL=${LIST[$i]}
+      fi
     fi
   done
+  # if nothing was found, use the backup (in case of avoidance)
+  if [ -z "$SEL" ]; then SEL=$BACKUPSEL; fi
+  # if we still do not have anything, then no joy
   if [ -z "$SEL" ]; then err "Error ranking hypervisors"; fi
   printf -- $SEL
 }
@@ -2882,6 +2899,24 @@ function hypervisor_remove_network {
   # remove mapping
   sed -i '/^'$C','$1',/d' ${CONF}/hv-network
   commit_file hv-network
+}
+
+# search for running virtual machines matching a string
+#
+function hypervisor_search {
+  # input validation
+  test $# -ge 1 || err "Provide the hypervisor name"
+  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  # load the host
+  IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
+  # test the connection
+  nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
+  # validate search string
+  test -z "$2" && err "Missing search operand"
+  # search
+  local LIST=$( ssh $IP "virsh list --name" |grep "$2" )
+  test -z "$LIST" && return 1
+  printf -- "$LIST\n"
 }
 
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
@@ -3171,7 +3206,7 @@ function system_provision {
   LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
   test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
   #  - poll list of HVs for availability then rank for free storage, free mem, and load
-  HV=$( hypervisor_rank $LIST )
+  HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
   test -z "$HV" && err "There are no available hypervisors at this time"
   #  - get the build and dest interfaces on the hypervisor
   HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
