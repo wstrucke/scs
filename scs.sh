@@ -195,20 +195,30 @@
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
-#   - deleting an application should also unassign resources and undefine constants
-#   - finish IPAM and IP allocation components
-#   - validate IP addresses using the new valid_ip function
-#   - simplify IP management functions by reducing code duplication
-#   - system_audit and system_deploy both delete the generated release. reconsider keeping it.
-#   - add detailed help section for each function
-#   - add concept of 'instance' to environments and define 'stacks'
-#   - get_yn should pass options (such as --default) to get_input
-#   - populate reserved IP addresses from IP-Scheme.xlsx
-#   - rename operations should update map files (hv stuff specifically for net/env/loc)
-#   - reduce the number of places files are read directly. eventually use an actual DB.
-#   - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
-#   - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
-#   - add support for static routes for a network
+#   - clean up:
+#     - deleting an application should also unassign resources and undefine constants
+#     - simplify IP management functions by reducing code duplication
+#     - populate reserved IP addresses from IP-Scheme.xlsx
+#     - rename operations should update map files (hv stuff specifically for net/env/loc)
+#     - finish implementing build phase 2
+#   - enhancements:
+#     - finish IPAM and IP allocation components
+#     - validate IP addresses using the new valid_ip function
+#     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
+#     - add detailed help section for each function
+#     - get_yn should pass options (such as --default) to get_input
+#     - reduce the number of places files are read directly. eventually use an actual DB.
+#     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
+#     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
+#     - add support for static routes for a network
+#   - environment stuff:
+#     - an environment instance should be 'base' or 'overlay'
+#     - add concept of 'instance' to environments and define 'stacks'
+#     - files that only appear for clustered environments??
+#     - load balancer support ? auto-create cluster and manage nodes?
+#     - applications have dependencies on other applications for environment builds
+#     - how to generate and deploy database credentials for an environment? other variables?
+#     - database builds/options for environments
 #
 
 
@@ -623,7 +633,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
-              $0 diff | status
+              $0 diff | log | status
 
 Run commit when complete to finalize changes.
 
@@ -775,6 +785,12 @@ function commit_file {
 function diff_master {
   pushd $CONF >/dev/null 2>&1
   git diff master
+  popd >/dev/null 2>&1
+}
+
+function git_log {
+  pushd $CONF >/dev/null 2>&1
+  git log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative
   popd >/dev/null 2>&1
 }
 
@@ -3719,6 +3735,7 @@ if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [ "$SUBJ" == "cancel" ]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
+if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 
 # get verb
