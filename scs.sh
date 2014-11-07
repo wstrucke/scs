@@ -211,6 +211,7 @@
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - add support for static routes for a network
+#     - add file groups
 #   - environment stuff:
 #     - an environment instance should be 'base' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -409,6 +410,7 @@ function generic_delete {
 #  $2 prompt
 #
 # optional:
+#  --auto ""       use this value instead of prompting if it is not an empty string
 #  --default ""    specify a default value
 #  --nc            do not force lowercase
 #  --null          allow null (empty) values
@@ -418,8 +420,9 @@ function generic_delete {
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; CL=0; shift 2
+  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; CL=0; local AUTO=""; shift 2
   while [ $# -gt 0 ]; do case $1 in
+    --auto) AUTO="$2"; shift;;
     --default) D="$2"; shift;;
     --nc) LC=0;;
     --null) NUL=1;;
@@ -451,8 +454,10 @@ function get_input {
     fi
     # output the default option if one was provided
     test ! -z "$D" && printf -- " [$D]: " || printf -- ": "
-    # collect the input and force it to lowercase unless requested not to
-    read -r RL; if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
+    # collect the input unless an auto value was provided
+    if [ -z "$AUTO" ]; then read -r RL; else RL="$AUTO"; AUTO=""; printf -- "$RL\n"; fi
+    # force it to lowercase unless requested not to
+    if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
     # if the scren was cleared, output the entered value
     if [ $CL -eq 1 ]; then tput rmcup; printf -- ": $RL\n"; fi
     # if no input was provided and there is a default value, set the input to the default
@@ -2082,6 +2087,9 @@ function network_ip {
 #   $2  hostname
 #   --force to assign the address and ignore checks
 #
+# net/a.b.c.0
+#   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+#
 function network_ip_assign {
   start_modify
   test $# -ge 2 || err "An IP and hostname are required."
@@ -2090,9 +2098,9 @@ function network_ip_assign {
   if [[ $# -ge 3 && "$3" == "--force" ]]; then FORCE=1; fi
   # validate address
   grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
-  [ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" ] && err "The requested IP is reserved."
+  [[ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" && $FORCE -eq 0 ]] && err "The requested IP is reserved."
   ASSN="$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )"
-  if [[ "$ASSN" != "" && "$ASSN" != "$2" ]]; then err "The requested IP is already assigned."; fi
+  if [[ "$ASSN" != "" && "$ASSN" != "$2" && $FORCE -eq 0 ]]; then err "The requested IP is already assigned."; fi
   # load the ip data
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # check if the ip is in use (last ditch effort)
@@ -2103,7 +2111,7 @@ function network_ip_assign {
     RET=1
   else
     # assign
-    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,$C,$D,$2,$F,$G,$H,$I/" ${CONF}/net/${FILENAME}
+    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,$2,,,,/" ${CONF}/net/${FILENAME}
     RET=0
   fi
   # commit changes
@@ -2340,8 +2348,8 @@ function network_list {
     case "$1" in
       --build)
         test -z "$2" && return
-        DEFAULT=$( grep -E "^$2," ${CONF}/network |grep -E ',y,y$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' )
-        ALL=$( grep -E "^$2," ${CONF}/network |grep -E ',y,[yn]$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' |tr '\n' ' ' )
+        DEFAULT=$( grep -E "^$2," ${CONF}/network |grep -E ',y,y,[^,]*$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' )
+        ALL=$( grep -E "^$2," ${CONF}/network |grep -E ',y,[yn],[^,]*$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' |tr '\n' ' ' )
         test ! -z "$DEFAULT" && printf -- "default: $DEFAULT\n"
         test ! -z "$ALL" && printf -- "available: $ALL\n"
         ;;
@@ -2711,6 +2719,7 @@ function hypervisor_byname {
     --poll) hypervisor_poll $1 ${@:3};;
     --remove-environment) hypervisor_remove_environment $1 ${@:3};;
     --remove-network) hypervisor_remove_network $1 ${@:3};;
+    --search) hypervisor_search $1 ${@:3};;
   esac
 }
 
@@ -2930,7 +2939,7 @@ function hypervisor_search {
   # validate search string
   test -z "$2" && err "Missing search operand"
   # search
-  local LIST=$( ssh $IP "virsh list --name" |grep "$2" )
+  local LIST=$( ssh $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
   test -z "$LIST" && return 1
   printf -- "$LIST\n"
 }
@@ -3128,14 +3137,14 @@ function system_constant_list {
 function system_create {
   start_modify
   # get user input and validate
-  get_input NAME "Hostname"
-  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  while [[ "$IP" != "auto" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (auto to auto-select)"; done
+  get_input NAME "Hostname" --auto "$1"
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$2"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
+  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$4"
+  while [[ "$IP" != "auto" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (auto to auto-select)" --auto "$5"; done
   # automatic IP selection
   if [ "$IP" == "auto" ]; then
-    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )"
+    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
   fi
@@ -3146,6 +3155,9 @@ function system_create {
   # add
   printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
   commit_file system
+}
+function system_create_help {
+  echo "Usage: $0 system create [hostname] [build] [location] [environment] [(n.n.n.n|auto)] [loc-zone-alias]"
 }
 
 function system_delete {
@@ -3315,6 +3327,7 @@ function system_provision_phase2 {
 
 errlog "finished base system build but phase2 is incomplete.  $NAME should be online at $BUILDIP"
 
+  # !!FIXME!!
   #  - clean up kickstart file
   #  - background task to monitor install
   #  - sleep 60 or so
