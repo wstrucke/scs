@@ -638,7 +638,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
-              $0 diff | log | status
+              $0 diff | lock | log | status
 
 Run commit when complete to finalize changes.
 
@@ -659,7 +659,7 @@ Component:
     edit [<name>] [--environment <name>]
   help
   hypervisor
-    [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll]
+    [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
   location
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
@@ -953,6 +953,13 @@ function application_file_add {
   echo "$F,$APP" >>$CONF/file-map
   commit_file file-map
 }
+function application_file_add_help { cat <<_EOF
+Link a file to an application
+
+Usage: $0 application [<application_name>] file --add [<file_name>]
+
+_EOF
+}
 
 function application_file_list {
   test -z "$1" && shift
@@ -964,6 +971,13 @@ function application_file_list {
   ( for F in $( grep -E ",$APP\$" $CONF/file-map |awk 'BEGIN{FS=","}{print $1}' ); do
     grep -E "^$F," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
   done ) |sort |column -t |sed 's/^/   /'
+}
+function application_file_list_help { cat <<_EOF
+List all files linked to an application
+
+Usage: $0 application [<application_name>] file --list
+
+_EOF
 }
 
 function application_file_remove {
@@ -979,6 +993,13 @@ function application_file_remove {
   grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not associated with $APP."
   sed -i "/^$F,$APP/d" $CONF/file-map
   commit_file file-map
+}
+function application_file_remove_help { cat <<_EOF
+Unlink a file from an application
+
+Usage: $0 application [<application_name>] file --remove [<file_name>]
+
+_EOF
 }
 
 function application_list {
@@ -2708,7 +2729,7 @@ function hypervisor_add_network {
   commit_file hv-network
 }
 
-#   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll]
+#   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 function hypervisor_byname {
   # input validation
   test $# -gt 1 || err "Provide the hypervisor name"
@@ -3750,6 +3771,7 @@ if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
 if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
+if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
