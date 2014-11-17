@@ -142,11 +142,30 @@
 #   --description: sites or locations
 #   --format: code,name,description\n
 #   --storage:
+#   ----code            code or alias for the location
+#   ----name            name of the location/site
+#   ----description     location description
 #
 #   network
 #   --description: network registry
 #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
 #   --storage:
+#   ----location        location code for the network (primary key part 1/3)
+#   ----zone            network zone assignment (primary key part 2/3)
+#   ----alias           network name or alias (primary key part 3/3)
+#   ----network         network address in IP notation
+#   ----mask            network mask in IP notation
+#   ----cidr            network mask bits (combine with 'network' to form CIDR notation, i.e. 'network/cidr')
+#   ----gateway_ip      network default gateway in IP notation
+#   ----dns_ip          network default primary DNS in IP notation
+#   ----vlan            network vlan tag/number (numeric)
+#   ----description     description of the network
+#   ----repo_address    ip address or hostname of the repository/mirror for installing an OS or related packages for the network
+#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in (no trailing slash), e.g. /var/web/building/scs
+#   ----repo_path_url   absolute path from the client web browser to the repo_fs_path, no leading or trailing slash, e.g. 'building/scs'
+#   ----build           'y' or 'n', yes if this network has DHCP with PXE to boot into a network install image
+#   ----default-build   'y' or 'n', yes if this network is the *default* build network at the location
+#   ----ntp_ip          default ntp server in IP notation
 #
 #   net/a.b.c.0
 #   --description: subnet ip assignment registry
