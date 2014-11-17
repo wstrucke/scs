@@ -79,7 +79,7 @@
 #
 #   build
 #   --description: server builds
-#   --format: name,role,description,os,arch,disk,ram\n
+#   --format: name,role,description,os,arch,disk,ram,parent\n
 #   --storage:
 #
 #   constant
@@ -212,8 +212,10 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - add support for static routes for a network
 #     - add file groups
+#     - builds can have a tree structure and parent/child relationships
+#     - system can be 'base' or 'overlay'
 #   - environment stuff:
-#     - an environment instance should be 'base' or 'overlay'
+#     - an environment instance can force systems to 'base' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
 #     - files that only appear for clustered environments??
 #     - load balancer support ? auto-create cluster and manage nodes?
@@ -532,6 +534,7 @@ function get_yn {
     while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
   fi
   eval "$1='$RL'"
+  test "$RL" == "y" && return 0 || return 1
 }
 
 # help wrapper
@@ -648,6 +651,7 @@ Component:
   application
     file [--add|--remove|--list]
   build
+    list [--tree] [--detail]
   constant
   environment
     application [<environment>] [--list] [<location>]
@@ -1054,8 +1058,8 @@ function application_update {
 # return all applications linked to a build
 #
 function build_application_list {
-  generic_choose build "$1" C 
-  grep -E ",$1," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}'
+  generic_choose build "$1" C
+  grep -E ",$C," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}'
 }
 
 function build_create {
@@ -1063,15 +1067,24 @@ function build_create {
   # get user input and validate
   get_input NAME "Build"
   get_input ROLE "Role" --null
-  get_input OS "Operating System" --null --options $OSLIST
-  get_input ARCH "Architecture" --null --options $OSARCH
+  get_yn P "Child Build (y/n)?"
+  if [ $? -eq 0 ]; then generic_choose build "" PARENT; else PARENT=""; fi
+  if [ -z "$PARENT" ]; then
+    get_input OS "Operating System" --null --options $OSLIST
+    get_input ARCH "Architecture" --null --options $OSARCH
+  else
+    OS=""; ARCH=""
+    # avoid circular dependencies
+    printf -- ","$( build_lineage_unformatted $PARENT )"," |grep -q ",${NAME},"
+    if [ $? -eq 0 ]; then err "This build is already a parent of the parent build you selected. This would create a circular dependency, aborted!"; fi
+  fi
   get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$'
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$'
   get_input DESC "Description" --nc --null
   # validate unique name
   grep -qE "^$NAME," $CONF/build && err "Build already defined."
   # add
-  printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM}\n" >>$CONF/build
+  printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\n" >>$CONF/build
   commit_file build
 }
 
@@ -1079,23 +1092,93 @@ function build_delete {
   generic_delete build $1
 }
 
+function build_lineage {
+  build_lineage_unformatted $1 |sed 's/,/ -> /g'
+}
+
+# return the lineage of a build
+#
+#   root,child,grandchild,etc...
+#
+function build_lineage_unformatted {
+  generic_choose build "$1" C
+  local LINEAGE PARENT
+  LINEAGE="$C"
+  PARENT=$( build_parent $C )
+  while [ ! -z "$PARENT" ]; do
+    LINEAGE="$PARENT,$LINEAGE"
+    PARENT=$( build_parent $PARENT )
+  done
+  printf -- "$LINEAGE"
+}
+
 function build_list {
   NUM=$( wc -l ${CONF}/build |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined build${S}."
   test $NUM -eq 0 && return
-  build_list_unformatted |sed 's/^/   /'
+  if [ "$1" == "--tree" ]; then
+    shift
+    build_list_format_tree $@
+  else
+    build_list_unformatted $@ |column -s',' -t
+  fi |sed 's/^/   /'
+}
+
+# output the list of builds in a tree structure
+#
+function build_list_format_tree {
+  local LINE
+  local IFS=$'\n'
+  for LINE in $( build_list_unformatted $@ ); do 
+    IFS=',' read -r B D <<< "$LINE"
+    printf -- "$( build_lineage_unformatted $B )\t$D\n"
+  done |sort |perl -pe 's/([^,]*,)/"    \\" . ("-" x (length($1)-4)) . "> "/gei' |perl -pe 's/(\s+\\-+>\s+\\)/" " x length($1) . "\\"/gei' |column -s$'\t' -t
 }
 
 function build_list_unformatted {
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/build |sort
+  if [ "$1" == "--detail" ]; then
+    awk 'BEGIN{FS=","}{print $1","$3}' ${CONF}/build
+  else
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/build
+  fi |sort
+}
+
+# get the parent of a build
+#
+function build_parent {
+  local NAME ROLE DESC OS ARCH DISK RAM PARENT
+  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
+  printf -- "$PARENT\n"
+  test -z "$PARENT" && return 1 || return 0
+}
+
+# get the root of a build
+#
+function build_root {
+  generic_choose build "$1" C
+  local ROOT
+  ROOT="$C"
+  PARENT=$( build_parent $C )
+  while [ ! -z "$PARENT" ]; do
+    ROOT="$PARENT"
+    PARENT=$( build_parent $PARENT )
+  done
+  printf -- "$ROOT"
 }
 
 function build_show {
   test $# -eq 1 || err "Provide the build name"
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
-  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM <<< "$( grep -E "^$1," ${CONF}/build )"
-  printf -- "Build: $NAME\nRole: $ROLE\nOperating System: $OS-$ARCH\nDisk Size (GB): $DISK\nMemory (MB): $RAM\nDescription: $DESC\n"
+  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
+  if [ ! -z "$PARENT" ]; then
+    ROOT=$( build_root $NAME )
+    IFS="," read -r RNAME RROLE RDESC OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build )"
+    if [ -z "$DISK" ]; then DISK=$RDISK; fi
+    if [ -z "$RAM" ]; then RAM=$RRAM; fi
+  fi
+  printf -- "Build: $NAME\nRole: $ROLE\nParent Build: $PARENT\nOperating System: $OS-$ARCH\nDisk Size (GB): $DISK\nMemory (MB): $RAM\nDescription: $DESC\n"
+  printf -- "Lineage: $( build_lineage $NAME )\n"
   # look up the applications configured for this build
   NUM=$( build_application_list "$1" |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -1106,15 +1189,24 @@ function build_show {
 function build_update {
   start_modify
   generic_choose build "$1" C && shift
-  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM <<< "$( grep -E "^$C," ${CONF}/build )"
+  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
   get_input NAME "Build" --default "$NAME"
   get_input ROLE "Role" --default "$ROLE" --null
-  get_input OS "Operating System" --default "$OS" --null --options $OSLIST
-  get_input ARCH "Architecture" --default "$ARCH" --null --options $OSARCH
+  get_yn P "Child Build [$PARENT] (y/n)?"
+  if [ $? -eq 0 ]; then generic_choose build "" PARENT; else PARENT=""; fi
+  if [ -z "$PARENT" ]; then
+    get_input OS "Operating System" --default "$OS" --null --options $OSLIST
+    get_input ARCH "Architecture" --default "$ARCH" --null --options $OSARCH
+  else
+    OS=""; ARCH=""
+    # avoid circular dependencies
+    printf -- ","$( build_lineage_unformatted $PARENT )"," |grep -q ",${NAME},"
+    if [ $? -eq 0 ]; then err "This build is already a parent of the parent build you selected. This would create a circular dependency, aborted!"; fi
+  fi
   get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$' --default "$DISK"
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
-  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}'/' ${CONF}/build
+  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
   commit_file build
 }
 
@@ -3271,7 +3363,7 @@ function system_provision {
     BUILDIP=$IP
   fi
   #  - load the architecture and operating system for the build
-  IFS="," read -r OS ARCH DISK RAM <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+  IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
   #  - generate KS and deploy to local build server
   mkdir -p ${TMP}
