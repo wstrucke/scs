@@ -148,7 +148,7 @@
 #
 #   network
 #   --description: network registry
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
 #   --storage:
 #   ----location        location code for the network (primary key part 1/3)
 #   ----zone            network zone assignment (primary key part 2/3)
@@ -157,6 +157,7 @@
 #   ----mask            network mask in IP notation
 #   ----cidr            network mask bits (combine with 'network' to form CIDR notation, i.e. 'network/cidr')
 #   ----gateway_ip      network default gateway in IP notation
+#   ----static_routes   'y' or 'n', yes if the network has static routes to deploy to each server
 #   ----dns_ip          network default primary DNS in IP notation
 #   ----vlan            network vlan tag/number (numeric)
 #   ----description     description of the network
@@ -2124,6 +2125,10 @@ function network_byname {
   esac
 }
 
+# create a network
+#
+#   format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
+#
 function network_create {
   start_modify
   # get user input and validate
@@ -2137,6 +2142,7 @@ function network_create {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? "
   get_input DNS "DNS Server Address" --null
   get_input NTP "NTP Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
@@ -2159,7 +2165,7 @@ function network_create {
   fi
   # add
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP}\n" >>$CONF/network
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
@@ -2508,15 +2514,31 @@ function network_list_unformatted {
   awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort
 }
 
+# output network info
+#
+# network:
+#   location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
+#
 function network_show {
   test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
+  printf -- "Static Routes:\n"
+  if [ "$HAS_ROUTES" == "y" ]; then
+    echo "..."
+  else
+    printf -- "  None\n"
+  fi
 }
 
+# update a network
+#
+# network:
+#   location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
+#
 function network_update {
   start_modify
   if [ -z "$1" ]; then
@@ -2530,7 +2552,7 @@ function network_update {
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   printf -- "\n"
-  IFS="," read -r L Z A NETORIG MASKORIG BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2543,6 +2565,7 @@ function network_update {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$' --default "$BITS"
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " --default "$HAS_ROUTES"
   get_input DNS "DNS Server Address" --null --default "$DNS"
   get_input NTP "NTP Server Address" --null --default "$NTP"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
@@ -2570,8 +2593,8 @@ function network_update {
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}'%' ${CONF}/network
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -3357,8 +3380,8 @@ function system_provision {
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
   #  - lookup network details for the build network (used in the kickstart configuration)
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
-  read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$8,$11,$12,$13}' )"
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
   valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
   valid_ip $DNS || err "Build network does not have a defined DNS server"
   #  - locate available HVs
@@ -3759,7 +3782,7 @@ function system_vars {
   # output network data, if available
   local SYSNET=$( network_list --match $IP )
   if [ ! -z "$SYSNET" ]; then
-    IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
+    IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
     echo -e "system.zone ${ZONE}-${ALIAS}\nsystem.network $NET\nsystem.netmask $MASK\nsystem.gateway $GW"
     echo "system.broadcast $( ipadd $NET $(( $( cdr2size $BITS ) -1 )) )"
     if [ ! -z "$DNS" ]; then echo "system.dns $DNS"; fi
