@@ -25,6 +25,7 @@ Usage: $0 [...args...] vm-name
 
 Options:
   --arch <string>  system architecture: either i386 or x86_64, default i386
+  --base <string>  use a base qcow2 image as a backing file for the new VM
   --cpu <int>      number of processors, default 1
   --destroy        forcibly remove the VM if it already exists - DATA LOSS WARNING -
   --disk <int>     size of disk in GB, default 30
@@ -76,6 +77,9 @@ HYPERVS="kvm-01 kvm-02 kvm-03"
 WEBROOT="http://192.168.32.39/centos"
 VMDIR=/san/virtual-machines
 
+# local settings
+test -f "`dirname $0`/kvm-install.sh.settings" && source `dirname $0`/kvm-install.sh.settings
+
 # global constants
 XMLDIR=/etc/libvirt/qemu
 centos4_i386_ks="${WEBROOT}/ks/generic-vm-4.cfg"
@@ -94,6 +98,7 @@ ARCHLIST="i386 x86_64"
 OSLIST="centos4 centos5 centos6"
 
 # defaults
+BASE=""
 DESTROY=0
 DRYRUN=0
 KSURL=""
@@ -115,6 +120,7 @@ VMUUID=""
 # settings
 while [ $# -gt 0 ]; do case $1 in
   -a|--arch) VMARCH="$2"; shift;;
+  -b|--base) BASE="$2"; shift;;
   -c|--cpu) VMCPUS="$2"; shift;;
   -d|--disk) VMSIZE="$2"; shift;;
   -k|--ks) KSURL="$2"; shift;;
@@ -147,6 +153,7 @@ test $VMRAM -gt 131072 && err "Maximum system memory is 128GB. Yes, this is arbi
 if [ ! -z "$VMIP" ]; then valid_ip $VMIP || err "Invalid IP address"; fi
 printf -- " $ARCHLIST " |grep -q " $VMARCH " || err "Invalid system architecture"
 printf -- " $OSLIST " |grep -q " $VMOS " || err "Invalid operating system"
+if [ ! -z "$BASE" ]; then test -f "$BASE" || err "Invalid base image"; fi
 
 # check minimum system requirements
 if [[ "$VMOS" == "centos4" && "$VMARCH" != "i386" ]]; then err "Centos 4 only supports i386 architecture"; fi
@@ -201,8 +208,9 @@ test ! -z "$VMUUID" && ARGS="$ARGS --uuid=${VMUUID}"
 test $VMCONSOLE -eq 0 && ARGS="$ARGS --noautoconsole"
 test $VMREBOOT -eq 0 && ARGS="$ARGS --noreboot"
 
+# set args conditionally on base image
+#
 ARGS="$ARGS --accelerate --hvm \
---disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback \
 --network=bridge:${BUILD_NET_INTERFACE} --location=${INSTALL_URL} --nographics \
 --extra-args=\"ks=${KSURL} ksdevice=${BUILD_NET_INTERFACE}"
 
@@ -213,16 +221,25 @@ fi
 
 ARGS="$ARGS console=ttyS0\""
 
+if ! [ -z "$BASE" ]; then
+  ARGS="$ARGS --disk path=${VMDIR}/${VMNAME}.img,format=qcow2,cache=writeback"
+  BASE="-b $BASE "
+  VMSIZE=""
+else
+  ARGS="$ARGS --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback"
+  VMSIZE="${VMSIZE}G"
+fi
+
 # create the disk
 if [ $DRYRUN -eq 1 ]; then
   echo "DRY-RUN: Create disk..."
-  echo "qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G"
+  echo "qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}"
   echo
 else
   if [ $QUIET -eq 1 ]; then
-    qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G >/dev/null 2>&1
+    qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE} >/dev/null 2>&1
   else
-    qemu-img create -f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}G
+    qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}
   fi
   test $? -eq 0 || err "Error creating disk"
 echo

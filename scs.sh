@@ -212,7 +212,6 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - add support for static routes for a network
 #     - add file groups
-#     - builds can have a tree structure and parent/child relationships
 #     - system can be 'base' or 'overlay'
 #   - environment stuff:
 #     - an environment instance can force systems to 'base' or 'overlay'
