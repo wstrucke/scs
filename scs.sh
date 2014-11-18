@@ -187,8 +187,16 @@
 #
 #   system
 #   --description: servers
-#   --format: name,build,ip,location,environment\n
+#   --format: name,build,ip,location,environment,virtual,base_image,overlay\n
 #   --storage:
+#   ----name            the hostname
+#   ----build           build name
+#   ----ip              ip address for the system in IP notation
+#   ----location        location name
+#   ----environment     environment name
+#   ----virtual         'y' or 'n', yes if this is a virtual machine
+#   ----base_image      'y' or 'n', yes if this is a VM and is always SHUT OFF as a base image for overlays
+#   ----overlay         null or the name of the VM this system is an overlay on
 #
 #   value/constant
 #   --description: global values for constants
@@ -236,7 +244,6 @@
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
-#     - add support for static routes for a network
 #     - add file groups
 #     - system can be 'base' or 'overlay'
 #   - environment stuff:
@@ -2640,6 +2647,7 @@ function network_routes_by_ip {
   test -z "$NAME" && return 1
   printf -- '%s' "$NAME" |grep -q " " && err "Error: more than one network was returned for the provided address"
   IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${NAME//-/,}," ${CONF}/network )"
+  if [ "$HAS_ROUTES" != "y" ]; then return; fi
   if [ -f "${CONF}/net/${NET}-routes" ]; then mkdir $TMP >/dev/null 2>&1; cat ${CONF}/net/${NET}-routes >$TMP/${NET}-routes; printf -- '%s\n' "$TMP/${NET}-routes"; fi
 }
 
@@ -3302,7 +3310,7 @@ function system_audit {
   test $# -gt 0 || err
   VALID=0
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # test connectivity
   nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
   # generate the release
@@ -3359,7 +3367,7 @@ function system_check {
   test $# -gt 0 || err
   VALID=0
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -3405,7 +3413,7 @@ function system_check {
 function system_constant_list {
   generic_choose system "$1" C && shift
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   for APP in $( build_application_list "$BUILD" ); do
     constant_list_dedupe $TMP/clist $CONF/value/$EN/$APP >$TMP/clist.1
@@ -3418,10 +3426,17 @@ function system_constant_list {
   rm -f $TMP/clist{,.1}
 }
 
+# define a new system
+#
+# system:
+#    name,build,ip,location,environment,virtual,base_image,overlay\n
+#
 function system_create {
   start_modify
   # get user input and validate
   get_input NAME "Hostname" --auto "$1"
+  # validate unique name
+  grep -qE "^$NAME," $CONF/system && err "System already defined."
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$2"
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
   get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$4"
@@ -3432,12 +3447,23 @@ function system_create {
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
   fi
-  # validate unique name
-  grep -qE "^$NAME," $CONF/system && err "System already defined."
-  # assign/reserve IP
-  network_ip_assign $IP $NAME || err "Unable to assign IP address"
+  get_yn VIRTUAL "Virtual Server (y/n): "
+  if [ "$VIRTUAL" == "y" ]; then
+    get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? "
+    get_yn OVERLAY_Q "Overlay on another system (y/n)? "
+    if [ "$OVERLAY_Q" == "y" ]; then
+      get_input OVERLAY --options "$( system_list_unformatted )"
+    else
+      OVERLAY=""
+    fi
+  else
+    BASE_IMAGE="n"
+    OVERLAY=""
+  fi
+  # conditionally assign/reserve IP
+  if ! [ -z "$( network_ip_locate $IP )" ]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN}\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY}\n" >>$CONF/system
   commit_file system
 }
 function system_create_help {
@@ -3446,7 +3472,13 @@ function system_create_help {
 
 function system_delete {
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
+  # verify this is not the base system for other servers
+  grep -qE ",$1\$" ${CONF}/system
+  if [ $? -eq 0 ]; then
+    printf -- "%s\n" "Warning - this system is the base image for one or more other virtual machines"
+    get_yn R "Are you SURE you want to delete it (y/n)? " || exit
+  fi
   generic_delete system $1 || return
   # free IP address assignment
   network_ip_unassign $IP
@@ -3491,7 +3523,7 @@ function system_provision {
   fi
   # select and validate the system
   generic_choose system "$1" C && shift
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   #  - verify system is not already deployed
   nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
   if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
@@ -3671,7 +3703,7 @@ function system_list {
 function system_release {
   test $# -gt 0 || err
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
   AUDITSCRIPT="$TMP/scs-audit.sh"
@@ -3793,7 +3825,7 @@ function system_release {
 function system_resource_list {
   generic_choose system "$1" C && shift
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   for APP in $( build_application_list "$BUILD" ); do
     # get any localized resources for the application
     grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2,5
@@ -3809,9 +3841,9 @@ function system_show {
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output the status/summary
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\n"
+  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\n"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     NUM=$( build_application_list "$BUILD" |wc -l )
@@ -3869,17 +3901,45 @@ function system_start_remote_build {
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
-  IFS="," read -r NAME BUILD ORIGIP LOC EN <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   while ! $(valid_ip "$IP"); do get_input IP "Primary IP" --default "$ORIGIP"; done
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  # changing these settings can be non-trivial for a system that is already deployed...
+  get_yn VIRTUAL "Virtual Server (y/n): " --default "$ORIGVIRTUAL"
+  if [ "$ORIGVIRTUAL" != "$VIRTUAL" ]; then
+    printf -- '%s\n' "This setting should ONLY be changed if it was set in error."
+    get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+  fi
+  if [ "$VIRTUAL" == "y" ]; then
+    get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? " --default "$ORIGBASE_IMAGE"
+    if [ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" ]; then
+      printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting if another system is built on this one WILL cause a major production issue."
+      get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+    fi
+    if [ -z "$ORIGOVERLAY" ]; then ORIGOVERLAY_Q="n"; else ORIGOVERLAY_Q="y"; fi
+    get_yn OVERLAY_Q "Overlay on another system (y/n)? " --default "$ORIGOVERLAY_Q"
+    if [ "$ORIGOVERLAY_Q" != "$OVERLAY_Q" ]; then
+      printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting after the system is built WILL cause a major production issue."
+      get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+    fi
+    if [ "$OVERLAY_Q" == "y" ]; then
+      get_input OVERLAY --options "$( system_list_unformatted )"
+    else
+      OVERLAY=""
+    fi
+  else
+    BASE_IMAGE="n"
+    OVERLAY=""
+  fi
+  # save changes
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     network_ip_unassign $ORIGIP
-    network_ip_assign $IP $NAME
+    if ! [ -z "$( network_ip_locate $IP )" ]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   fi
   commit_file system
 }
@@ -3922,7 +3982,7 @@ exit 1
 function system_vars {
   test $# -eq 1 || err "System name required"
   # load the system
-  IFS="," read -r NAME BUILD IP LOC EN <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
   # output network data, if available
