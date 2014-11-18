@@ -38,6 +38,7 @@
 #     network                                              file
 #     net                                                  directory
 #     net/a.b.c.0                                          file with IP index for IPAM component
+#     net/a.b.c.0-routes                                   static routes for all hosts in the network
 #     resource                                             file
 #     system                                               file
 #     template/                                            directory containing global application templates
@@ -173,6 +174,11 @@
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
 #   --storage:
 #
+#   net/a.b.c.0-routes
+#   --description: static routes to be applied to all hosts in the network
+#   --format: device net network netmask netmask gw gateway
+#   --example: any net 10.1.12.0 netmask 255.255.255.0 gw 192.168.0.1
+#
 #   resource
 #   --description: arbitrary 'things' (such as IP addresses for a specific purpose) assigned to
 #                    systems and used to generate configs
@@ -242,7 +248,6 @@
 #     - how to generate and deploy database credentials for an environment? other variables?
 #     - database builds/options for environments
 #
-
 
  #     # ####### ### #       ### ####### #     # 
  #     #    #     #  #        #     #     #   #  
@@ -441,7 +446,7 @@ function generic_delete {
 #
 function get_input {
   test $# -lt 2 && return
-  LC=1; RL=""; P="$2"; V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; CL=0; local AUTO=""; shift 2
+  LC=1; RL=""; P="$2"; local V="$1"; D=""; NUL=0; OPT=""; RE=""; COMMA=0; CL=0; local AUTO=""; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --auto) AUTO="$2"; shift;;
     --default) D="$2"; shift;;
@@ -807,6 +812,19 @@ function commit_file {
   if [ `git status -s |wc -l` -ne 0 ]; then
     git commit -m"committing change" >/dev/null 2>&1 || err "Error committing file to repository"
   fi
+  popd >/dev/null 2>&1
+}
+
+# delete a file from the repository
+#
+# $1 = file name relative to $CONF/
+# $2 = '0' or '1', where 1 = do not commit changes (default is 0)
+#
+function delete_file {
+  if [[ "${1:0:2}" == ".." || "${1:0:1}" == "/" || ! -f ${CONF}/$1 ]]; then return 1; fi
+  pushd $CONF >/dev/null 2>&1
+  git rm $1 >/dev/null 2>&1
+  if [ "$2" != "1" ]; then git commit -m'removing file $1' >/dev/null 2>&1 || err "Error removing file $1 from repository"; fi
   popd >/dev/null 2>&1
 }
 
@@ -2127,7 +2145,8 @@ function network_byname {
 
 # create a network
 #
-#   format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
+# network:
+#    location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
 #
 function network_create {
   start_modify
@@ -2142,7 +2161,7 @@ function network_create {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
-  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? "
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null
   get_input NTP "NTP Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
@@ -2176,6 +2195,7 @@ function network_create {
   fi
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
+  if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
 }
 
 function network_delete {
@@ -2191,12 +2211,86 @@ function network_delete {
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
-    IFS="," read -r LOC ZONE ALIAS DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+    IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
     sed -i '/^'${C//-/,}',/d' ${CONF}/network
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
     sed -i '/^'${C//-/,}',/d' ${CONF}/hv-network
+    if [ -f ${CONF}/net/${NET} ]; then delete_file net/${NET}; fi
+    if [ -f ${CONF}/net/${NET}-routes ]; then delete_file net/${NET}-routes; fi
   fi
   commit_file network ${CONF}/${LOC}/network ${CONF}/hv-network
+}
+
+# open network route editor
+#
+# net/a.b.c.0-routes:
+#    device net network netmask netmask gw gateway
+#
+# creates 'a.b.c.0-routes' in TMP.  the calling function should put it in place and commit the change
+#
+function network_edit_routes {
+  if [ $# -ne 1 ]; then err "A network is required"; fi
+  start_modify
+  # create the working file
+  mkdir $TMP && touch $TMP/${1}-routes
+  test -f ${CONF}/net/${1}-routes && cat ${CONF}/net/${1}-routes >$TMP/${1}-routes
+  # clear the screen
+  tput smcup
+  # engage editor
+  local COL=$(tput cols) OPT LINE DEVICE NET NETMASK GATEWAY I V
+  while [ "$OPT" != 'q' ]; do
+    clear; I=0
+    printf -- '%s%*s%s\n' 'SCS Route Editor' $((COL-16)) "$1"
+    printf -- '%*s\n' $COL '' | tr ' ' -
+    if ! [ -s $TMP/${1}-routes ]; then
+      echo '  ** No routes exist **'
+    else
+      local IFS=$'\n'
+      while read LINE; do
+        I=$(($I+1))
+        printf -- '  %s: %s\n' $I $LINE
+      done < $TMP/${1}-routes
+    fi
+    printf -- '\n\n'
+    read -p 'e# to edit, d# to remove, n to add, w to save/quit, or a to abort (#=line number): ' OPT
+    case ${OPT:0:1} in
+      n)
+	get_input DEVICE "  Device" --default "any" --nc
+	get_input NET "  Target Network"
+        get_input NETMASK "  Target Network Mask"
+	get_input GATEWAY "  Gateway"
+        printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
+        ;;
+      w)
+	OPT='q'
+	;;
+      a)
+	rm -f $TMP/${1}-routes
+	OPT='q'
+	;;
+      e)
+	V=${OPT:1}
+#	if [ "$V" != "$( printf -- '$V' |sed 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed 's/[^0-9]*//g' )'"; sleep 1; continue; fi
+	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
+	IFS=" " read -r DEVICE NET NETMASK GATEWAY <<<$(awk '{print $1,$3,$5,$7}' $TMP/${1}-routes |head -n$V |tail -n1)
+	get_input DEVICE "  Device" --default "$DEVICE" --nc
+	get_input NET "  Target Network" --default "$NET"
+        get_input NETMASK "  Target Network Mask" --default "$NETMASK"
+	get_input GATEWAY "  Gateway" --default "$GATEWAY"
+	sed -i -e "${V}d" $TMP/${1}-routes
+        printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
+	;;
+      d)
+	V=${OPT:1}
+#	if [ "$V" != "$( printf -- '$V' |sed 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed 's/[^0-9]*//g' )'"; sleep 1; continue; fi
+	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
+	sed -i -e "${V}d" $TMP/${1}-routes
+	;;
+    esac
+  done
+  # restore the screen
+  tput rmcup
+  return 0
 }
 
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
@@ -2528,7 +2622,7 @@ function network_show {
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
   printf -- "Static Routes:\n"
   if [ "$HAS_ROUTES" == "y" ]; then
-    echo "..."
+    cat ${CONF}/net/$NET-routes |sed 's/^/   /'
   else
     printf -- "  None\n"
   fi
@@ -2565,7 +2659,7 @@ function network_update {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$' --default "$BITS"
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
-  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " --default "$HAS_ROUTES"
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " --default "$HAS_ROUTES" && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null --default "$DNS"
   get_input NTP "NTP Server Address" --null --default "$NTP"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
@@ -2607,6 +2701,7 @@ function network_update {
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
   fi
+  if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
 }
 
 
