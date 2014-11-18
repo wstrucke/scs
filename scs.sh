@@ -692,6 +692,7 @@ Component:
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
   network
+    ip [--locate a.b.c.d]
     <name> ip [--assign|--unassign|--list|--list-available|--list-assigned|--scan]
     <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
   resource
@@ -2133,6 +2134,7 @@ function location_update {
 function network_byname {
   # input validation
   test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
+  if [ "$1" == "ip" ]; then network_by_ip ${@:2}; return 0; fi
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   # function
@@ -2140,6 +2142,13 @@ function network_byname {
     ip) network_ip $1 ${@:3};;
     ipam) network_ipam $1 ${@:3};;
     *) network_show $1;;
+  esac
+}
+
+function network_by_ip {
+  case $1 in
+    --locate) network_ip_locate ${@:2};;
+    *) echo "Usage: scs network ip --locate a.b.c.d";;
   esac
 }
 
@@ -2252,7 +2261,7 @@ function network_edit_routes {
       done < $TMP/${1}-routes
     fi
     printf -- '\n\n'
-    read -p 'e# to edit, d# to remove, n to add, w to save/quit, or a to abort (#=line number): ' OPT
+    read -p 'e# to edit, d# to remove, n to add, v to edit in vim, w to save/quit, or a to abort (#=line number): ' OPT
     case ${OPT:0:1} in
       n)
 	get_input DEVICE "  Device" --default "any" --nc
@@ -2260,6 +2269,9 @@ function network_edit_routes {
         get_input NETMASK "  Target Network Mask"
 	get_input GATEWAY "  Gateway"
         printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
+        ;;
+      v)
+        vim $TMP/${1}-routes
         ;;
       w)
 	OPT='q'
@@ -2377,6 +2389,17 @@ function network_ip_list_available {
     # 'free' IPs are those with 'n' in the third column and an empty fifth column
     grep -E '^[^,]*,[^,]*,n,' ${CONF}/net/${FILENAME} |grep -E '^[^,]*,[^,]*,[yn],[yn],,' |awk 'BEGIN{FS=","}{print $2}'
   done
+}
+
+# locate the registered networks the provided IP resides in
+#
+function network_ip_locate {
+  test $# -eq 1 || return 1
+  valid_ip $1 || return 1
+  local ADDR=$( ip2dec $1 ) NAME NET CIDR
+  while read NAME NET CIDR; do
+    if [[ $ADDR -ge $( ip2dec $NET ) && $ADDR -le $( ip2dec $( ipadd $NET $(( $( cdr2size $CIDR ) - 1 )) ) ) ]]; then printf -- "%s\n" "$NAME"; fi
+  done <<< "$( awk 'BEGIN{FS=","}{print $1"-"$2"-"$3,$4,$6}' ${CONF}/network )"
 }
 
 # scan a subnet for used addresses and reserve them
@@ -2608,6 +2631,18 @@ function network_list_unformatted {
   awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort
 }
 
+# return path to a temporary file with static routes for the requested IP, if there are any
+#
+function network_routes_by_ip {
+  test $# -eq 1 || return 1
+  valid_ip $1 || return 1
+  local NAME=$( network_ip_locate $1 )
+  test -z "$NAME" && return 1
+  printf -- '%s' "$NAME" |grep -q " " && err "Error: more than one network was returned for the provided address"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${NAME//-/,}," ${CONF}/network )"
+  if [ -f "${CONF}/net/${NET}-routes" ]; then mkdir $TMP >/dev/null 2>&1; cat ${CONF}/net/${NET}-routes >$TMP/${NET}-routes; printf -- '%s\n' "$TMP/${NET}-routes"; fi
+}
+
 # output network info
 #
 # network:
@@ -2622,7 +2657,7 @@ function network_show {
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
   printf -- "Static Routes:\n"
   if [ "$HAS_ROUTES" == "y" ]; then
-    cat ${CONF}/net/$NET-routes |sed 's/^/   /'
+    cat ${CONF}/net/${NET}-routes |sed 's/^/   /'
   else
     printf -- "  None\n"
   fi
@@ -3661,6 +3696,22 @@ function system_release {
       # get the file list per application
       FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
     done
+  fi
+  # check for static routes for this system
+  ROUTES=$( network_routes_by_ip $IP )
+  if [ -s "$ROUTES" ]; then
+    mkdir -p $TMP/etc/sysconfig/
+    cat $ROUTES >$TMP/etc/sysconfig/static-routes
+    rm -f $ROUTES
+    # audit
+    FPTH=etc/sysconfig/static-routes
+    printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+    printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"644 root:root\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '644 root:root' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+    printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+    # release
+    printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>$RELEASESCRIPT
+    # stat
+    printf -- "/$FPTH root root 644 file\n" >>$STATFILE
   fi
   # generate the release configuration files
   if [ ${#FILES[*]} -gt 0 ]; then
