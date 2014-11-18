@@ -246,6 +246,7 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - add file groups
 #     - system can be 'base' or 'overlay'
+#     - locate hypervisor for virtual server
 #   - environment stuff:
 #     - an environment instance can force systems to 'base' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -3452,7 +3453,7 @@ function system_create {
     get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? "
     get_yn OVERLAY_Q "Overlay on another system (y/n)? "
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted )"
+      get_input OVERLAY --options "$( system_list_unformatted --base )"
     else
       OVERLAY=""
     fi
@@ -3697,7 +3698,14 @@ function system_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/system |sort |sed 's/^/   /'
+  system_list_unformatted $@ |sed 's/^/   /'
+}
+
+function system_list_unformatted {
+  case "$1" in
+    --base) grep -E '.*,y,[^,]*$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
+    *) awk 'BEGIN{FS=","}{print $1}' ${CONF}/system;;
+  esac |sort
 }
 
 function system_release {
@@ -3911,22 +3919,22 @@ function system_update {
   get_yn VIRTUAL "Virtual Server (y/n): " --default "$ORIGVIRTUAL"
   if [ "$ORIGVIRTUAL" != "$VIRTUAL" ]; then
     printf -- '%s\n' "This setting should ONLY be changed if it was set in error."
-    get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+    get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
   fi
   if [ "$VIRTUAL" == "y" ]; then
     get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? " --default "$ORIGBASE_IMAGE"
     if [ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" ]; then
       printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting if another system is built on this one WILL cause a major production issue."
-      get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+      get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
     fi
     if [ -z "$ORIGOVERLAY" ]; then ORIGOVERLAY_Q="n"; else ORIGOVERLAY_Q="y"; fi
     get_yn OVERLAY_Q "Overlay on another system (y/n)? " --default "$ORIGOVERLAY_Q"
     if [ "$ORIGOVERLAY_Q" != "$OVERLAY_Q" ]; then
       printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting after the system is built WILL cause a major production issue."
-      get_yn "Are you SURE you want to change the type of system (y/n)? " || exit
+      get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted )"
+      get_input OVERLAY --options "$( system_list_unformatted --base )"
     else
       OVERLAY=""
     fi
@@ -3935,7 +3943,7 @@ function system_update {
     OVERLAY=""
   fi
   # save changes
-  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}'/' ${CONF}/system
+  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     network_ip_unassign $ORIGIP
