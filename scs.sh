@@ -33,6 +33,7 @@
 #     file-map                                             application to file map
 #     hv-environment                                       file
 #     hv-network                                           file
+#     hv-system                                            file
 #     hypervisor                                           file
 #     location                                             file
 #     network                                              file
@@ -126,6 +127,13 @@
 #   ----loc-zone-alias  network 'location,zone,alias' in the usual format
 #   ----hv-name         the hostname of the hypervisor
 #   ----interface       the name of the interface on the hypervisor for this network
+#
+#   hv-system
+#   --description: hypervisor/vm map
+#   --format: system,hypervisor
+#   --storage:
+#   ----system          the name of the 'system' (or virtual machine)
+#   ----hypervisor      the name of the 'hypervisor'
 #
 #   hypervisor
 #   --description: virtual machine host servers
@@ -226,6 +234,7 @@
 #
 # External requirements:
 #   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
+#     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
@@ -594,7 +603,7 @@ function initialize_configuration {
   test -d $CONF && exit 2
   mkdir -p $CONF/template/patch $CONF/{binary,net,value}
   git init --quiet $CONF
-  touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network},hypervisor,location,network,resource,system}
+  touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
   printf -- "*\\.swp\nbinary\n" >.gitignore
   git add *
@@ -696,7 +705,7 @@ Component:
     edit [<name>] [--environment <name>]
   help
   hypervisor
-    --locate-system <system_name>
+    --locate-system <system_name> | --system-audit
     <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
   location
     [<name>] [--assign|--unassign|--list]
@@ -3006,6 +3015,7 @@ function hypervisor_add_network {
 #   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
+  if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
   # input validation
   test $# -gt 1 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
@@ -3110,10 +3120,11 @@ function hypervisor_locate_system {
   LIST=$( hypervisor_list --location $LOC --environment $EN )
   test -z "$LIST" && return 1
   # set defaults
-  local ON OFF
+  local ON OFF HIP ENABLED VM STATE FOUND
   for H in $LIST; do
     # load the host
     read HIP ENABLED <<<"$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
+    test "$ENABLED" == "y" || continue
     # test the connection
     nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
     # search
@@ -3122,8 +3133,18 @@ function hypervisor_locate_system {
     if [ "$STATE" == "shut" ]; then OFF="$H"; else ON="$H"; fi
   done
   # check results
-  if ! [ -z "$ON" ]; then printf -- "$ON\n"; return 0; fi
-  if ! [ -z "$OFF" ]; then printf -- "$OFF\n"; return 0; fi
+  if ! [ -z "$ON" ]; then FOUND="$ON"; fi
+  if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
+  # update hypervisor-system map, if needed
+  grep -qE "^$NAME,$FOUND\$" ${CONF}/hv-system
+  if [[ $? -ne 0 && ! -z "$FOUND" ]]; then
+    start_modify
+    sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+    printf -- '%s,%s\n' "$NAME" "$FOUND" >>${CONF}/hv-system
+    commit_file hv-system
+  fi
+  # output results and return status
+  if ! [ -z "$FOUND" ]; then printf -- '%s\n' $FOUND; return 0; fi
   return 1
 }
 
@@ -3290,6 +3311,19 @@ function hypervisor_show {
   printf -- "\nLinked Environments:\n"
   grep -E ",$1\$" ${CONF}/hv-environment |sed 's/^/  /; s/,.*//' |sort
   echo
+}
+
+# audit all virtual machines to locate which hypervisor they are on, to update the hv-system map
+#
+function hypervisor_system_audit {
+  start_modify
+  # load all virtual machines
+  LIST=$( grep -E '^([^,]*,){5}y,' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}' |sort )
+  test -z "$LIST" && return
+  # locate each virtual machine
+  printf -- 'Please wait..'
+  for S in $LIST; do hypervisor_locate_system $S >/dev/null 2>&1; printf -- '.'; done
+  printf -- ' done\n'
 }
 
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
