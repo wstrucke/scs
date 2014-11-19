@@ -247,6 +247,7 @@
 #     - add file groups
 #     - system can be 'base' or 'overlay'
 #     - locate hypervisor for virtual server
+#     - all systems should use the same base image, and instead of a larger disk get a second disk with a unique LVM name
 #   - environment stuff:
 #     - an environment instance can force systems to 'base' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -1179,7 +1180,7 @@ function build_list_format_tree {
   for LINE in $( build_list_unformatted $@ ); do 
     IFS=',' read -r B D <<< "$LINE"
     printf -- "$( build_lineage_unformatted $B )\t$D\n"
-  done |sort |perl -pe 's/([^,]*,)/"    \\" . ("-" x (length($1)-4)) . "> "/gei' |perl -pe 's/(\s+\\-+>\s+\\)/" " x length($1) . "\\"/gei' |column -s$'\t' -t
+  done |LC_ALL=C sort |perl -pe 's/([^,]*,)/"    \\" . ("-" x (length($1)-4)) . "> "/gei' |perl -pe 's/(\s+\\-+>\s+\\)/" " x length($1) . "\\"/gei' |column -s$'\t' -t
 }
 
 function build_list_unformatted {
