@@ -243,7 +243,6 @@
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses from IP-Scheme.xlsx
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
-#     - finish implementing build phase 2
 #   - enhancements:
 #     - finish IPAM and IP allocation components
 #     - validate IP addresses using the new valid_ip function
@@ -255,7 +254,6 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - add file groups
 #     - system can be 'base' or 'overlay'
-#     - locate hypervisor for virtual server
 #     - all systems should use the same base image, and instead of a larger disk get a second disk with a unique LVM name
 #   - environment stuff:
 #     - an environment instance can force systems to 'base' or 'overlay'
@@ -1667,7 +1665,7 @@ function file_cat {
   # get file name to show
   generic_choose file "$1" C && shift
   # set defaults
-  local EN="" PARSE="" SILENT=0 VERBOSE=0
+  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
@@ -3604,14 +3602,44 @@ function system_deploy {
 # destroy and permantantly delete a system
 #
 function system_deprovision {
-  # !!FIXME!!
-  echo "Not implemented"
+  start_modify
+  # input validation
+  test $# -eq 1 || err "Provide the system name"
+  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # load the system
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
+  # verify virtual machine
+  test "$VIRTUAL" == "y" || err "This is not a virtual machine"
+  # locate
+  HV=$( hypervisor_locate_system $1 )
+  test -z "$HV" && err "Unable to locate hypervisor for this system"
+  # load hypervisor settings
+  read -r HVIP VMPATH <<< "$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $1,$4}' )"
+  # confirm
+  printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
+  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$1' (y/n)? " || return
+  # test connection
+  nc -z -w 2 $HV 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor"
+  # get disks
+  LIST=" /etc/libvirt/qemu/$1.xml $( system_vm_disks $1 )"
+  # destroy
+  ssh $HV "virsh destroy $1; sleep 1; virsh undefine $1" >/dev/null 2>&1
+  # delete files / cleanup
+  for F in $LIST; do
+    if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
+    ssh -n $HV "test -f $F && rm -f $F"
+  done
+  # unmap
+  sed -i '/^'$1',/d' ${CONF}/hv-system >/dev/null 2>&1
+  commit_file hv-system
+  printf -- '\n%s has been removed\n' "$1"
+  return 0
 }
 
 # create a system
 #
 function system_provision {
-  start_modify
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
   # phase handler
@@ -3646,6 +3674,7 @@ function system_provision {
   read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
   valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
   valid_ip $DNS || err "Build network does not have a defined DNS server"
+  if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
   #  - locate available HVs
   LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
   test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
@@ -3656,6 +3685,10 @@ function system_provision {
   HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
   HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
   [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
+  # verify configuration
+  system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
+  
+  start_modify
   #  - assign a temporary IP as needed
   if [ "$NETNAME" != "$BUILDNET" ]; then
     BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
@@ -3665,9 +3698,17 @@ function system_provision {
   else
     BUILDIP=$IP
   fi
+
   #  - load the architecture and operating system for the build
   IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+  ROOT=$( build_root $BUILD )
+  IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
+
+  # set disk/ram
+  if [ -z "$DISK" ]; then DISK=$RDISK; fi
+  if [ -z "$RAM" ]; then RAM=$RRAM; fi
+
   #  - generate KS and deploy to local build server
   mkdir -p ${TMP}
   cp ${KSTEMPLATE}/${OS}.tpl ${TMP}/${NAME}.cfg
@@ -3685,7 +3726,7 @@ _EOF
   if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
   #  - send custom kickstart file over to the local sm-web repo/mirror
   ssh -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
-  scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server"
+  scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
   KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
   #  - get disk size and memory
   test -z "$DISK" && DISK=$DEF_HDD
@@ -3696,7 +3737,7 @@ _EOF
   echo "Creating virtual machine..."
   ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN </dev/null >/dev/null 2>&1 &
+  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN $REPO_ADDR $REPO_PATH </dev/null >/dev/null 2>&1 &
   #  - update hypervisor-system map
   sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
   printf -- '%s,%s\n' "$NAME" "$HV" >>${CONF}/hv-system
@@ -3710,10 +3751,10 @@ _EOF
 #
 function system_provision_phase2 {
   # load arguments passed in from phase1
-  read -r NAME HV BUILDIP IP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME BUILD LOC EN <<< "$@"
+  read -r NAME HV BUILDIP IP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME BUILD LOC EN REPO_ADDR REPO_PATH <<< "$@"
+  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME at $BUILDIP"
   # wait a few minutes before even trying to connect
-  sleep 180
-  /usr/bin/logger -t "scs" "starting build phase 2 for $NAME at $BUILDIP"
+  #sleep 180
   # max iterations, wait 60 minutes or 4 per min x 60 = 240
   #local i=0
   # confirm with targer server that base build is complete
@@ -3727,45 +3768,102 @@ function system_provision_phase2 {
   #sleep 30
   #  - connect to hypervisor, wait until vm is off, then start it up again
   ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
-  /usr/bin/logger -t "scs" "successfully started $NAME"
+  /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
   #  - check for abort
   check_abort
   #  - wait for vm to come up
   sleep 30
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "ssh connection succeeded to $NAME"
+  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "$NAME verified UP"
+  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
   #  - load the role
   ROLE=$( grep -E "^$BUILD," ${CONF}/build |awk 'BEGIN{FS=","}{print $2}' )
   #  - install_build
   system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
-  /usr/bin/logger -t "scs" "build scripts deployed to $NAME"
+  /usr/bin/logger -t "scs" "[$$] build scripts deployed to $NAME"
   #  - sysbuild_install (do not change the IP here)
   system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
   #    - when complete launch nc -l 80 to send response back to provisioning server - install success/failure
 
-errlog "finished base system build but phase2 is incomplete.  $NAME should be online at $BUILDIP"
-
-  # !!FIXME!!
   #  - clean up kickstart file
-  #  - background task to monitor install
-  #  - sleep 60 or so
+  nc -z -w 2 $REPO_ADDR 22 >/dev/null 2>&1
+  [ $? -eq 0 ] && ssh $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+
+  #  - connect to hypervisor, wait until vm is off, then start it up again
+  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
+  #  - check for abort
+  check_abort
   #  - wait for vm to come up
-  #  - ship over scs configuration
+  sleep 30
+  while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+
+  # deploy system configuration
+  /usr/bin/logger -t "scs" "[$$] generating release..."
+  FILE=$( system_release $NAME 2>/dev/null |tail -n1 )
+  if [ -z "$FILE" ]; then /usr/bin/logger -t "scs" "[$$] Error generating release for '$NAME'"; return 1; fi
+  if ! [ -f "$FILE" ]; then /usr/bin/logger -t "scs" "[$$] Unable to read release file for '$NAME'"; return 1; fi
+  /usr/bin/logger -t "scs" "[$$] copying release to remote system..."
+  scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
+  if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] Error copying release to '$NAME'@$BUILDIP"; return 1; fi
+  rm -f $FILE
+  ssh -n -o "StrictHostKeyChecking no" $BUILDIP "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  
+  # !!FIXME!!
   #  * - ship over latest code release
-  #  - install configuration
   #  - install code
-  #  - update vm network configuration for permanent address and vlan
-  #    - if necessary, free temporary IP (unassign)
-  #  - shut off vm
-  #  - sleep 30 or so
-  #  - connect to hypervisor, wait until vm is off
-  #  - change VM vlan and redefine
+
+  #  - check for abort
+  check_abort
+  
+  # update system ip as needed
+  if [ "$BUILDIP" != "$IP" ]; then
+    /usr/bin/logger -t "scs" "[$$] Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
+    local CIDR NETNAME=$( network_ip_locate $IP )
+    read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
+    ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+    sleep 5
+    # update ip assignment
+    /usr/bin/logger -t "scs" "[$$] Updating IP assignments"
+    network_ip_unassign $BUILDIP >/dev/null 2>&1
+    network_ip_assign $IP $NAME --force >/dev/null 2>&1
+  fi
+
+  # power down vm
+  ssh -n -o "StrictHostKeyChecking no" $BUILDIP "/sbin/shutdown -P now" >/dev/null 2>&1
+
+  # wait for power off
+  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  /usr/bin/logger -t "scs" "[$$] successfully stopped $NAME"
+
+  #  - check for abort
+  check_abort
+
+  # update build interface as needed
+  if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
+    ssh -n $HV "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+  fi
+
   #  - start vm
+  /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
+  ssh -n $HV "virsh start $NAME" >/dev/null 2>&1
+
   #  - update /etc/hosts and push-hosts (system_update_push_hosts)
-  #  - fin
-  #  
+  /usr/bin/logger -t "scs" "[$$] updating hosts"
+  system_update_push_hosts $NAME $IP >/dev/null 2>&1
+
+  #  - wait for vm to come up
+  sleep 30
+  while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+
+  /usr/bin/logger -t "scs" "[$$] system build complete for $NAME"
 }
 
 # deploy the current system build scripts to a remote server
@@ -3814,6 +3912,7 @@ function system_list_unformatted {
 function system_release {
   test $# -gt 0 || err
   # load the system
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
@@ -4002,9 +4101,9 @@ function system_start_remote_build {
   diff /root/.ssh/known_hosts{.$$,}; rm -f /root/.ssh/known_hosts.$$
   # kick-off install and return
   if [ -z "$2" ]; then
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh >/dev/null 2>&1 </dev/null &"
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &"
   else
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh $2 >/dev/null 2>&1 </dev/null &"
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &"
   fi
   return 0
 }
@@ -4055,37 +4154,39 @@ function system_update {
   commit_file system
 }
 
+# update /etc/hosts, lpad hosts, and deploy
+#
+# $1 = hostname
+# $2 = ip
+#
 function system_update_push_hosts {
-  # !!FIXME!! extracted from original sysbuild_install -- needs updated and revised
-exit 1
-#  if [ "`hostname`" != "hqpcore-bkup01" ]; then echo "Run from hqpcore-bkup01"; return 3; fi
-#  # hostname and IP should either both be unique, or both registered together
-#  ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' /etc/hosts ); H=$?
-#  echo "$ENTRY" |grep -qE '^'${2//\./\\.}'[ '$'\t'']';      I=$?
-#  grep -qE '^'${2//\./\\.}'[ '$'\t'']' /etc/hosts;          J=$?
-#  if [ $(( $H + $I )) -eq 0 ]; then
-#    # found together; this is an existing host
-#    echo "Host entry exists."
-#  elif [ $(( $H + $J )) -eq 2 ]; then
-#    echo "Adding host entry..."
-#    cat /etc/hosts >/etc/hosts.sysbuild
-#    echo -e "$2\t$1\t\t$1.example.com" >>/etc/hosts
-#    diff /etc/hosts{.sysbuild,}; echo
-#    # sync
-#    /usr/local/etc/push-hosts.sh
-#  elif [ $H -eq 0 ]; then
-#    echo "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted."
-#    return 1
-#  elif [ $J -eq 0 ]; then
-#    echo "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted."
-#    return 1
-#  fi
-#  # add host to lpad as needed
-#  grep -qE '^'$1':' /usr/local/etc/lpad/hosts/managed-hosts
-#  if [ $? -ne 0 ]; then
-#    echo "Adding lpad entry..."
-#    echo "$1:linux" >>/usr/local/etc/lpad/hosts/managed-hosts
-#  fi
+  if [ "`hostname`" != "hqpcore-bkup01" ]; then echo "Run from hqpcore-bkup01"; return 3; fi
+  # hostname and IP should either both be unique, or both registered together
+  ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' /etc/hosts ); H=$?
+  echo "$ENTRY" |grep -qE '^'${2//\./\\.}'[ '$'\t'']';      I=$?
+  grep -qE '^'${2//\./\\.}'[ '$'\t'']' /etc/hosts;          J=$?
+  if [ $(( $H + $I )) -eq 0 ]; then
+    # found together; this is an existing host
+    echo "Host entry exists."
+  elif [ $(( $H + $J )) -eq 2 ]; then
+    echo "Adding host entry..."
+    cat /etc/hosts >/etc/hosts.sysbuild
+    echo -e "$2\t$1\t\t$1.${DOMAIN_NAME}" >>/etc/hosts
+    diff /etc/hosts{.sysbuild,}; echo
+    # sync
+    /usr/local/etc/push-hosts.sh
+  elif [ $H -eq 0 ]; then
+    err "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted."
+  elif [ $J -eq 0 ]; then
+    err "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted."
+  fi
+  # add host to lpad as needed
+  grep -qE '^'$1':' /usr/local/etc/lpad/hosts/managed-hosts
+  if [ $? -ne 0 ]; then
+    echo "Adding lpad entry..."
+    echo "$1:linux" >>/usr/local/etc/lpad/hosts/managed-hosts
+  fi
+  return 0
 }
 
 # generate all system variables and settings
@@ -4093,6 +4194,7 @@ exit 1
 function system_vars {
   test $# -eq 1 || err "System name required"
   # load the system
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
@@ -4180,6 +4282,9 @@ DEF_HDD=40
 # default amount of RAM for a new system in MB
 #
 DEF_MEM=1024
+#
+# site domain name (for hosts)
+DOMAIN_NAME=2checkout.com
 #
 # path to kickstart templates (centos6-i386.tpl, etc...)
 KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
