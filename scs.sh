@@ -696,7 +696,8 @@ Component:
     edit [<name>] [--environment <name>]
   help
   hypervisor
-    [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+    --locate-system <system_name>
+    <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
   location
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
@@ -3004,6 +3005,7 @@ function hypervisor_add_network {
 
 #   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 function hypervisor_byname {
+  if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
   # input validation
   test $# -gt 1 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
@@ -3089,6 +3091,40 @@ function hypervisor_list {
     esac; shift; done
     for N in $LIST; do printf -- "$N\n"; done
   fi
+}
+
+# locate the hypervisor a system is installed on
+#
+# if more than one is found (i.e. due to shared filesystems) the HV the VM is running
+#   on will be returned. if it is not running, one of the HVs will be picked and
+#   returned
+#
+function hypervisor_locate_system {
+  # input validation
+  test $# -eq 1 || err "Provide the system name"
+  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # load the system
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
+  test "$VIRTUAL" == "n" && err "Not a virtual machine"
+  # load hypervisors
+  LIST=$( hypervisor_list --location $LOC --environment $EN )
+  test -z "$LIST" && return 1
+  # set defaults
+  local ON OFF
+  for H in $LIST; do
+    # load the host
+    read HIP ENABLED <<<"$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
+    # test the connection
+    nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
+    # search
+    read VM STATE <<<"$( ssh $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
+    test -z "$VM" && continue
+    if [ "$STATE" == "shut" ]; then OFF="$H"; else ON="$H"; fi
+  done
+  # check results
+  if ! [ -z "$ON" ]; then printf -- "$ON\n"; return 0; fi
+  if ! [ -z "$OFF" ]; then printf -- "$OFF\n"; return 0; fi
+  return 1
 }
 
 # poll the hypervisor for current system status
