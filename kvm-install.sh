@@ -4,9 +4,27 @@
 #
 # William Strucke [wstrucke@gmail.com]
 # Version 1.0.0 - 2012-01-24
-# - initial release: https://scribe.2checkout.com/view.html?wid=32098
+# - initial release
 # Version 1.1.0 - 2014-08-28
 # - near complete re-implementation and new options
+#
+# Copyright 2014
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+# Requires:
+#   yum install -y libvirt libvirt-client libvirt-python qemu-img qemu-kvm python-virtinst virt-top ntop libguestfs libguestfs-tools libguestfs-tools-c perl-Sys-Guestfs
 #
 
 # error / exit function
@@ -69,13 +87,27 @@ function valid_ip() {
 
 
 # local constants
-BUILD_NET_DNS="192.168.32.46"
-BUILD_NET_GW="192.168.32.10"
-BUILD_NET_MASK="255.255.254.0"
-BUILD_NET_INTERFACE="br3"
-HYPERVS="kvm-01 kvm-02 kvm-03"
-WEBROOT="http://192.168.32.39/centos"
-VMDIR=/san/virtual-machines
+#
+# primary dns server in build network
+BUILD_NET_DNS=""
+#
+# gateway in build network
+BUILD_NET_GW=""
+#
+# network mask for build network
+BUILD_NET_MASK=""
+#
+# hypervisor interface name for the build network (bridge)
+BUILD_NET_INTERFACE=""
+#
+# space seperated list of hypervisor host names (hosts this script can run on)
+HYPERVS=""
+#
+# centos mirror URL
+WEBROOT="http://mirror.cc.columbia.edu/pub/linux/centos"
+#
+# local directory for virtual machine disk images
+VMDIR=""
 
 # local settings
 test -f "`dirname $0`/kvm-install.sh.settings" && source `dirname $0`/kvm-install.sh.settings
@@ -159,6 +191,9 @@ if [ ! -z "$BASE" ]; then test -f "$BASE" || err "Invalid base image"; fi
 if [[ "$VMOS" == "centos4" && "$VMARCH" != "i386" ]]; then err "Centos 4 only supports i386 architecture"; fi
 if [[ "$VMOS" == "centos6" && $VMRAM -lt 1024 ]]; then err "CentOS 6 requires at least 1GB of RAM"; fi
 if [[ "$VMOS" == "centos6" && $VMSIZE -lt 30 ]]; then err "CentOS 6 requires at least 30GB of disk"; fi
+
+# check settings
+if [[ -z "$BUILD_NET_DNS" || -z "$BUILD_NET_GW" || -z "$BUILD_NET_MASK" || -z "$BUILD_NET_INTERFACE" || -z "$VMDIR" ]]; then err "Settings are not defined"; fi
 
 # set up urls
 if [ -z "$KSURL" ]; then VAR="${VMOS}_${VMARCH}_ks"; KSURL=${!VAR}; fi
