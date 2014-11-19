@@ -502,7 +502,7 @@ function get_input {
     if [ -z "$AUTO" ]; then read -r RL; else RL="$AUTO"; AUTO=""; printf -- "$RL\n"; fi
     # force it to lowercase unless requested not to
     if [ $LC -eq 1 ]; then RL=$( printf -- "$RL" |tr 'A-Z' 'a-z' ); fi
-    # if the scren was cleared, output the entered value
+    # if the screen was cleared, output the entered value
     if [ $CL -eq 1 ]; then tput rmcup; printf -- ": $RL\n"; fi
     # if no input was provided and there is a default value, set the input to the default
     [[ -z "$RL" && ! -z "$D" ]] && RL="$D"
@@ -676,6 +676,25 @@ function octal2text {
   octal2perm ${N:3:1}
 }
 
+# read xml data
+#
+# SOURCE: http://stackoverflow.com/questions/893585/how-to-parse-xml-in-bash
+#
+function read_dom () {
+  local IFS=\>
+  read -d \< ENTITY CONTENT
+  local RET=$?
+  TAG_NAME=${ENTITY%% *}
+  ATTRIBUTES=${ENTITY#* }
+  if [ "$ATTRIBUTES" == "$TAG_NAME" ]; then ATTRIBUTES=""; fi
+  TYPE=OPEN
+  if [[ "${TAG_NAME: -1}" == "/" || "${ATTRIBUTES: -1}" == "/" || "${CONTENT: -1}" == "/" ]]; then TYPE=CLOSE; fi
+  TAG_NAME=${TAG_NAME/%\//}
+  ATTRIBUTES=${ATTRIBUTES/%\//}
+  CONTENT=${CONTENT/%\//}
+  return $RET
+}
+
 function usage {
   echo "Simple Configuration [Management] System
 Manage application/server configurations and base templates across all environments.
@@ -705,7 +724,7 @@ Component:
     edit [<name>] [--environment <name>]
   help
   hypervisor
-    --locate-system <system_name> | --system-audit
+    --locate-system <system_name> [--quick] | --system-audit
     <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
   location
     [<name>] [--assign|--unassign|--list]
@@ -3109,10 +3128,17 @@ function hypervisor_list {
 #   on will be returned. if it is not running, one of the HVs will be picked and
 #   returned
 #
+# --quick   try to use the cached location (if available)
+#
 function hypervisor_locate_system {
   # input validation
-  test $# -eq 1 || err "Provide the system name"
+  test $# -ge 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # cache check
+  if [ "$2" == "--quick" ]; then
+    IFS="," read -r NAME H <<< "$( grep -E '^'$1',' ${CONF}/hv-system )"
+    if ! [ -z "$H" ]; then printf -- '%s\n' "$H"; return; fi
+  fi
   # load the system
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   test "$VIRTUAL" == "n" && err "Not a virtual machine"
@@ -3133,8 +3159,8 @@ function hypervisor_locate_system {
     if [ "$STATE" == "shut" ]; then OFF="$H"; else ON="$H"; fi
   done
   # check results
-  if ! [ -z "$ON" ]; then FOUND="$ON"; fi
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
+  if ! [ -z "$ON" ]; then FOUND="$ON"; fi
   # update hypervisor-system map, if needed
   grep -qE "^$NAME,$FOUND\$" ${CONF}/hv-system
   if [[ $? -ne 0 && ! -z "$FOUND" ]]; then
@@ -3375,6 +3401,7 @@ function system_byname {
     --release) system_release $1;;
     --start-remote-build) system_start_remote_build $1 ${@:3};;
     --vars) system_vars $1;;
+    --vm-disks) system_vm_disks $1;;
   esac
 }
 
@@ -3584,6 +3611,7 @@ function system_deprovision {
 # create a system
 #
 function system_provision {
+  start_modify
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
   # phase handler
@@ -3669,6 +3697,10 @@ _EOF
   ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
   nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN </dev/null >/dev/null 2>&1 &
+  #  - update hypervisor-system map
+  sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+  printf -- '%s,%s\n' "$NAME" "$HV" >>${CONF}/hv-system
+  commit_file hv-system
   #  - phase 1 complete
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
   return 0
@@ -4089,6 +4121,35 @@ function system_vars {
     IFS="," read -r CN VAL <<< "$CNST"
     echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
   done
+}
+
+# output the virtual machine disk configuration for the system
+#
+function system_vm_disks {
+  # input validation
+  test $# -eq 1 || err "Provide the system name"
+  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # get the host
+  local HV=$( hypervisor_locate_system $1 --quick )
+  test -z "$HV" && return
+  # get the hypervisor IP
+  local IP=$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2}' )
+  # verify connectivity
+  nc -z -w 2 $IP 22 >/dev/null 2>&1 || return
+  # get the disk configuration from the hypervisor
+  local PARENT="/" XMLPATH
+  while read_dom; do
+    [ -z "$TAG_NAME" ] && continue
+    if [ "${TAG_NAME:0:1}" == "/" ]; then
+      PARENT="$( printf -- '%s' "$PARENT" |sed 's%[^/]*/$%%' )"
+      continue
+    fi
+    if [ "$TYPE" == "OPEN" ]; then PARENT="${PARENT}${TAG_NAME}/"; XMLPATH=$PARENT; else XMLPATH="${PARENT}${TAG_NAME}/"; fi
+    #echo "Path: '$XMLPATH', Tag: '$TAG_NAME', Attributes: '$ATTRIBUTES', Type: '$TYPE', Content: '$CONTENT'"
+    if [ "$XMLPATH" == "/domain/devices/disk/source/" ]; then
+      printf -- '%s\n' "$ATTRIBUTES" |sed "s/'//g; s/file=//"
+    fi
+  done <<< "$( ssh $IP virsh dumpxml $1 )"
 }
 
 
