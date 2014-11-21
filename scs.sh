@@ -43,6 +43,7 @@
 #     resource                                             file
 #     system                                               file
 #     template/                                            directory containing global application templates
+#.....template/cluster/<environment>/                      directory containing template patches for an environment w/clustering (proposed)
 #     template/patch/<environment>/                        directory containing template patches for the environment
 #     value/                                               directory containing constant definitions
 #     value/constant                                       file (global)
@@ -73,6 +74,7 @@
 #   application
 #   --description: application details
 #   --format: name,alias,build,cluster\n
+#   --search: [FORMAT:application]
 #   --storage:
 #   ----name            a unique name for the application
 #   ----alias           an alias for the application (currently unused)
@@ -82,21 +84,25 @@
 #   build
 #   --description: server builds
 #   --format: name,role,description,os,arch,disk,ram,parent\n
+#   --search: [FORMAT:build]
 #   --storage:
 #
 #   constant
 #   --description: variables used to generate configurations
 #   --format: name,description\n
+#   --search: [FORMAT:constant]
 #   --storage:
 #
 #   environment
 #   --description: 'stacks' or groups of instances of all or a subset of applications
 #   --format: name,alias,description\n
+#   --search: [FORMAT:environment]
 #   --storage:
 #
 #   file
 #   --description: files installed on servers
 #   --format: name,path,type,owner,group,octal,target,description\n
+#   --search: [FORMAT:file]
 #   --storage:
 #   ----name	        a unique name to reference this entry; sometimes the actual file name but since
 #                         there is only one namespace you may have to be creative.
@@ -111,11 +117,13 @@
 #   file-map
 #   --description: map of files to applications
 #   --format: filename,application\n
+#   --search: [FORMAT:file-map]
 #   --storage:
 #
 #   hv-environment
 #   --description: hypervisor/environment map
 #   --format: environment,hypervisor
+#   --search: [FORMAT:hv-environment]
 #   --storage:
 #   ----environment     the name of the 'environment'
 #   ----hypervisor      the name of the 'hypervisor'
@@ -123,6 +131,7 @@
 #   hv-network
 #   --description: hypervisor/network map
 #   --format: loc-zone-alias,hv-name,interface
+#   --search: [FORMAT:hv-network]
 #   --storage:
 #   ----loc-zone-alias  network 'location,zone,alias' in the usual format
 #   ----hv-name         the hostname of the hypervisor
@@ -131,6 +140,7 @@
 #   hv-system
 #   --description: hypervisor/vm map
 #   --format: system,hypervisor
+#   --search: [FORMAT:hv-system]
 #   --storage:
 #   ----system          the name of the 'system' (or virtual machine)
 #   ----hypervisor      the name of the 'hypervisor'
@@ -138,6 +148,7 @@
 #   hypervisor
 #   --description: virtual machine host servers
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
+#   --search: [FORMAT:hypervisor]
 #   --storage:
 #   ----name	        the hostname
 #   ----management-ip   the ip the scs server will use to manage the hypervisor
@@ -150,6 +161,7 @@
 #   location
 #   --description: sites or locations
 #   --format: code,name,description\n
+#   --search: [FORMAT:location]
 #   --storage:
 #   ----code            code or alias for the location
 #   ----name            name of the location/site
@@ -158,6 +170,7 @@
 #   network
 #   --description: network registry
 #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+#   --search: [FORMAT:network]
 #   --storage:
 #   ----location        location code for the network (primary key part 1/3)
 #   ----zone            network zone assignment (primary key part 2/3)
@@ -180,22 +193,26 @@
 #   net/a.b.c.0
 #   --description: subnet ip assignment registry
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+#   --search: [FORMAT:net/network]
 #   --storage:
 #
 #   net/a.b.c.0-routes
 #   --description: static routes to be applied to all hosts in the network
 #   --format: device net network netmask netmask gw gateway
+#   --search: [FORMAT:net/routes]
 #   --example: any net 10.1.12.0 netmask 255.255.255.0 gw 192.168.0.1
 #
 #   resource
 #   --description: arbitrary 'things' (such as IP addresses for a specific purpose) assigned to
 #                    systems and used to generate configs
 #   --format: type,value,assign_type,assign_to,name,description\n
+#   --search: [FORMAT:resource]
 #   --storage:
 #
 #   system
 #   --description: servers
 #   --format: name,build,ip,location,environment,virtual,base_image,overlay\n
+#   --search: [FORMAT:system]
 #   --storage:
 #   ----name            the hostname
 #   ----build           build name
@@ -209,21 +226,25 @@
 #   value/constant
 #   --description: global values for constants
 #   --format: constant,value\n
+#   --search: [FORMAT:value/constant]
 #   --storage:
 #
 #   value/<environment>/constant
 #   --description: environment scoped values for constants
 #   --format: constant,value\n
+#   --search: [FORMAT:value/env/constant]
 #   --storage:
 #
 #   value/<location>/<environment>
 #   --description: enironment at a specific site scoped values for constants
 #   --format: constant,value\n
+#   --search: [FORMAT:value/loc/constant]
 #   --storage:
 #
 #   <location>/network
 #   --description: network details for a specific location
 #   --format: zone,alias,network/cidr,build,default-build\n
+#   --search: [FORMAT:location/network]
 #   --storage:
 #   ----zone            network zone; must be identical to the entry in 'network'
 #   ----alias           network alias; must be identical to the entry in 'network'
@@ -247,6 +268,7 @@
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
+#     - every line that reads from a storage file should have a comment to enable more accurate schema changes
 #   - enhancements:
 #     - finish IPAM and IP allocation components
 #     - validate IP addresses using the new valid_ip function
@@ -256,8 +278,11 @@
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
+#     - rewrite modules in a proper programming language
 #     - add file groups
 #     - system can be 'base' or 'overlay'
+#     - store vm uuid with system to use as a sanity check when manipulating remote vms
+#     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
 #     - all systems should use the same base image, and instead of a larger disk get a second disk with a unique LVM name
 #     - cluster y/n for application in environment
 #     - file 'patch' for cluster y/n (in addition to environment patch)
@@ -981,6 +1006,7 @@ function application_create {
   printf -- "cluster support.\n"
   while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -r -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
   # add
+  # [FORMAT:application]
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
 }
@@ -1001,6 +1027,7 @@ _EOF
 function application_delete {
   generic_delete application $1 || return
   # delete from file-map as well
+  # [FORMAT:file-map]
   sed -i "/^[^,]*,$APP\$/d" $CONF/file-map
   commit_file file-map
 # !!FIXME!! should also unassign resources
@@ -1035,7 +1062,9 @@ function application_file_add {
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
+  # [FORMAT:file-map]
   grep -qE "^$F,$APP\$" $CONF/file-map && return
+  # [FORMAT:file-map]
   echo "$F,$APP" >>$CONF/file-map
   commit_file file-map
 }
@@ -1050,11 +1079,14 @@ _EOF
 function application_file_list {
   test -z "$1" && shift
   generic_choose application "$1" APP
+  # [FORMAT:file-map]
   NUM=$( grep -E ",$APP\$" $CONF/file-map |wc -l |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} file${S} linked to $APP."
   test $NUM -eq 0 && return
+  # [FORMAT:file-map]
   ( for F in $( grep -E ",$APP\$" $CONF/file-map |awk 'BEGIN{FS=","}{print $1}' ); do
+    # [FORMAT:file]
     grep -E "^$F," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
   done ) |sort |column -t |sed 's/^/   /'
 }
@@ -1076,7 +1108,9 @@ function application_file_remove {
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" != "y" ]; then return; fi
   # remove the mapping if it exists
+  # [FORMAT:file-map]
   grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not associated with $APP."
+  # [FORMAT:file-map]
   sed -i "/^$F,$APP/d" $CONF/file-map
   commit_file file-map
 }
@@ -1100,14 +1134,17 @@ function application_show {
   test $# -eq 1 || err "Provide the application name"
   APP="$1"
   grep -qE "^$APP," $CONF/application || err "Invalid application"
+  # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
   # retrieve file list
+  # [FORMAT:file-map]
   FILES=( `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
+      # [FORMAT:file]
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
     done |sort |uniq |column -t |sed 's/^/   /'
   else
@@ -1119,11 +1156,13 @@ function application_show {
 function application_update {
   start_modify
   generic_choose application "$1" APP && shift
+  # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_yn CLUSTER "LVS Support (y/n)"
+  # [FORMAT:application]
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   commit_file application
 }
@@ -1141,6 +1180,7 @@ function application_update {
 #
 function build_application_list {
   generic_choose build "$1" C
+  # [FORMAT:application]
   grep -E ",$C," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}'
 }
 
@@ -1166,6 +1206,7 @@ function build_create {
   # validate unique name
   grep -qE "^$NAME," $CONF/build && err "Build already defined."
   # add
+  # [FORMAT:build]
   printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\n" >>$CONF/build
   commit_file build
 }
@@ -1220,6 +1261,7 @@ function build_list_format_tree {
 
 function build_list_unformatted {
   if [ "$1" == "--detail" ]; then
+    # [FORMAT:build]
     awk 'BEGIN{FS=","}{print $1","$3}' ${CONF}/build
   else
     awk 'BEGIN{FS=","}{print $1}' ${CONF}/build
@@ -1230,6 +1272,7 @@ function build_list_unformatted {
 #
 function build_parent {
   local NAME ROLE DESC OS ARCH DISK RAM PARENT
+  # [FORMAT:build]
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
   printf -- "$PARENT\n"
   test -z "$PARENT" && return 1 || return 0
@@ -1252,9 +1295,11 @@ function build_root {
 function build_show {
   test $# -eq 1 || err "Provide the build name"
   grep -qE "^$1," ${CONF}/build || err "Unknown build"
+  # [FORMAT:build]
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
   if [ ! -z "$PARENT" ]; then
     ROOT=$( build_root $NAME )
+    # [FORMAT:build]
     IFS="," read -r RNAME RROLE RDESC OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build )"
     if [ -z "$DISK" ]; then DISK=$RDISK; fi
     if [ -z "$RAM" ]; then RAM=$RRAM; fi
@@ -1271,6 +1316,7 @@ function build_show {
 function build_update {
   start_modify
   generic_choose build "$1" C && shift
+  # [FORMAT:build]
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
   get_input NAME "Build" --default "$NAME"
   get_input ROLE "Role" --default "$ROLE" --null
@@ -1288,6 +1334,7 @@ function build_update {
   get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$' --default "$DISK"
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
+  # [FORMAT:build]
   sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
   commit_file build
 }
@@ -1311,6 +1358,7 @@ function constant_create {
   # validate unique name
   grep -qE "^$NAME," $CONF/constant && err "Constant already defined."
   # add
+  # [FORMAT:constant]
   printf -- "${NAME},${DESC}\n" >>$CONF/constant
   commit_file constant
 }
@@ -1342,6 +1390,7 @@ function constant_show {
   test $# -eq 1 || err "Provide the constant name"
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
   grep -qiE "^$C," ${CONF}/constant || err "Unknown constant"
+  # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   printf -- "Name: $NAME\nDescription: $DESC\n"
 }
@@ -1349,11 +1398,13 @@ function constant_show {
 function constant_update {
   start_modify
   generic_choose constant "$1" C && shift
+  # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   get_input NAME "Name" --default "$NAME"
   # force lowercase for constants
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
+  # [FORMAT:constant]
   sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
 }
@@ -1415,12 +1466,15 @@ function environment_application_define_constant {
   # get the value
   if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
   # check if constant is already defined
+  # [FORMAT:value/env/constant]
   grep -qE "^$C," ${CONF}/value/$ENV/$APP 2>/dev/null
   if [ $? -eq 0 ]; then
     # already define, update value
+    # [FORMAT:value/env/constant]
     sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/$APP
   else
     # not defined, add
+    # [FORMAT:value/env/constant]
     printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/$APP
   fi
   commit_file ${CONF}/value/$ENV/$APP
@@ -1432,6 +1486,7 @@ function environment_application_undefine_constant {
   # get the requested application or abort
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
+  # [FORMAT:value/env/constant]
   sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/$APP 2>/dev/null
   commit_file ${CONF}/value/$ENV/$APP
 }
@@ -1455,13 +1510,16 @@ function environment_application_byname_assign {
   # select an available resource to assign
   generic_choose resource "$1" RES "^(cluster|ha)_ip,.*,not assigned," && shift
   # verify the resource is available for this purpose
+  # [FORMAT:resource]
   grep -E ",${RES//,/}," $CONF/resource |grep -qE '^(cluster|ha)_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
   # get the requested location or abort
   generic_choose location "$1" LOC && shift
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # assign resource, update index
+  # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  # [FORMAT:resource]
   sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
@@ -1478,12 +1536,15 @@ function environment_application_byname_unassign {
   # select an available resource to unassign
   generic_choose resource "$1" RES ",application,$LOC:$ENV:$APP," && shift
   # verify the resource is available for this purpose
+  # [FORMAT:resource]
   grep -E ",${RES//,/}," $CONF/resource |grep -qE ",application,$LOC:$ENV:$APP," || err "Error - the provided resource is not assigned to this application."
   # confirm
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" != "y" ]; then return; fi
   # assign resource, update index
+  # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  # [FORMAT:resource]
   sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
@@ -1526,6 +1587,7 @@ function environment_application_remove {
   get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
   # unassign the application
   sed -i "/^$APP\$/d" $CONF/$LOC/$ENV
+  # !!FIXME!!
   # so... this says it's going to unassign resources and whatnot.  we should actually do that here...
   commit_file $LOC/$ENV
 }
@@ -1552,9 +1614,11 @@ function environment_constant_define {
   grep -qE "^$C," ${CONF}/value/$ENV/constant
   if [ $? -eq 0 ]; then
     # already define, update value
+    # [FORMAT:value/env/constant]
     sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/$ENV/constant
   else
     # not defined, add
+    # [FORMAT:value/env/constant]
     printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/constant
   fi
   commit_file ${CONF}/value/$ENV/constant
@@ -1592,6 +1656,7 @@ function environment_create {
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
   mkdir -p $CONF/template/patch/${NAME} $CONF/{binary,value}/${NAME} >/dev/null 2>&1
+  # [FORMAT:environment]
   printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
   touch $CONF/value/${NAME}/constant
   commit_file environment
@@ -1621,6 +1686,7 @@ function environment_list_unformatted {
 function environment_show {
   test $# -eq 1 || err "Provide the environment name"
   grep -qE "^$1," ${CONF}/environment || err "Unknown environment" 
+  # [FORMAT:environment]
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
   # also show installed locations
@@ -1636,12 +1702,14 @@ function environment_show {
 function environment_update {
   start_modify
   generic_choose environment "$1" C && shift
+  # [FORMAT:environment]
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$C," ${CONF}/environment )"
   get_input NAME "Name" --default "$NAME"
   get_input ALIAS "Alias (One Letter, Unique)" --default "$ALIAS"
   get_input DESC "Description" --default "$DESC" --null --nc
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
+  # [FORMAT:environment]
   sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
   # handle rename
   if [ "$NAME" != "$C" ]; then
@@ -1685,6 +1753,7 @@ function file_cat {
   # validate system name
   if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   # load file data
+  # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   # only handle plain text files here
   if [ "$TYPE" != "file" ]; then err "Invalid type for cat: $TYPE"; fi
@@ -1761,6 +1830,7 @@ function file_create {
   # validate unique name
   grep -qE "^$NAME," ${CONF}/file && err "File already defined."
   # add
+  # [FORMAT:file]
   printf -- "${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}\n" >>${CONF}/file
   # create base file
   if [ "$TYPE" == "file" ]; then
@@ -1804,6 +1874,7 @@ function file_edit {
   start_modify
   generic_choose file "$1" C && shift
   # load file data
+  # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   # only generic files can actually be edited
   if [ "$TYPE" != "file" ]; then err "Can not edit file of type '$TYPE'"; fi
@@ -1913,6 +1984,7 @@ function file_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined file${S}."
   test $NUM -eq 0 && return
+  # [FORMAT:file]
   awk 'BEGIN{FS=","}{print $1,$2}' ${CONF}/file |sort |column -t |sed 's/^/   /'
 }
 
@@ -1924,6 +1996,7 @@ function file_list {
 function file_show {
   test $# -eq 1 || err "Provide the file name"
   grep -qE "^$1," ${CONF}/file || err "Unknown file" 
+  # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$1," ${CONF}/file )"
   if [ "$TYPE" == "symlink" ]; then
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH -> $TARGET\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
@@ -1944,6 +2017,7 @@ function file_show {
 function file_update {
   start_modify
   generic_choose file "$1" C && shift
+  # [FORMAT:file]
   IFS="," read -r NAME PTH T OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
   get_input NAME "Name (for reference)" --default "$NAME"
   get_input TYPE "Type" --options file,directory,symlink,binary,copy,delete,download --default "$T"
@@ -1981,8 +2055,10 @@ function file_update {
     fi
     popd >/dev/null 2>&1
     # update map
+    # [FORMAT:file-map]
     sed -ri 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
   fi
+  # [FORMAT:file]
   sed -i "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
@@ -2013,6 +2089,7 @@ function location_create {
   # validate unique name
   grep -qE "^$CODE," $CONF/location && err "Location already defined."
   # add
+  # [FORMAT:location]
   printf -- "${CODE},${NAME},${DESC}\n" >>$CONF/location
   commit_file location
 }
@@ -2073,9 +2150,11 @@ function location_environment_constant_define {
   grep -qE "^$C," $CONF/value/$LOC/$ENV
   if [ $? -eq 0 ]; then
     # already define, update value
+    # [FORMAT:value/loc/constant]
     sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/value/$LOC/$ENV
   else
     # not defined, add
+    # [FORMAT:value/loc/constant]
     printf -- "$C,$VAL\n" >>$CONF/value/$LOC/$ENV
   fi
   commit_file $CONF/value/$LOC/$ENV
@@ -2139,6 +2218,7 @@ function location_list_unformatted {
 function location_show {
   test $# -eq 1 || err "Provide the location name"
   grep -qE "^$1," ${CONF}/location || err "Unknown location" 
+  # [FORMAT:location]
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$1," ${CONF}/location )"
   printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC\n"
 }
@@ -2146,11 +2226,13 @@ function location_show {
 function location_update {
   start_modify
   generic_choose location "$1" C && shift
+  # [FORMAT:location]
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$C," ${CONF}/location )"
   get_input CODE "Location Code (three characters)" --default "$CODE"
   test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
+  # [FORMAT:location]
   sed -i 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
   # handle rename
   if [ "$CODE" != "$C" ]; then
@@ -2222,6 +2304,7 @@ function network_create {
   if [ "$BUILD" == "y" ]; then
     get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? "
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
+    # [FORMAT:network]
     if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
@@ -2237,15 +2320,21 @@ function network_create {
   fi
   # add
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  # [FORMAT:network]
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
+  # [FORMAT:location/network]
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
     # get the current default network (if any) and update it
+    # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
+    # [FORMAT:network]
     sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y$%\1,y,n%' ${CONF}/network
+    # [FORMAT:network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
+  # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
   if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
@@ -2264,6 +2353,7 @@ function network_delete {
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
+    # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
     sed -i '/^'${C//-/,}',/d' ${CONF}/network
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
@@ -2299,6 +2389,7 @@ function network_edit_routes {
       echo '  ** No routes exist **'
     else
       local IFS=$'\n'
+      # [FORMAT:net/routes]
       while read LINE; do
         I=$(($I+1))
         printf -- '  %s: %s\n' $I $LINE
@@ -2312,6 +2403,7 @@ function network_edit_routes {
 	get_input NET "  Target Network"
         get_input NETMASK "  Target Network Mask"
 	get_input GATEWAY "  Gateway"
+        # [FORMAT:net/routes]
         printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
         ;;
       v)
@@ -2328,12 +2420,14 @@ function network_edit_routes {
 	V=${OPT:1}
 #	if [ "$V" != "$( printf -- '$V' |sed 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed 's/[^0-9]*//g' )'"; sleep 1; continue; fi
 	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
+        # [FORMAT:net/routes]
 	IFS=" " read -r DEVICE NET NETMASK GATEWAY <<<$(awk '{print $1,$3,$5,$7}' $TMP/${1}-routes |head -n$V |tail -n1)
 	get_input DEVICE "  Device" --default "$DEVICE" --nc
 	get_input NET "  Target Network" --default "$NET"
         get_input NETMASK "  Target Network Mask" --default "$NETMASK"
 	get_input GATEWAY "  Gateway" --default "$GATEWAY"
 	sed -i -e "${V}d" $TMP/${1}-routes
+        # [FORMAT:net/routes]
         printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
 	;;
       d)
@@ -2389,15 +2483,18 @@ function network_ip_assign {
   ASSN="$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )"
   if [[ "$ASSN" != "" && "$ASSN" != "$2" && $FORCE -eq 0 ]]; then err "The requested IP is already assigned."; fi
   # load the ip data
+  # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # check if the ip is in use (last ditch effort)
   if [[ $FORCE -eq 0 && "$ASSN" == "" && $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]]; then
     # mark the address as reserved
+    # [FORMAT:net/network]
     sed -i "s/^$( ip2dec $1 ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
     RET=1
   else
     # assign
+    # [FORMAT:net/network]
     sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,$2,,,,/" ${CONF}/net/${FILENAME}
     RET=0
   fi
@@ -2422,6 +2519,7 @@ function network_ip_list_available {
     return
   fi
   # load the network
+  # [FORMAT:network]
   read -r NETIP NETCIDR <<< "$( grep -E "^${1//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
   # networks are stored as /24s so adjust the netmask if it's smaller than that
   test $NETCIDR -gt 24 && NETCIDR=24
@@ -2431,6 +2529,7 @@ function network_ip_list_available {
     # skip this address if the entire subnet is not configured
     test -f ${CONF}/net/${FILENAME} || continue
     # 'free' IPs are those with 'n' in the third column and an empty fifth column
+    # [FORMAT:net/network]
     grep -E '^[^,]*,[^,]*,n,' ${CONF}/net/${FILENAME} |grep -E '^[^,]*,[^,]*,[yn],[yn],,' |awk 'BEGIN{FS=","}{print $2}'
   done
 }
@@ -2441,6 +2540,7 @@ function network_ip_locate {
   test $# -eq 1 || return 1
   valid_ip $1 || return 1
   local ADDR=$( ip2dec $1 ) NAME NET CIDR
+  # [FORMAT:network]
   while read NAME NET CIDR; do
     if [[ $ADDR -ge $( ip2dec $NET ) && $ADDR -le $( ip2dec $( ipadd $NET $(( $( cdr2size $CIDR ) - 1 )) ) ) ]]; then printf -- "%s\n" "$NAME"; fi
   done <<< "$( awk 'BEGIN{FS=","}{print $1"-"$2"-"$3,$4,$6}' ${CONF}/network )"
@@ -2457,6 +2557,7 @@ function network_ip_scan {
   # declare variables
   local NETIP NETCIDR FILENAME
   # load the network
+  # [FORMAT:network]
   read -r NETIP NETCIDR <<< "$( grep -E "^${1//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
   # loop through the ip range and check each address
   for ((i=$( ip2dec $NETIP );i<$( ip2dec $( ipadd $NETIP $( cdr2size $NETCIDR ) ) );i++)); do
@@ -2466,10 +2567,13 @@ function network_ip_scan {
     # skip the address if it is registered
     grep -q "^$i," ${CONF}/net/${FILENAME} || continue
     # skip the address if it is already marked reserved
+    # [FORMAT:net/network]
     grep "^$i," ${CONF}/net/${FILENAME} |grep -qE '^[^,]*,[^,]*,y,' && continue
     if [ $( /bin/ping -c4 -n -s8 -w3 -q $( dec2ip $i ) |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
       # mark the address as reserved
+      # [FORMAT:net/network]
       IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
+      # [FORMAT:net/network]
       sed -i "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
       echo "Found device at $( dec2ip $i )"
     fi
@@ -2491,7 +2595,9 @@ function network_ip_unassign {
   # validate address
   grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
   # unassign
+  # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
+  # [FORMAT:net/network]
   sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
@@ -2534,8 +2640,7 @@ function network_ipam_add_range {
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
-  local NETNAME=$1 FIRST_IP LAST_IP CIDR; shift
-  local NETIP NETLAST NETCIDR
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
   # first check if a mask was provided in the first address
   printf -- "$1" |grep -q "/"
   if [ $? -eq 0 ]; then
@@ -2556,6 +2661,7 @@ function network_ipam_add_range {
   # make sure the last IP is legit too
   valid_ip $LAST_IP || err "An invalid IP address was provided"
   # make sure both first and last are in the range for the provided network
+  # [FORMAT:network]
   read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
   # get the expected last ip in the network
   NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
@@ -2572,6 +2678,7 @@ function network_ipam_add_range {
     FILENAME=$( get_network $( dec2ip $i ) 24 )
     grep -qE "^$i," ${CONF}/net/$FILENAME 2>/dev/null
     if [ $? -eq 0 ]; then echo "Error: entry already exists for $( dec2ip $i ). Skipping..." >&2; continue; fi
+    # [FORMAT:net/network]
     printf -- "${i},$( dec2ip $i ),n,n,,,,,\n" >>${CONF}/net/$FILENAME
   done
   git add ${CONF}/net/$FILENAME >/dev/null 2>&1
@@ -2593,8 +2700,7 @@ function network_ipam_remove_range {
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
-  local NETNAME=$1 FIRST_IP LAST_IP CIDR; shift
-  local NETIP NETLAST NETCIDR
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
   # first check if a mask was provided in the first address
   printf -- "$1" |grep -q "/"
   if [ $? -eq 0 ]; then
@@ -2615,6 +2721,7 @@ function network_ipam_remove_range {
   # make sure the last IP is legit too
   valid_ip $LAST_IP || err "An invalid IP address was provided"
   # make sure both first and last are in the range for the provided network
+  # [FORMAT:network]
   read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
   # get the expected last ip in the network
   NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
@@ -2654,6 +2761,7 @@ function network_list {
       --match)
         $( valid_ip $2 ) || err "Invalid IP"
         DEC=$( ip2dec $2 )
+        # [FORMAT:network]
         printf -- "$( awk 'BEGIN{FS=","}{print $1"-"$2"-"$3,$4,$6}' ${CONF}/network )" | while read -r NAME IP CIDR; do
           FIRST_IP=$( ip2dec $IP )
           LAST_IP=$(( $FIRST_IP + $( cdr2size $CIDR ) - 1 ))
@@ -2672,6 +2780,7 @@ function network_list {
 }
 
 function network_list_unformatted {
+  # [FORMAT:network]
   awk 'BEGIN{FS=","}{print $1"-"$2,$3,$4"/"$6}' ${CONF}/network |sort
 }
 
@@ -2683,6 +2792,7 @@ function network_routes_by_ip {
   local NAME=$( network_ip_locate $1 )
   test -z "$NAME" && return 1
   printf -- '%s' "$NAME" |grep -q " " && err "Error: more than one network was returned for the provided address"
+  # [FORMAT:network]
   IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${NAME//-/,}," ${CONF}/network )"
   if [ "$HAS_ROUTES" != "y" ]; then return; fi
   if [ -f "${CONF}/net/${NET}-routes" ]; then mkdir $TMP >/dev/null 2>&1; cat ${CONF}/net/${NET}-routes >$TMP/${NET}-routes; printf -- '%s\n' "$TMP/${NET}-routes"; fi
@@ -2698,6 +2808,7 @@ function network_show {
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
+  # [FORMAT:network]
   IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
   printf -- "Static Routes:\n"
@@ -2719,13 +2830,14 @@ function network_update {
     network_list
     printf -- "\n"
     get_input C "Network to Modify (loc-zone-alias)"
+    printf -- "\n"
   else
     C="$1"
   fi
   # validate string
   test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
-  printf -- "\n"
+  # [FORMAT:network]
   IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
@@ -2761,23 +2873,31 @@ function network_update {
     REPO_URL=""
   fi
   # make sure to remove any other default build network
+  # [FORMAT:location/network]
   if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
     # get the current default network (if any) and update it
+    # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
+    # [FORMAT:network]
     sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
+    # [FORMAT:location/network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  # [FORMAT:network]
   sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
+    # [FORMAT:location/network]
     sed -i 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
+    # [FORMAT:location/network]
     sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
+    # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
   fi
@@ -2870,10 +2990,12 @@ function resource_byval_assign {
   start_modify
   # input validation
   test $# -gt 0 || err
+  # [FORMAT:resource]
   grep -qE "^ip,$1,,not assigned," ${CONF}/resource || err "Invalid or unavailable resource"
   # get the system name
   generic_choose system "$2" HOST
   # update the assignment in the resource file
+  # [FORMAT:resource]
   sed -ri 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
   commit_file resource
 }
@@ -2887,11 +3009,13 @@ function resource_byval_unassign {
   start_modify
   # input validation
   test $# -gt 0 || err
+  # [FORMAT:resource]
   grep -qE "^(cluster_|ha_)?ip,$1,(host|application)," ${CONF}/resource || err "Invalid or unassigned resource"
   # confirm
   get_yn RL "Are you sure (y/n)? "
   test "$RL" != "y" && return
   # update the assignment in the resource file
+  # [FORMAT:resource]
   sed -ri 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
   commit_file resource
 }
@@ -2907,8 +3031,10 @@ function resource_create {
   get_input VAL "Value" --nc
   get_input DESC "Description" --nc --null
   # validate unique value
+  # [FORMAT:resource]
   grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
+  # [FORMAT:resource]
   printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>$CONF/resource
   commit_file resource
 }
@@ -2918,6 +3044,7 @@ function resource_delete {
   generic_choose resource "$1" C && shift
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
+    # [FORMAT:resource]
     sed -i '/,'${C}',/d' ${CONF}/resource
   fi
   commit_file resource
@@ -2942,9 +3069,11 @@ function resource_list {
     IFS="," read -r NAME TYPE VAL <<< "$R"
     test -z "$NAME" && NAME="-"
     printf -- "$NAME $TYPE $VAL"
+    # [FORMAT:resource]
     grep -E "^$TYPE,$VAL," ${CONF}/resource |grep -qE ',(host|application),'
     if [ $? -eq 0 ]; then
-      # ok... load the resource so we can tell Chelsea what it's assigned to
+      # ok... load the resource so we show what it's assigned to
+      # [FORMAT:resource]
       IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^$TYPE,$VAL," ${CONF}/resource )"
       printf -- " $ASSIGN_TYPE:$ASSIGN_TO" |sed 's/^ host/ system/'
     else
@@ -2961,15 +3090,19 @@ function resource_list {
 #
 function resource_list_unformatted {
   if ! [ -z "$1" ]; then
+    # [FORMAT:resource]
     grep -E "$1" ${CONF}/resource |awk 'BEGIN{FS=","}{print $5,$1,$2}' |sort
   else
+    # [FORMAT:resource]
     awk 'BEGIN{FS=","}{print $5,$1,$2}' ${CONF}/resource |sort
   fi
 }
 
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
+  # [FORMAT:resource]
   grep -qE ",$1," ${CONF}/resource || err "Unknown resource" 
+  # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
   printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO\n"
 }
@@ -2977,15 +3110,18 @@ function resource_show {
 function resource_update {
   start_modify
   generic_choose resource "$1" C && shift
+  # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
   get_input NAME "Name" --default "$NAME" --null
   get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default "$TYPE"
   get_input VAL "Value" --nc --default "$VAL"
   # validate unique value
   if [ "$VAL" != "$C" ]; then
+    # [FORMAT:resource]
     grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
+  # [FORMAT:resource]
   sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   commit_file resource
 }
@@ -3007,8 +3143,10 @@ function hypervisor_add_environment {
   # get the environment
   generic_choose environment "$2" ENV
   # verify this mapping does not already exist
+  # [FORMAT:hv-environment]
   grep -qE "^$ENV,$1\$" ${CONF}/hv-environment && err "That environment is already linked"
   # add mapping
+  # [FORMAT:hv-environment]
   printf -- "$ENV,$1\n" >>${CONF}/hv-environment
   commit_file hv-environment
 }
@@ -3028,11 +3166,13 @@ function hypervisor_add_network {
     C="$2"
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
-  # verify this mapping does not already exists
+  # verify this mapping does not already exist
+  # [FORMAT:hv-network]
   grep -qE "^$C,$1," ${CONF}/hv-network && err "That network is already linked"
   # get the interface
   if [ -z "$3" ]; then get_input IFACE "Network Interface"; else IFACE="$3"; fi
   # add mapping
+  # [FORMAT:hv-network]
   printf -- "$C,$1,$IFACE\n" >>${CONF}/hv-network
   commit_file hv-network
 }
@@ -3068,6 +3208,7 @@ function hypervisor_create {
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$'
   get_yn ENABLED "Enabled (y/n): "
   # add
+  # [FORMAT:hypervisor]
   printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>$CONF/hypervisor
   commit_file hypervisor
 }
@@ -3075,7 +3216,9 @@ function hypervisor_create {
 function hypervisor_delete {
   generic_delete hypervisor $1 || return
   # also delete from hv-environment and hv-network
+  # [FORMAT:hv-environment]
   sed -i "/^[^,]*,$1\$/d" $CONF/hv-environment
+  # [FORMAT:hv-network]
   sed -i "/^[^,]*,$1,/d" $CONF/hv-network
   commit_file hv-environment hv-network
 }
@@ -3101,6 +3244,7 @@ function hypervisor_list {
       --location)
         NL=""
         for N in $LIST; do
+          # [FORMAT:hypervisor]
           grep -qE '^'$N',[^,]*,'$2',' ${CONF}/hypervisor && NL="$NL $N"
         done
         LIST="$NL"
@@ -3109,6 +3253,7 @@ function hypervisor_list {
       --environment)
         NL=""
         for N in $LIST; do
+          # [FORMAT:hv-environment]
           grep -qE '^'$2','$N'$' ${CONF}/hv-environment && NL="$NL $N"
         done
         LIST="$NL"
@@ -3117,6 +3262,7 @@ function hypervisor_list {
       --network)
         NL=""
         for N in $LIST; do
+          # [FORMAT:hv-network]
           grep -qE '^'$2','$N',' ${CONF}/hv-network && NL="$NL $N"
         done
         LIST="$NL"
@@ -3142,10 +3288,12 @@ function hypervisor_locate_system {
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # cache check
   if [ "$2" == "--quick" ]; then
+    # [FORMAT:hv-system]
     IFS="," read -r NAME H <<< "$( grep -E '^'$1',' ${CONF}/hv-system )"
     if ! [ -z "$H" ]; then printf -- '%s\n' "$H"; return; fi
   fi
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   test "$VIRTUAL" == "n" && err "Not a virtual machine"
   # load hypervisors
@@ -3155,6 +3303,7 @@ function hypervisor_locate_system {
   local ON OFF HIP ENABLED VM STATE FOUND
   for H in $LIST; do
     # load the host
+    # [FORMAT:hypervisor]
     read HIP ENABLED <<<"$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
     test "$ENABLED" == "y" || continue
     # test the connection
@@ -3168,10 +3317,12 @@ function hypervisor_locate_system {
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
   if ! [ -z "$ON" ]; then FOUND="$ON"; fi
   # update hypervisor-system map, if needed
+  # [FORMAT:hv-system]
   grep -qE "^$NAME,$FOUND\$" ${CONF}/hv-system
   if [[ $? -ne 0 && ! -z "$FOUND" ]]; then
     start_modify
     sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+    # [FORMAT:hv-system]
     printf -- '%s,%s\n' "$NAME" "$FOUND" >>${CONF}/hv-system
     commit_file hv-system
   fi
@@ -3192,6 +3343,7 @@ function hypervisor_poll {
   test $# -ge 1 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # load the host
+  # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # test the connection
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
@@ -3282,8 +3434,10 @@ function hypervisor_remove_environment {
   # get the environment
   generic_choose environment "$2" ENV
   # verify this mapping exists
+  # [FORMAT:hv-environment]
   grep -qE "^$ENV,$1\$" ${CONF}/hv-environment || return
   # remove mapping
+  # [FORMAT:hv-environment]
   sed -i '/^'$ENV','$1'/d' ${CONF}/hv-environment
   commit_file hv-environment
 }
@@ -3303,8 +3457,10 @@ function hypervisor_remove_network {
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
   # verify this mapping already exists
+  # [FORMAT:hv-network]
   grep -qE "^$C,$1," ${CONF}/hv-network || return
   # remove mapping
+  # [FORMAT:hv-network]
   sed -i '/^'$C','$1',/d' ${CONF}/hv-network
   commit_file hv-network
 }
@@ -3316,6 +3472,7 @@ function hypervisor_search {
   test $# -ge 1 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # load the host
+  # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # test the connection
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
@@ -3333,14 +3490,17 @@ function hypervisor_show {
   test $# -gt 0 || err "Provide the hypervisor name"
   grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # load the host
+  # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # output the status/summary
   printf -- "Name: $NAME\nManagement Address: $IP\nLocation: $LOC\nVM Storage: $VMPATH\nReserved Disk (MB): $MINDISK\nReserved Memory (MB): $MINMEM\nEnabled: $ENABLED\n"
   # get networks
   printf -- "\nNetwork Interfaces:\n"
+  # [FORMAT:hv-network]
   grep -E ",$1," ${CONF}/hv-network |awk 'BEGIN{FS=","}{print $3":",$1}' |sed 's/^/  /' |sort
   # get environments
   printf -- "\nLinked Environments:\n"
+  # [FORMAT:hv-environment]
   grep -E ",$1\$" ${CONF}/hv-environment |sed 's/^/  /; s/,.*//' |sort
   echo
 }
@@ -3350,6 +3510,7 @@ function hypervisor_show {
 function hypervisor_system_audit {
   start_modify
   # load all virtual machines
+  # [FORMAT:system]
   LIST=$( grep -E '^([^,]*,){5}y,' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}' |sort )
   test -z "$LIST" && return
   # locate each virtual machine
@@ -3362,6 +3523,7 @@ function hypervisor_system_audit {
 function hypervisor_update {
   start_modify
   generic_choose hypervisor "$1" C && shift
+  # [FORMAT:hypervisor]
   IFS="," read -r NAME ORIGIP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$C," ${CONF}/hypervisor )"
   get_input NAME "Hostname" --default "$NAME"
   # validate unique name if it is changed
@@ -3372,9 +3534,12 @@ function hypervisor_update {
   get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$' --default "$MINDISK"
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
   get_yn ENABLED "Enabled (y/n): " --default "$ENABLED"
+  # [FORMAT:hypervisor]
   sed -i 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
   if [ "$NAME" != "$C" ]; then
+    # [FORMAT:hv-environment]
     sed -i "s/,$C\$/,$NAME/" ${CONF}/hv-environment
+    # [FORMAT:hv-network]
     sed -ri 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
   fi
   commit_file hypervisor hv-environment hv-network
@@ -3415,6 +3580,7 @@ function system_audit {
   test $# -gt 0 || err
   VALID=0
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # test connectivity
   nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
@@ -3472,6 +3638,7 @@ function system_check {
   test $# -gt 0 || err
   VALID=0
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
@@ -3484,6 +3651,7 @@ function system_check {
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
+      # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
@@ -3518,6 +3686,7 @@ function system_check {
 function system_constant_list {
   generic_choose system "$1" C && shift
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   for APP in $( build_application_list "$BUILD" ); do
@@ -3568,6 +3737,7 @@ function system_create {
   # conditionally assign/reserve IP
   if ! [ -z "$( network_ip_locate $IP )" ]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
+  # [FORMAT:system]
   printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY}\n" >>$CONF/system
   commit_file system
 }
@@ -3577,8 +3747,10 @@ function system_create_help {
 
 function system_delete {
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # verify this is not the base system for other servers
+  # [FORMAT:system]
   grep -qE ",$1\$" ${CONF}/system
   if [ $? -eq 0 ]; then
     printf -- "%s\n" "Warning - this system is the base image for one or more other virtual machines"
@@ -3616,6 +3788,7 @@ function system_deprovision {
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
@@ -3623,6 +3796,7 @@ function system_deprovision {
   HV=$( hypervisor_locate_system $1 )
   test -z "$HV" && err "Unable to locate hypervisor for this system"
   # load hypervisor settings
+  # [FORMAT:hypervisor]
   read -r HVIP VMPATH <<< "$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $1,$4}' )"
   # confirm
   printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
@@ -3639,6 +3813,7 @@ function system_deprovision {
     ssh -n $HV "test -f $F && rm -f $F"
   done
   # unmap
+  # [FORMAT:hv-system]
   sed -i '/^'$1',/d' ${CONF}/hv-system >/dev/null 2>&1
   commit_file hv-system
   printf -- '\n%s has been removed\n' "$1"
@@ -3659,6 +3834,7 @@ function system_provision {
   fi
   # select and validate the system
   generic_choose system "$1" C && shift
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   #  - verify system is not already deployed
   nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
@@ -3679,6 +3855,7 @@ function system_provision {
   fi
   #  - lookup network details for the build network (used in the kickstart configuration)
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  # [FORMAT:network]
   read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
   valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
   valid_ip $DNS || err "Build network does not have a defined DNS server"
@@ -3708,8 +3885,10 @@ function system_provision {
   fi
 
   #  - load the architecture and operating system for the build
+  # [FORMAT:build]
   IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   ROOT=$( build_root $BUILD )
+  # [FORMAT:build]
   IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
 
@@ -3742,15 +3921,19 @@ _EOF
   #  - get globally unique mac address and uuid for the new server
   read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
   #  - kick off provision system
+  /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
   echo "Creating virtual machine..."
   ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
   nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN $REPO_ADDR $REPO_PATH </dev/null >/dev/null 2>&1 &
   #  - update hypervisor-system map
+  # [FORMAT:hv-system]
   sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+  # [FORMAT:hv-system]
   printf -- '%s,%s\n' "$NAME" "$HV" >>${CONF}/hv-system
   commit_file hv-system
   #  - phase 1 complete
+  /usr/bin/logger -t "scs" "[$$] build phase 1 complete"
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
   return 0
 }
@@ -3760,7 +3943,7 @@ _EOF
 function system_provision_phase2 {
   # load arguments passed in from phase1
   read -r NAME HV BUILDIP IP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME BUILD LOC EN REPO_ADDR REPO_PATH <<< "$@"
-  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME at $BUILDIP"
+  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV at $BUILDIP"
   # wait a few minutes before even trying to connect
   #sleep 180
   # max iterations, wait 60 minutes or 4 per min x 60 = 240
@@ -3786,6 +3969,7 @@ function system_provision_phase2 {
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
   #  - load the role
+  # [FORMAT:build]
   ROLE=$( grep -E "^$BUILD," ${CONF}/build |awk 'BEGIN{FS=","}{print $2}' )
   #  - install_build
   system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
@@ -3832,6 +4016,7 @@ function system_provision_phase2 {
   if [ "$BUILDIP" != "$IP" ]; then
     /usr/bin/logger -t "scs" "[$$] Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
     local CIDR NETNAME=$( network_ip_locate $IP )
+    # [FORMAT:network]
     read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
     ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
     sleep 5
@@ -3912,6 +4097,7 @@ function system_list {
 
 function system_list_unformatted {
   case "$1" in
+    # [FORMAT:system]
     --base) grep -E '.*,y,[^,]*$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
     *) awk 'BEGIN{FS=","}{print $1}' ${CONF}/system;;
   esac |sort
@@ -3921,6 +4107,7 @@ function system_release {
   test $# -gt 0 || err
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP $RELEASEDIR
@@ -3944,6 +4131,7 @@ function system_release {
     # retrieve application related data
     for APP in $( build_application_list "$BUILD" ); do
       # get the file list per application
+      # [FORMAT:file-map]
       FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
     done
   fi
@@ -3967,6 +4155,7 @@ function system_release {
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
+      # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
@@ -4044,12 +4233,15 @@ function system_resource_list {
   generic_choose system "$1" C && shift
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   for APP in $( build_application_list "$BUILD" ); do
     # get any localized resources for the application
+    # [FORMAT:resource]
     grep -E ",application,$LOC:$EN:$APP," ${CONF}/resource |cut -d',' -f1,2,5
   done
   # add any host assigned resources to the list
+  # [FORMAT:resource]
   grep -E ",host,$NAME," ${CONF}/resource |cut -d',' -f1,2,5
 }
 
@@ -4060,6 +4252,7 @@ function system_show {
   test $# -eq 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # load the system
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output the status/summary
   printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\n"
@@ -4071,8 +4264,10 @@ function system_show {
     if [ $NUM -gt 0 ]; then
       build_application_list "$BUILD" |sed 's/^/   /'
       # retrieve application related data
+      # [FORMAT:application]
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
         # get the file list per application
+        # [FORMAT:file-map]
         FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
       done
     fi
@@ -4089,6 +4284,7 @@ function system_show {
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
+      # [FORMAT:file]
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
     done |sort |uniq |column -t |sed 's/^/   /'
   else
@@ -4120,6 +4316,7 @@ function system_start_remote_build {
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
@@ -4154,6 +4351,7 @@ function system_update {
     OVERLAY=""
   fi
   # save changes
+  # [FORMAT:system]
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
@@ -4204,12 +4402,14 @@ function system_vars {
   test $# -eq 1 || err "System name required"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP
+  # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
   # output network data, if available
   local SYSNET=$( network_list --match $IP )
   if [ ! -z "$SYSNET" ]; then
+    # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
     echo -e "system.zone ${ZONE}-${ALIAS}\nsystem.network $NET\nsystem.netmask $MASK\nsystem.gateway $GW"
     echo "system.broadcast $( ipadd $NET $(( $( cdr2size $BITS ) -1 )) )"
@@ -4244,6 +4444,7 @@ function system_vm_disks {
   local HV=$( hypervisor_locate_system $1 --quick )
   test -z "$HV" && return
   # get the hypervisor IP
+  # [FORMAT:hypervisor]
   local IP=$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2}' )
   # verify connectivity
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || return
