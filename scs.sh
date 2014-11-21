@@ -238,10 +238,14 @@
 #   My stuff - kvm-uuid.sh
 #
 # TO DO:
+#   - bug fix:
+#     - renaming a build should update systems using that build
+#     - deleting a build should prompt/list systems using that build
+#     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #   - clean up:
 #     - deleting an application should also unassign resources and undefine constants
 #     - simplify IP management functions by reducing code duplication
-#     - populate reserved IP addresses from IP-Scheme.xlsx
+#     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - enhancements:
 #     - finish IPAM and IP allocation components
@@ -255,6 +259,10 @@
 #     - add file groups
 #     - system can be 'base' or 'overlay'
 #     - all systems should use the same base image, and instead of a larger disk get a second disk with a unique LVM name
+#     - cluster y/n for application in environment
+#     - file 'patch' for cluster y/n (in addition to environment patch)
+#     - file enabled y/n for cluster
+#     - pre/post-flight scripts or commands (per application, per environment, per location ?)
 #   - environment stuff:
 #     - an environment instance can force systems to 'base' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -1444,14 +1452,14 @@ function environment_application_byname_assign {
   ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
-  # get the requested location or abort
-  generic_choose location "$1" LOC && shift
-  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
-  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # select an available resource to assign
   generic_choose resource "$1" RES "^(cluster|ha)_ip,.*,not assigned," && shift
   # verify the resource is available for this purpose
   grep -E ",${RES//,/}," $CONF/resource |grep -qE '^(cluster|ha)_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
+  # get the requested location or abort
+  generic_choose location "$1" LOC && shift
+  test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
+  grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # assign resource, update index
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
   sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$DESC"'/' ${CONF}/resource
@@ -4035,6 +4043,7 @@ function system_release {
 function system_resource_list {
   generic_choose system "$1" C && shift
   # load the system
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   for APP in $( build_application_list "$BUILD" ); do
     # get any localized resources for the application
