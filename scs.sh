@@ -996,19 +996,12 @@ function stop_modify {
 function application_create {
   start_modify
   # get user input and validate
-  get_input NAME "Name"
-  get_input ALIAS "Alias"
-  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  get_yn CLUSTER "LVS Support (y/n)"
-  # validate unique name
-  grep -qE "^$NAME," $CONF/application && err "Application already defined."
-  grep -qE ",$ALIAS," $CONF/application && err "Alias invalid or already defined."
-  # confirm before adding
-  printf -- "\nDefining a new application named '$NAME', alias '$ALIAS', installed on the '$BUILD' build"
-  [ "$CLUSTER" == "y" ] && printf -- " with " || printf -- " without "
-  printf -- "cluster support.\n"
-  while [[ "$ACK" != "y" && "$ACK" != "n" ]]; do read -r -p "Is this correct (y/n): " ACK; ACK=$( printf "$ACK" |tr 'A-Z' 'a-z' ); done
-  # add
+  get_input NAME "Name" --auto "$1"
+  application_exists "$NAME" && err "Application already defined."
+  get_input ALIAS "Alias" --auto "$2"
+  application_exists --alias "$ALIAS" && err "Alias already defined."
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
+  get_yn CLUSTER "LVS Support (y/n)" --auto "$4"
   # [FORMAT:application]
   [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
@@ -1016,7 +1009,7 @@ function application_create {
 function application_create_help { cat <<_EOF
 Add a new application to SCS.
 
-Usage: $0 application create
+Usage: $0 application create [name] [alias] [build] [cluster]
 
 Fields:
   Name - a unique name for the application, such as 'purchase'.
@@ -1044,6 +1037,24 @@ Usage: $0 application delete [name]
 If the name of the application is not provided as an argument you will be prompted to select it from a list.
 
 _EOF
+}
+
+# checks if an application is defined
+#
+# optional:
+#   --alias  check alias instead of name
+#
+function application_exists {
+  local ALIAS=0
+  if [ "$1" == "--alias" ]; then ALIAS=1; shift; fi
+  test $# -eq 1 || return 1
+  if [ $ALIAS -eq 0 ]; then
+    # [FORMAT:application]
+    grep -qE "^$1," $CONF/application || return 1
+  else
+    # [FORMAT:application]
+    grep -qE ",$ALIAS," $CONF/application || return 1
+  fi
 }
 
 # file [--add|--remove|--list]
@@ -1134,9 +1145,7 @@ function application_list {
 }
 
 function application_show {
-  test $# -eq 1 || err "Provide the application name"
-  APP="$1"
-  grep -qE "^$APP," $CONF/application || err "Invalid application"
+  application_exists "$1" || err "Provide the application name"
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
@@ -1191,6 +1200,7 @@ function build_create {
   start_modify
   # get user input and validate
   get_input NAME "Build"
+  build_exists "$NAME" && err "Build already defined."
   get_input ROLE "Role" --null
   get_yn P "Child Build (y/n)?"
   if [ $? -eq 0 ]; then generic_choose build "" PARENT; else PARENT=""; fi
@@ -1206,9 +1216,6 @@ function build_create {
   get_input DISK "Disk Size (in GB, Default ${DEF_HDD})" --null --regex '^[1-9][0-9]*$'
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$'
   get_input DESC "Description" --nc --null
-  # validate unique name
-  grep -qE "^$NAME," $CONF/build && err "Build already defined."
-  # add
   # [FORMAT:build]
   printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\n" >>$CONF/build
   commit_file build
@@ -1216,6 +1223,14 @@ function build_create {
 
 function build_delete {
   generic_delete build $1
+}
+
+# checks if a build is defined
+#
+function build_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:build]
+  grep -qE "^$1," $CONF/build || return 1
 }
 
 function build_lineage {
@@ -1296,8 +1311,7 @@ function build_root {
 }
 
 function build_show {
-  test $# -eq 1 || err "Provide the build name"
-  grep -qE "^$1," ${CONF}/build || err "Unknown build"
+  build_exists "$1" || err "Missing or invalid build name"
   # [FORMAT:build]
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
   if [ ! -z "$PARENT" ]; then
