@@ -3916,7 +3916,9 @@ function system_provision {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   #  - verify system is not already deployed
+  if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
   if [ "$IP" != "dhcp" ]; then
+    # verify the system's IP is not in use
     nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
     if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
     grep -qE '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts
@@ -3929,10 +3931,9 @@ function system_provision {
   else
     network_list
     printf -- "\n"
-    get_input C "Network (loc-zone-alias)"
+    get_input NETNAME "Network (loc-zone-alias)"
     printf -- "\n"
-    # validate string
-    test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    network_exists "$NETNAME" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   fi
   #  - lookup the build network for this system
   network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
