@@ -257,7 +257,7 @@
 # External requirements:
 #   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
 #     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
-#   My stuff - kvm-uuid.sh
+#   My stuff - kvm-uuid, kvm-install.sh
 #
 # TO DO:
 #   - bug fix:
@@ -272,10 +272,8 @@
 #     - every line that reads from a storage file should have a comment to enable more accurate schema changes
 #   - enhancements:
 #     - finish IPAM and IP allocation components
-#     - validate IP addresses using the new valid_ip function
 #     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #     - add detailed help section for each function
-#     - get_yn should pass options (such as --default) to get_input
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
@@ -475,7 +473,7 @@ function generic_delete {
     C="$2"
   fi
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return 1; fi
   sed -i '/^'$C',/d' ${CONF}/$1
   commit_file $1
@@ -600,18 +598,24 @@ function get_user {
 #  $2 prompt
 #
 # optional:
-#  $3 additional option
+#  --extra <string>    additional option to accept besides 'y' or 'n': case sensitive
 #
 function get_yn {
   test $# -lt 2 && return
-  RL=""
-  if ! [ -z "$3" ]; then
-    while [[ "$RL" != "y" && "$RL" != "n" && "$RL" != "$3" ]]; do get_input RL "$2"; done
+  local RL="" P RETVAR EXTRA PLUSARGS
+  RETVAR="$1"; P="$2"; shift 2
+  while [ $# -gt 0 ]; do case $1 in
+    --extra) EXTRA="$2"; shift;;
+    *) PLUSARGS="$PLUSARGS $1";;
+  esac; shift; done
+  PLUSARGS=${PLUSARGS# }
+  if ! [ -z "$EXTRA" ]; then
+    while [[ "$RL" != "y" && "$RL" != "n" && "$RL" != "$EXTRA" ]]; do eval "get_input RL \"$P\" $PLUSARGS"; done
   else
-    while [[ "$RL" != "y" && "$RL" != "n" ]]; do get_input RL "$2"; done
+    while [[ "$RL" != "y" && "$RL" != "n" ]]; do eval "get_input RL \"$P\" $PLUSARGS"; done
   fi
-  eval "$1='$RL'"
-  test "$RL" == "y" && return 0 || return 1
+  eval "$RETVAR='$RL'"
+  if [ "$RL" == "y" ]; then return 0; elif [ "$RL" == "$EXTRA" ]; then return 2; else return 1; fi
 }
 
 # help wrapper
@@ -867,7 +871,7 @@ function cancel_modify {
   git branch |grep -E '^\*' |grep -q $USERNAME
   if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
   # confirm
-  get_yn DF "Are you sure you want to discard outstanding changes (y/n)? "
+  get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"
   if [ "$DF" == "y" ]; then
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
@@ -963,15 +967,15 @@ function stop_modify {
   if [[ $L -ne 0 && $M -eq 1 ]]; then err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."; fi
   if [ $L -gt 0 ]; then
     # there are modifictions on a branch
-    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)? "
+    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
     test "$DF" == "y" && git diff
-    get_yn DF "Do you want to commit the changes (y/n)? "
+    get_yn DF "Do you want to commit the changes (y/n)?"
     if [ "$DF" != "y" ]; then return 0; fi
     git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
   else
-    get_yn DF "Do you want to review the changes from master (y/n)? "
+    get_yn DF "Do you want to review the changes from master (y/n)?"
     test "$DF" == "y" && git diff master
-    get_yn DF "Do you want to commit the changes (y/n)? "
+    get_yn DF "Do you want to commit the changes (y/n)?"
     if [ "$DF" != "y" ]; then return 0; fi
   fi
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
@@ -1120,7 +1124,7 @@ function application_file_remove {
   # get the requested file or abort
   generic_choose file "$1" F && shift
   # confirm
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return; fi
   # remove the mapping if it exists
   # [FORMAT:file-map]
@@ -1570,7 +1574,7 @@ function environment_application_byname_unassign {
   # [FORMAT:resource]
   grep -E ",${RES//,/}," $CONF/resource |grep -qE ",application,$LOC:$ENV:$APP," || err "Error - the provided resource is not assigned to this application."
   # confirm
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return; fi
   # assign resource, update index
   # [FORMAT:resource]
@@ -1615,7 +1619,7 @@ function environment_application_remove {
   generic_choose location "$1" LOC && shift
   test -f ${CONF}/${LOC}/${ENV} && NUM=$( wc -l ${CONF}/${LOC}/${ENV} |awk '{print $1}' ) || NUM=0
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
-  get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
+  get_yn RL "Are you sure (y/n)?"; test "$RL" != "y" && return
   # unassign the application
   sed -i "/^$APP\$/d" $CONF/$LOC/$ENV
   # !!FIXME!!
@@ -1890,7 +1894,7 @@ function file_delete {
   start_modify
   generic_choose file "$1" C && shift
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     sed -i '/^'$C',/d' ${CONF}/file
     sed -i '/^'$C',/d' ${CONF}/file-map
@@ -1964,7 +1968,7 @@ function file_edit {
     echo -e "Please review the change:\n"
     diff -c $CONF/template/$C /tmp/app-config.$$
     echo
-    get_yn RL "Proceed with change (y/n)? "
+    get_yn RL "Proceed with change (y/n)?"
     if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$$; return; fi
     # apply patches to the template for each environment with a patch and verify the apply successfully
     echo "Validating template instances..."
@@ -1976,7 +1980,7 @@ function file_edit {
       patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
       if [ $? -ne 0 ]; then
         echo -e "FAILED\n\nThis patch will not apply successfully to $E."
-        get_yn RL "Would you like to try to resolve the patch manually (y/n)? "
+        get_yn RL "Would you like to try to resolve the patch manually (y/n)?"
         if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$${,.1,.rej}; return; fi
         # patch the original file with the environment patch and launch vimdiff
         echo -e "\nThe LEFT file is your updated template. The RIGHT file is the previous environment configuration. Edit the RIGHT file."
@@ -1991,7 +1995,7 @@ function file_edit {
         wait
         echo -e "Please review the change:\n"
         diff -c $CONF/template/$C /tmp/app-config.$$.2
-        echo; get_yn RL "Proceed with change (y/n)? "
+        echo; get_yn RL "Proceed with change (y/n)?"
         if [ "$RL" != "y" ]; then rm -f /tmp/app-config.$$*; return; fi
         # stage the new environment patch file
         diff -c /tmp/app-config.$$ /tmp/app-config.$$.2 >/tmp/app-config.$$.$E
@@ -2241,7 +2245,7 @@ function location_environment_unassign {
   # get the requested environment or abort
   generic_choose environment "$1" ENV && shift
   printf -- "Removing $ENV from location $LOC, deleting all configurations, files, resources, constants, et cetera...\n"
-  get_yn RL "Are you sure (y/n)? "; test "$RL" != "y" && return
+  get_yn RL "Are you sure (y/n)?"; test "$RL" != "y" && return
   # unassign the environment
   pushd $CONF >/dev/null 2>&1
   test -f ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
@@ -2346,17 +2350,17 @@ function network_create {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --null
-  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " && network_edit_routes $NET
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)?" && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null
   get_input NTP "NTP Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
-  get_yn BUILD "Use network for system builds (y/n)? "
+  get_yn BUILD "Use network for system builds (y/n)?"
   if [ "$BUILD" == "y" ]; then
-    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? "
+    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)?"
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
     # [FORMAT:network]
     if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
-      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
+      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)?"
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
     get_input REPO_ADDR "Repository IP or Host Name" --nc
@@ -2400,7 +2404,7 @@ function network_delete {
     C="$1"
   fi
   network_exists "$C" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
@@ -2769,7 +2773,7 @@ function network_ipam_remove_range {
   [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
   # confirm
   echo "This operation will remove records for $(( $( ip2dec $LAST_IP ) - $( ip2dec $FIRST_IP ) + 1 )) ip address(es)!"
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # loop through the ip range and remove each address from the appropriate file
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
@@ -2890,16 +2894,16 @@ function network_update {
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$' --default "$BITS"
   while ! $(valid_mask "$MASK"); do get_input MASK "Subnet Mask" --default $(cdr2mask $BITS); done
   get_input GW "Gateway Address" --default "$GW" --null
-  get_yn HAS_ROUTES "Does this network have host static routes (y/n)? " --default "$HAS_ROUTES" && network_edit_routes $NET
+  get_yn HAS_ROUTES "Does this network have host static routes (y/n)?" --default "$HAS_ROUTES" && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null --default "$DNS"
   get_input NTP "NTP Server Address" --null --default "$NTP"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
-  get_yn BUILD "Use network for system builds (y/n)? " --default "$BUILD"
+  get_yn BUILD "Use network for system builds (y/n)?" --default "$BUILD"
   if [ "$BUILD" == "y" ]; then
-    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)? " --default "$DEFAULT_BUILD"
+    get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)?" --default "$DEFAULT_BUILD"
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
     if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
-      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)? "
+      get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)?"
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
     get_input REPO_ADDR "Repository IP or Host Name" --default "$REPO_ADDR" --nc
@@ -3051,7 +3055,7 @@ function resource_byval_unassign {
   # [FORMAT:resource]
   grep -qE "^(cluster_|ha_)?ip,$1,(host|application)," ${CONF}/resource || err "Invalid or unassigned resource"
   # confirm
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   test "$RL" != "y" && return
   # update the assignment in the resource file
   # [FORMAT:resource]
@@ -3081,7 +3085,7 @@ function resource_create {
 function resource_delete {
   start_modify
   generic_choose resource "$1" C && shift
-  get_yn RL "Are you sure (y/n)? "
+  get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:resource]
     sed -i '/,'${C}',/d' ${CONF}/resource
@@ -3241,7 +3245,7 @@ function hypervisor_create {
   get_input VMPATH "VM Storage Path"
   get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$'
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$'
-  get_yn ENABLED "Enabled (y/n): "
+  get_yn ENABLED "Enabled (y/n)"
   # add
   # [FORMAT:hypervisor]
   printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>$CONF/hypervisor
@@ -3580,7 +3584,7 @@ function hypervisor_update {
   get_input VMPATH "VM Storage Path" --default "$VMPATH"
   get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$' --default "$MINDISK"
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
-  get_yn ENABLED "Enabled (y/n): " --default "$ENABLED"
+  get_yn ENABLED "Enabled (y/n)" --default "$ENABLED"
   # [FORMAT:hypervisor]
   sed -i 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
   if [ "$NAME" != "$C" ]; then
@@ -3659,7 +3663,7 @@ function system_audit {
       if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
-        get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]? " d
+        get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
         test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
         test "$DF" == "d" && diff -c $TMP/{REFERENCE,ACTUAL}/$F
       fi
@@ -3766,10 +3770,10 @@ function system_create {
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
   fi
-  get_yn VIRTUAL "Virtual Server (y/n): "
+  get_yn VIRTUAL "Virtual Server (y/n)"
   if [ "$VIRTUAL" == "y" ]; then
-    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)? "
-    get_yn OVERLAY_Q "Overlay on another system (y/n)? "
+    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?"
+    get_yn OVERLAY_Q "Overlay on another system (y/n)?"
     if [ "$OVERLAY_Q" == "y" ]; then
       get_input OVERLAY --options "$( system_list_unformatted --backing )"
     else
@@ -3800,7 +3804,7 @@ function system_delete {
   grep -qE ",$1\$" ${CONF}/system
   if [ $? -eq 0 ]; then
     printf -- "%s\n" "Warning - this system is the backing image for one or more other virtual machines"
-    get_yn R "Are you SURE you want to delete it (y/n)? " || exit
+    get_yn R "Are you SURE you want to delete it (y/n)?" || exit
   fi
   generic_delete system $1 || return
   # free IP address assignment
@@ -3843,11 +3847,11 @@ function system_deprovision {
   else
     printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
   fi
-  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)? " || return
+  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)?" || return
   # confirm for overlay
   if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
     printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
-    get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)? " || return
+    get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
   fi
   # locate
   HV=$( hypervisor_locate_system $NAME )
@@ -4417,22 +4421,22 @@ function system_update {
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # changing these settings can be non-trivial for a system that is already deployed...
-  get_yn VIRTUAL "Virtual Server (y/n): " --default "$ORIGVIRTUAL"
+  get_yn VIRTUAL "Virtual Server (y/n)" --default "$ORIGVIRTUAL"
   if [ "$ORIGVIRTUAL" != "$VIRTUAL" ]; then
     printf -- '%s\n' "This setting should ONLY be changed if it was set in error."
-    get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
+    get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
   fi
   if [ "$VIRTUAL" == "y" ]; then
-    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)? " --default "$ORIGBASE_IMAGE"
+    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?" --default "$ORIGBASE_IMAGE"
     if [ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" ]; then
       printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting if another system is built on this one WILL cause a major production issue."
-      get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
+      get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
     fi
     if [ -z "$ORIGOVERLAY" ]; then ORIGOVERLAY_Q="n"; else ORIGOVERLAY_Q="y"; fi
-    get_yn OVERLAY_Q "Overlay on another system (y/n)? " --default "$ORIGOVERLAY_Q"
+    get_yn OVERLAY_Q "Overlay on another system (y/n)?" --default "$ORIGOVERLAY_Q"
     if [ "$ORIGOVERLAY_Q" != "$OVERLAY_Q" ]; then
       printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting after the system is built WILL cause a major production issue."
-      get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
+      get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
       get_input OVERLAY --options "$( system_list_unformatted --backing )"
@@ -4593,7 +4597,7 @@ DOMAIN_NAME=2checkout.com
 # path to kickstart templates (centos6-i386.tpl, etc...)
 KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
 #
-# path to kvm-uuid.sh, required for full build automation tasks
+# path to kvm-uuid, required for full build automation tasks
 KVMUUID="`dirname $0`/kvm-uuid"
 #
 # list of architectures for builds -- each arch in the list must be available
@@ -4632,7 +4636,7 @@ trap cleanup_and_exit EXIT INT
 # initialize
 test "`whoami`" == "root" || err "What madness is this? Ye art not auth'riz'd to doeth that."
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
-test -x $KVMUUID || err "kvm-uuid.sh was not found at the expected path and is required for some operations"
+test -x $KVMUUID || err "kvm-uuid was not found at the expected path and is required for some operations"
 test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
