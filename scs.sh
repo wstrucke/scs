@@ -211,16 +211,16 @@
 #
 #   system
 #   --description: servers
-#   --format: name,build,ip,location,environment,virtual,base_image,overlay\n
+#   --format: name,build,ip,location,environment,virtual,backing_image,overlay\n
 #   --search: [FORMAT:system]
 #   --storage:
 #   ----name            the hostname
 #   ----build           build name
-#   ----ip              ip address for the system in IP notation
+#   ----ip              ip address for the system in IP notation or 'dhcp'
 #   ----location        location name
 #   ----environment     environment name
 #   ----virtual         'y' or 'n', yes if this is a virtual machine
-#   ----base_image      'y' or 'n', yes if this is a VM and is always SHUT OFF as a base image for overlays
+#   ----backing_image   'y' or 'n', yes if this is a VM and is unregistered, always SHUT OFF, and read-only as a backing image for overlays
 #   ----overlay         null or the name of the VM this system is an overlay on
 #
 #   value/constant
@@ -280,16 +280,17 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - rewrite modules in a proper programming language
 #     - add file groups
-#     - system can be 'base' or 'overlay'
+#     - system can be 'standalone', 'backing' or 'overlay'
+#     - 'backing' systems should be built then undefined and moved into a subfolder as read-only until no longer needed
 #     - store vm uuid with system to use as a sanity check when manipulating remote vms
 #     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
-#     - all systems should use the same base image, and instead of a larger disk get a second disk with a unique LVM name
+#     - all systems should use the same backing image, and instead of a larger disk get a second disk with a unique LVM name
 #     - cluster y/n for application in environment
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
 #   - environment stuff:
-#     - an environment instance can force systems to 'base' or 'overlay'
+#     - an environment instance can force systems to 'standalone' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
 #     - files that only appear for clustered environments??
 #     - load balancer support ? auto-create cluster and manage nodes?
@@ -3703,7 +3704,7 @@ function system_constant_list {
 # define a new system
 #
 # system:
-#    name,build,ip,location,environment,virtual,base_image,overlay\n
+#    name,build,ip,location,environment,virtual,backing_image,overlay\n
 #
 function system_create {
   start_modify
@@ -3714,7 +3715,7 @@ function system_create {
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$2"
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
   get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$4"
-  while [[ "$IP" != "auto" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (auto to auto-select)" --auto "$5"; done
+  while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --auto "$5"; done
   # automatic IP selection
   if [ "$IP" == "auto" ]; then
     get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
@@ -3723,10 +3724,10 @@ function system_create {
   fi
   get_yn VIRTUAL "Virtual Server (y/n): "
   if [ "$VIRTUAL" == "y" ]; then
-    get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? "
+    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)? "
     get_yn OVERLAY_Q "Overlay on another system (y/n)? "
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted --base )"
+      get_input OVERLAY --options "$( system_list_unformatted --backing )"
     else
       OVERLAY=""
     fi
@@ -3735,7 +3736,7 @@ function system_create {
     OVERLAY=""
   fi
   # conditionally assign/reserve IP
-  if ! [ -z "$( network_ip_locate $IP )" ]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
+  if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
   # [FORMAT:system]
   printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY}\n" >>$CONF/system
@@ -3749,11 +3750,11 @@ function system_delete {
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
-  # verify this is not the base system for other servers
+  # verify this is not a backing image for other servers
   # [FORMAT:system]
   grep -qE ",$1\$" ${CONF}/system
   if [ $? -eq 0 ]; then
-    printf -- "%s\n" "Warning - this system is the base image for one or more other virtual machines"
+    printf -- "%s\n" "Warning - this system is the backing image for one or more other virtual machines"
     get_yn R "Are you SURE you want to delete it (y/n)? " || exit
   fi
   generic_delete system $1 || return
@@ -3837,15 +3838,24 @@ function system_provision {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   #  - verify system is not already deployed
-  nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
-  if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
-  grep -qE '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts
-  if [ $? -eq 0 ]; then
-    grep -E '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$NAME" || err "Another system with this IP is already configured in /etc/hosts."
+  if [ "$IP" != "dhcp" ]; then
+    nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
+    if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
+    grep -qE '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts
+    if [ $? -eq 0 ]; then
+      grep -E '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$NAME" || err "Another system with this IP is already configured in /etc/hosts."
+    fi
+    #  - look up the network for this IP
+    NETNAME=$( network_list --match $IP )
+    test -z "$NETNAME" && err "No network was found matching this system's IP address"
+  else
+    network_list
+    printf -- "\n"
+    get_input C "Network (loc-zone-alias)"
+    printf -- "\n"
+    # validate string
+    test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
   fi
-  #  - look up the network for this IP
-  NETNAME=$( network_list --match $IP )
-  test -z "$NETNAME" && err "No network was found matching this system's IP address"
   #  - lookup the build network for this system
   network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
   if [ $? -eq 0 ]; then
@@ -3875,9 +3885,9 @@ function system_provision {
   
   start_modify
   #  - assign a temporary IP as needed
-  if [ "$NETNAME" != "$BUILDNET" ]; then
+  if [[ "$NETNAME" != "$BUILDNET" || "$IP" == "dhcp" ]]; then
     BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
-    valid_ip $IP || err "Automatic IP selection failed"
+    valid_ip $BUILDIP || err "Automatic IP selection failed"
     # assign/reserve IP
     network_ip_assign $BUILDIP $NAME || err "Unable to assign IP address"
   else
@@ -4015,15 +4025,19 @@ function system_provision_phase2 {
   # update system ip as needed
   if [ "$BUILDIP" != "$IP" ]; then
     /usr/bin/logger -t "scs" "[$$] Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
-    local CIDR NETNAME=$( network_ip_locate $IP )
-    # [FORMAT:network]
-    read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-    ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+    if [ "$IP" != "dhcp" ]; then
+      local CIDR NETNAME=$( network_ip_locate $IP )
+      # [FORMAT:network]
+      read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
+      ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+    else
+      ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
+    fi
     sleep 5
     # update ip assignment
     /usr/bin/logger -t "scs" "[$$] Updating IP assignments"
     network_ip_unassign $BUILDIP >/dev/null 2>&1
-    network_ip_assign $IP $NAME --force >/dev/null 2>&1
+    if [ "$IP" != "dhcp" ]; then network_ip_assign $IP $NAME --force >/dev/null 2>&1; fi
   fi
 
   # power down vm
@@ -4044,17 +4058,21 @@ function system_provision_phase2 {
   #  - start vm
   /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
   ssh -n $HV "virsh start $NAME" >/dev/null 2>&1
+ 
+  if [ "$IP" != "dhcp" ]; then
+    #  - update /etc/hosts and push-hosts (system_update_push_hosts)
+    /usr/bin/logger -t "scs" "[$$] updating hosts"
+    system_update_push_hosts $NAME $IP >/dev/null 2>&1
 
-  #  - update /etc/hosts and push-hosts (system_update_push_hosts)
-  /usr/bin/logger -t "scs" "[$$] updating hosts"
-  system_update_push_hosts $NAME $IP >/dev/null 2>&1
-
-  #  - wait for vm to come up
-  sleep 30
-  while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
-  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+    #  - wait for vm to come up
+    sleep 15
+    while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+    /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+    while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+    /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+  else
+    /usr/bin/logger -t "scs" "[$$] $NAME is configured to use DHCP and can not be traced at this time"
+  fi
 
   /usr/bin/logger -t "scs" "[$$] system build complete for $NAME"
 }
@@ -4095,10 +4113,14 @@ function system_list {
   system_list_unformatted $@ |sed 's/^/   /'
 }
 
+# system:
+#   name,build,ip,location,environment,virtual,backing_image,overlay\n
+#
 function system_list_unformatted {
   case "$1" in
     # [FORMAT:system]
-    --base) grep -E '.*,y,[^,]*$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
+    --backing) grep -E '^([^,]*,){6}y,[^,]*$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
+    --overlay) grep -E '^([^,]*,){7}y$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
     *) awk 'BEGIN{FS=","}{print $1}' ${CONF}/system;;
   esac |sort
 }
@@ -4320,7 +4342,7 @@ function system_update {
   IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
-  while ! $(valid_ip "$IP"); do get_input IP "Primary IP" --default "$ORIGIP"; done
+  while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # changing these settings can be non-trivial for a system that is already deployed...
@@ -4330,7 +4352,7 @@ function system_update {
     get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
   fi
   if [ "$VIRTUAL" == "y" ]; then
-    get_yn BASE_IMAGE "Use as a base image for overlay (y/n)? " --default "$ORIGBASE_IMAGE"
+    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)? " --default "$ORIGBASE_IMAGE"
     if [ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" ]; then
       printf -- '%s\n' "This setting should ONLY be changed if it was set in error. Changing this setting if another system is built on this one WILL cause a major production issue."
       get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
@@ -4342,7 +4364,7 @@ function system_update {
       get_yn R "Are you SURE you want to change the type of system (y/n)? " || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted --base )"
+      get_input OVERLAY --options "$( system_list_unformatted --backing )"
     else
       OVERLAY=""
     fi
@@ -4355,8 +4377,8 @@ function system_update {
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
-    network_ip_unassign $ORIGIP
-    if ! [ -z "$( network_ip_locate $IP )" ]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
+    if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
+    if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   fi
   commit_file system
 }
@@ -4508,6 +4530,9 @@ OSARCH="i386,x86_64"
 #
 # list of operating systems for builds
 OSLIST="centos4,centos5,centos6"
+#
+# name of subfolder to move backing images in to
+BACKING_FOLDER=backing_images
 #
 # local path to store release archives
 RELEASEDIR=/bkup1/scs-release
