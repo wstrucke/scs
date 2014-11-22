@@ -270,7 +270,6 @@
 #     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #     - every line that reads from a storage file should have a comment to enable more accurate schema changes
-#     - create 'x_exists' function for each subject and replace individual function lookups
 #   - enhancements:
 #     - finish IPAM and IP allocation components
 #     - validate IP addresses using the new valid_ip function
@@ -284,6 +283,8 @@
 #     - add file groups
 #     - system can be 'standalone', 'backing' or 'overlay'
 #     - 'backing' systems should be built then undefined and moved into a subfolder as read-only until no longer needed
+#     - when provisioning a backing image, ask if it should be deployed to one or all hypervisors at the site
+#     - when deleting a system that is a backing image check all hypervisors at the site for the disk image
 #     - store vm uuid with system to use as a sanity check when manipulating remote vms
 #     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
 #     - all systems should use the same backing image, and instead of a larger disk get a second disk with a unique LVM name
@@ -777,7 +778,7 @@ Verbs - all top level components:
   create
   delete [<name>]
   list
-  show [<name>]
+  show [<name>] [--brief]
   update [<name>]
 
 Options:
@@ -1146,9 +1147,12 @@ function application_list {
 
 function application_show {
   application_exists "$1" || err "Provide the application name"
+  local APP ALIAS BUILD CLUSTER BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   # [FORMAT:application]
-  IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
+  IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$1," ${CONF}/application )"
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
+  test $BRIEF -eq 1 && return
   # retrieve file list
   # [FORMAT:file-map]
   FILES=( `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
@@ -1312,6 +1316,8 @@ function build_root {
 
 function build_show {
   build_exists "$1" || err "Missing or invalid build name"
+  local NAME ROLE DESC OS ARCH DISK RAM PARENT RNAME RROLE RDESC RDISK RRAM RP BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   # [FORMAT:build]
   IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$1," ${CONF}/build )"
   if [ ! -z "$PARENT" ]; then
@@ -1323,6 +1329,7 @@ function build_show {
   fi
   printf -- "Build: $NAME\nRole: $ROLE\nParent Build: $PARENT\nOperating System: $OS-$ARCH\nDisk Size (GB): $DISK\nMemory (MB): $RAM\nDescription: $DESC\n"
   printf -- "Lineage: $( build_lineage $NAME )\n"
+  test $BRIEF -eq 1 && return
   # look up the applications configured for this build
   NUM=$( build_application_list "$1" |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -1384,6 +1391,14 @@ function constant_delete {
   generic_delete constant $1
 }
 
+# checks if a constant exists
+#
+function constant_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:constant]
+  grep -qE "^$1," $CONF/constant || return 1
+}
+
 function constant_list {
   NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -1404,9 +1419,8 @@ function constant_list_dedupe {
 }
 
 function constant_show {
-  test $# -eq 1 || err "Provide the constant name"
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
-  grep -qiE "^$C," ${CONF}/constant || err "Unknown constant"
+  constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
   printf -- "Name: $NAME\nDescription: $DESC\n"
@@ -1688,6 +1702,14 @@ function environment_delete {
   commit_file hv-environment
 }
 
+# checks if an environment is defined
+#
+function environment_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:environment]
+  grep -qE "^$1," $CONF/environment || return 1
+}
+
 function environment_list {
   NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -1701,15 +1723,17 @@ function environment_list_unformatted {
 }
 
 function environment_show {
-  test $# -eq 1 || err "Provide the environment name"
-  grep -qE "^$1," ${CONF}/environment || err "Unknown environment" 
+  environment_exists "$1" || err "Unknown or missing environment"
+  local NAME ALIAS DESC BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   # [FORMAT:environment]
   IFS="," read -r NAME ALIAS DESC <<< "$( grep -E "^$1," ${CONF}/environment )"
-  printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC"
+  printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC\n"
+  test $BRIEF -eq 1 && return
   # also show installed locations
   NUM=$( find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo -e "\n\nThere ${A} ${NUM} linked location${S}."
+  echo -e "\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
     find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
   fi
@@ -1823,6 +1847,7 @@ function file_create {
   TARGET=""
   # get user input and validate
   get_input NAME "Name (for reference)"
+  file_exists "$NAME" && err "File already defined."
   get_input TYPE "Type" --options file,directory,symlink,binary,copy,delete,download --default file
   if [ "$TYPE" == "symlink" ]; then
     get_input TARGET "Link Target" --nc
@@ -1844,9 +1869,6 @@ function file_create {
     get_input GROUP "Permissions - Group" --default root
     get_input OCTAL "Permissions - Octal (e.g. 0755)" --default 0644 --regex '^[0-7]{3,4}$'
   fi
-  # validate unique name
-  grep -qE "^$NAME," ${CONF}/file && err "File already defined."
-  # add
   # [FORMAT:file]
   printf -- "${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}\n" >>${CONF}/file
   # create base file
@@ -1996,6 +2018,14 @@ function file_edit_help {
   echo "HELP NOT AVAILABLE -- YOU ARE ON YOUR OWN"
 }
 
+# checks if a file is defined
+#
+function file_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:file]
+  grep -qE "^$1," $CONF/file || return 1
+}
+
 function file_list {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -2011,8 +2041,7 @@ function file_list {
 #   name,path,type,owner,group,octal,target,description
 #
 function file_show {
-  test $# -eq 1 || err "Provide the file name"
-  grep -qE "^$1," ${CONF}/file || err "Unknown file" 
+  file_exists "$1" || err "Unknown or missing file name"
   # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$1," ${CONF}/file )"
   if [ "$TYPE" == "symlink" ]; then
@@ -2220,6 +2249,14 @@ function location_environment_unassign {
   popd >/dev/null 2>&1
 }
 
+# checks if a location is defined
+#
+function location_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:location]
+  grep -qE "^$1," $CONF/location || return 1
+}
+
 function location_list {
   NUM=$( wc -l ${CONF}/location |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -2233,8 +2270,7 @@ function location_list_unformatted {
 }
 
 function location_show {
-  test $# -eq 1 || err "Provide the location name"
-  grep -qE "^$1," ${CONF}/location || err "Unknown location" 
+  location_exists "$1" || err "Unknown or missing location name"
   # [FORMAT:location]
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$1," ${CONF}/location )"
   printf -- "Code: $CODE\nName: $NAME\nDescription: $DESC\n"
@@ -2275,11 +2311,8 @@ function location_update {
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
 # <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
 function network_byname {
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
   if [ "$1" == "ip" ]; then network_by_ip ${@:2}; return 0; fi
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # function
   case "$2" in
     ip) network_ip $1 ${@:3};;
@@ -2307,7 +2340,7 @@ function network_create {
   get_input ZONE "Network Zone" --options core,edge
   get_input ALIAS "Site Alias"
   # validate unique name
-  grep -qE "^$LOC,$ZONE,$ALIAS," $CONF/network && err "Network already defined."
+  network_exists "$LOC-$ZONE-$ALIAS" && err "Network already defined."
   get_input DESC "Description" --nc --null
   while ! $(valid_ip "$NET"); do get_input NET "Network"; done
   get_input BITS "CIDR Mask (Bits)" --regex '^[0-9]+$'
@@ -2366,8 +2399,7 @@ function network_delete {
   else
     C="$1"
   fi
-  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$C" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   get_yn RL "Are you sure (y/n)? "
   if [ "$RL" == "y" ]; then
     # [FORMAT:network]
@@ -2460,12 +2492,18 @@ function network_edit_routes {
   return 0
 }
 
+# checks if a network is defined
+#
+function network_exists {
+  test $# -eq 1 || return 1
+  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || return 1
+  # [FORMAT:network]
+  grep -qE "^${1//-/,}," $CONF/network || return 1
+}
+
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
 function network_ip {
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # function
   case "$2" in
     --assign) network_ip_assign ${@:3};;
@@ -2527,10 +2565,7 @@ function network_ip_assign {
 #   --limit X   limit to X number of randomized results
 #
 function network_ip_list_available {
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   if [[ "$2" == "--limit" && "${3//[^0-9]/}" == "$3" && $3 -gt 0 ]]; then
     network_ip_list_available $1 |shuf |head -n $3
     return
@@ -2566,11 +2601,8 @@ function network_ip_locate {
 # scan a subnet for used addresses and reserve them
 #
 function network_ip_scan {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   start_modify
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   # declare variables
   local NETIP NETCIDR FILENAME
   # load the network
@@ -2627,10 +2659,7 @@ function network_ip_unassign {
 #
 # <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
 function network_ipam {
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # function
   case "$2" in
     --add-range) network_ipam_add_range $1 ${@:3};;
@@ -2650,11 +2679,8 @@ function network_ipam {
 #   end-ip          optional end ip
 #
 function network_ipam_add_range {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   start_modify
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
   local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
@@ -2710,11 +2736,8 @@ function network_ipam_add_range {
 #   end-ip          optional end ip
 #
 function network_ipam_remove_range {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   start_modify
-  # input validation
-  test $# -gt 0 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
   local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
@@ -2821,13 +2844,14 @@ function network_routes_by_ip {
 #   location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
 #
 function network_show {
-  test $# -eq 1 || err "Provide the network name (loc-zone-alias)"
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${1//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
+  local LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
   # [FORMAT:network]
   IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
   printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
+  test $BRIEF -eq 1 && return
   printf -- "Static Routes:\n"
   if [ "$HAS_ROUTES" == "y" ]; then
     cat ${CONF}/net/${NET}-routes |sed 's/^/   /'
@@ -2851,9 +2875,7 @@ function network_update {
   else
     C="$1"
   fi
-  # validate string
-  test `printf -- "$C" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
-  grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
+  network_exists "$C" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # [FORMAT:network]
   IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
@@ -3154,9 +3176,8 @@ function resource_update {
 
 #   --format: environment,hypervisor
 function hypervisor_add_environment {
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   start_modify
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # get the environment
   generic_choose environment "$2" ENV
   # verify this mapping does not already exist
@@ -3170,9 +3191,8 @@ function hypervisor_add_environment {
 
 #   --format: loc-zone-alias,hv-name,interface
 function hypervisor_add_network {
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   start_modify
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # get the network
   if [ -z "$2" ]; then
     network_list
@@ -3198,9 +3218,7 @@ function hypervisor_add_network {
 function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
   if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
-  # input validation
-  test $# -gt 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   case "$2" in
     --add-environment) hypervisor_add_environment $1 ${@:3};;
     --add-network) hypervisor_add_network $1 ${@:3};;
@@ -3217,7 +3235,7 @@ function hypervisor_create {
   # get user input and validate
   get_input NAME "Hostname"
   # validate unique name
-  grep -qE "^$NAME," $CONF/hypervisor && err "Hypervisor already defined."
+  hypervisor_exists "$1" && err "Hypervisor already defined."
   while ! $(valid_ip "$IP"); do get_input IP "Management IP"; done
   get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input VMPATH "VM Storage Path"
@@ -3238,6 +3256,14 @@ function hypervisor_delete {
   # [FORMAT:hv-network]
   sed -i "/^[^,]*,$1,/d" $CONF/hv-network
   commit_file hv-environment hv-network
+}
+
+# checks if a hypervisor is defined
+#
+function hypervisor_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:hypervisor]
+  grep -qE "^$1," $CONF/hypervisor || return 1
 }
 
 # show the configured hypervisors
@@ -3304,7 +3330,7 @@ function hypervisor_locate_system {
   test $# -ge 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # variable scope
-  local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED VM STATE FOUND
+  local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED VM STATE FOUND VMPATH
   # cache check
   if [ "$2" == "--quick" ]; then
     # [FORMAT:hv-system]
@@ -3330,12 +3356,17 @@ function hypervisor_locate_system {
   for HV in $LIST; do
     # load the host
     # [FORMAT:hypervisor]
-    read HIP ENABLED <<<"$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
+    read HIP VMPATH ENABLED <<<"$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4,$7}' )"
     test "$ENABLED" == "y" || continue
     # test the connection
     nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
     # search
-    read VM STATE <<<"$( ssh $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
+    if [ "$BASE_IMAGE" == "y" ]; then
+      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img |sed 's/\.img//'" )
+      if [ -z "$VM" ]; then STATE=""; else STATE="shut"; fi
+    else
+      read VM STATE <<<"$( ssh -o "StrictHostKeyChecking no" $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
+    fi
     test -z "$VM" && continue
     if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
     printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
@@ -3360,9 +3391,7 @@ function hypervisor_locate_system {
 #   --mem    only display free memory in MB
 #
 function hypervisor_poll {
-  # input validation
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   # load the host
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
@@ -3449,9 +3478,8 @@ function hypervisor_rank {
 }
 
 function hypervisor_remove_environment {
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   start_modify
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # get the environment
   generic_choose environment "$2" ENV
   # verify this mapping exists
@@ -3464,9 +3492,8 @@ function hypervisor_remove_environment {
 }
 
 function hypervisor_remove_network {
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   start_modify
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
   # get the network
   if [ -z "$2" ]; then
     network_list
@@ -3489,9 +3516,7 @@ function hypervisor_remove_network {
 # search for running virtual machines matching a string
 #
 function hypervisor_search {
-  # input validation
-  test $# -ge 1 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   # load the host
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
@@ -3507,14 +3532,15 @@ function hypervisor_search {
 
 #   --format: name,management-ip,location,vm-path,vm-min-disk(mb),min-free-mem(mb),enabled
 function hypervisor_show {
-  # input validation
-  test $# -gt 0 || err "Provide the hypervisor name"
-  grep -qE "^$1," ${CONF}/hypervisor || err "Unknown hypervisor"
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
+  local NAME IP LOC VMPATH MINDISK MINMEM ENABLED BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   # load the host
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # output the status/summary
   printf -- "Name: $NAME\nManagement Address: $IP\nLocation: $LOC\nVM Storage: $VMPATH\nReserved Disk (MB): $MINDISK\nReserved Memory (MB): $MINMEM\nEnabled: $ENABLED\n"
+  test $BRIEF -eq 1 && return
   # get networks
   printf -- "\nNetwork Interfaces:\n"
   # [FORMAT:hv-network]
@@ -3579,9 +3605,7 @@ function hypervisor_update {
 #
 # <value> [--audit|--check|--deploy|--release|--vars]
 function system_byname {
-  # input validation
-  test $# -gt 1 || err "Provide the system name"
-  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  system_exists "$1" || err "Unknown or missing system name"
   # function
   case "$2" in
     --audit) system_audit $1;;
@@ -3598,7 +3622,7 @@ function system_byname {
 }
 
 function system_audit {
-  test $# -gt 0 || err
+  system_exists "$1" || err "Unknown or missing system name"
   VALID=0
   # load the system
   # [FORMAT:system]
@@ -3656,7 +3680,7 @@ function system_audit {
 # check system configuration for validity (does it look like it will deploy OK?)
 #
 function system_check {
-  test $# -gt 0 || err
+  system_exists "$1" || err "Unknown or missing system name"
   VALID=0
   # load the system
   # [FORMAT:system]
@@ -3767,6 +3791,7 @@ function system_create_help {
 }
 
 function system_delete {
+  system_exists "$1" || err "Unknown or missing system name"
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
@@ -3785,7 +3810,7 @@ function system_delete {
 # deploy release to system
 #
 function system_deploy {
-  test $# -gt 0 || err
+  system_exists "$1" || err "Unknown or missing system name"
   nc -z -w 2 $1 22 >/dev/null 2>&1
   if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$1'\n"; exit 1; fi
   printf -- "Generating release...\n"
@@ -3803,9 +3828,7 @@ function system_deploy {
 # destroy and permantantly delete a system
 #
 function system_deprovision {
-  # input validation
-  test $# -ge 1 || err "Provide the system name"
-  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH F LIST DRY_RUN=0 HVFIRST
   # [FORMAT:system]
@@ -3821,6 +3844,11 @@ function system_deprovision {
     printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
   fi
   get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)? " || return
+  # confirm for overlay
+  if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
+    printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
+    get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)? " || return
+  fi
   # locate
   HV=$( hypervisor_locate_system $NAME )
   test -z "$HV" && err "Unable to locate hypervisor for this system"
@@ -3831,7 +3859,11 @@ function system_deprovision {
     # test connection
     nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
     # get disks
-    LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
+    if [ "$BASE_IMAGE" == "y" ]; then
+      LIST="${VMPATH}/${BACKING_FOLDER}${NAME}.img"
+    else
+      LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
+    fi
     # destroy
     if [ $DRY_RUN -ne 1 ]; then
       ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
@@ -3853,6 +3885,14 @@ function system_deprovision {
   done
   printf -- '\n%s has been removed\n' "$NAME"
   return 0
+}
+
+# checks if a system is defined
+#
+function system_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:system]
+  grep -qE "^$1," $CONF/system || return 1
 }
 
 # create a system
@@ -4156,7 +4196,7 @@ function system_list_unformatted {
 }
 
 function system_release {
-  test $# -gt 0 || err
+  system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH
   # [FORMAT:system]
@@ -4300,16 +4340,15 @@ function system_resource_list {
 }
 
 function system_show {
-  # local variables
-  FILES=()
-  # input validation
-  test $# -eq 1 || err "Provide the system name"
-  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  system_exists "$1" || err "Unknown or missing system name"
+  local FILES=() NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY BRIEF=0
+  [ "$2" == "--brief" ] && BRIEF=1
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
   # output the status/summary
   printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\n"
+  test $BRIEF -eq 1 && return
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     NUM=$( build_application_list "$BUILD" |wc -l )
@@ -4421,7 +4460,9 @@ function system_update {
 # $2 = ip
 #
 function system_update_push_hosts {
-  if [ "`hostname`" != "hqpcore-bkup01" ]; then echo "Run from hqpcore-bkup01"; return 3; fi
+  test -z "$PUSH_HOSTS" && return
+  printf -- " $PUSH_HOSTS " |grep -q " `hostname` "
+  if [ $? -ne 0 ]; then echo "This system is not authorized to update /etc/hosts" >&2; return 3; fi
   # hostname and IP should either both be unique, or both registered together
   ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' /etc/hosts ); H=$?
   echo "$ENTRY" |grep -qE '^'${2//\./\\.}'[ '$'\t'']';      I=$?
@@ -4435,13 +4476,14 @@ function system_update_push_hosts {
     echo -e "$2\t$1\t\t$1.${DOMAIN_NAME}" >>/etc/hosts
     diff /etc/hosts{.sysbuild,}; echo
     # sync
-    /usr/local/etc/push-hosts.sh
+    test -x /usr/local/etc/push-hosts.sh && /usr/local/etc/push-hosts.sh
   elif [ $H -eq 0 ]; then
     err "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted."
   elif [ $J -eq 0 ]; then
     err "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted."
   fi
   # add host to lpad as needed
+  test -f /usr/local/etc/lpad/hosts/managed-hosts || return 0
   grep -qE '^'$1':' /usr/local/etc/lpad/hosts/managed-hosts
   if [ $? -ne 0 ]; then
     echo "Adding lpad entry..."
@@ -4453,7 +4495,7 @@ function system_update_push_hosts {
 # generate all system variables and settings
 #
 function system_vars {
-  test $# -eq 1 || err "System name required"
+  system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP
   # [FORMAT:system]
@@ -4491,9 +4533,7 @@ function system_vars {
 # output the virtual machine disk configuration for the system
 #
 function system_vm_disks {
-  # input validation
-  test $# -eq 1 || err "Provide the system name"
-  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  system_exists "$1" || err "Unknown or missing system name"
   # get the host
   local HV=$( hypervisor_locate_system $1 --quick )
   test -z "$HV" && return
@@ -4530,11 +4570,12 @@ function system_vm_disks {
 # settings
 #
 # file to look for to immediately abort all background tasks
-#
 ABORTFILE=/tmp/scs-abort-all
 #
-# path to build scripts
+# name of subfolder to move backing images in to (no leading slash, include trailing slash)
+BACKING_FOLDER=backing_images/
 #
+# path to build scripts
 BUILDSRC=/home/wstrucke/ESG/system-builds
 #
 # local root for scs storage files, settings, and git repository
@@ -4544,7 +4585,6 @@ CONF=/usr/local/etc/lpad/app-config
 DEF_HDD=40
 #
 # default amount of RAM for a new system in MB
-#
 DEF_MEM=1024
 #
 # site domain name (for hosts)
@@ -4563,8 +4603,8 @@ OSARCH="i386,x86_64"
 # list of operating systems for builds
 OSLIST="centos4,centos5,centos6"
 #
-# name of subfolder to move backing images in to
-BACKING_FOLDER=backing_images
+# management servers with authoritative host files (space seperated list)
+PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
 RELEASEDIR=/bkup1/scs-release
