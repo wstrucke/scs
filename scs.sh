@@ -139,11 +139,12 @@
 #
 #   hv-system
 #   --description: hypervisor/vm map
-#   --format: system,hypervisor
+#   --format: system,hypervisor,preferred
 #   --search: [FORMAT:hv-system]
 #   --storage:
 #   ----system          the name of the 'system' (or virtual machine)
 #   ----hypervisor      the name of the 'hypervisor'
+#   ----preferred       y/n - if 'y' this is the preferred hypervisor the system runs on
 #
 #   hypervisor
 #   --description: virtual machine host servers
@@ -269,6 +270,7 @@
 #     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #     - every line that reads from a storage file should have a comment to enable more accurate schema changes
+#     - create 'x_exists' function for each subject and replace individual function lookups
 #   - enhancements:
 #     - finish IPAM and IP allocation components
 #     - validate IP addresses using the new valid_ip function
@@ -3287,11 +3289,15 @@ function hypervisor_locate_system {
   # input validation
   test $# -ge 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  # variable scope
+  local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED VM STATE FOUND
   # cache check
   if [ "$2" == "--quick" ]; then
     # [FORMAT:hv-system]
-    IFS="," read -r NAME H <<< "$( grep -E '^'$1',' ${CONF}/hv-system )"
-    if ! [ -z "$H" ]; then printf -- '%s\n' "$H"; return; fi
+    while read -r NAME H PREF; do
+      if [[ -z "$HV" || "$PREF" == "y" ]]; then HV=$H; fi
+    done <<< "$( grep -E '^'$1',' ${CONF}/hv-system |tr ',' ' ' )"
+    if ! [ -z "$HV" ]; then printf -- '%s\n' "$HV"; return; fi
   fi
   # load the system
   # [FORMAT:system]
@@ -3300,33 +3306,33 @@ function hypervisor_locate_system {
   # load hypervisors
   LIST=$( hypervisor_list --location $LOC --environment $EN )
   test -z "$LIST" && return 1
+  # check if there is a preferred HV already
+  # [FORMAT:hv-system]
+  PREF="$( grep -E "^$1,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
+  start_modify
+  # [FORMAT:hv-system]
+  sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
   # set defaults
-  local ON OFF HIP ENABLED VM STATE FOUND
-  for H in $LIST; do
+  for HV in $LIST; do
     # load the host
     # [FORMAT:hypervisor]
-    read HIP ENABLED <<<"$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
+    read HIP ENABLED <<<"$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$7}' )"
     test "$ENABLED" == "y" || continue
     # test the connection
     nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
     # search
     read VM STATE <<<"$( ssh $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
     test -z "$VM" && continue
-    if [ "$STATE" == "shut" ]; then OFF="$H"; else ON="$H"; fi
+    if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
+    printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
   done
   # check results
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
-  if ! [ -z "$ON" ]; then FOUND="$ON"; fi
-  # update hypervisor-system map, if needed
+  if ! [ -z "$ON" ]; then FOUND="$ON"; PREF="$ON"; fi
+  # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
-  grep -qE "^$NAME,$FOUND\$" ${CONF}/hv-system
-  if [[ $? -ne 0 && ! -z "$FOUND" ]]; then
-    start_modify
-    sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
-    # [FORMAT:hv-system]
-    printf -- '%s,%s\n' "$NAME" "$FOUND" >>${CONF}/hv-system
-    commit_file hv-system
-  fi
+  if ! [ -z "$PREF" ]; then sed -i 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
+  commit_file hv-system
   # output results and return status
   if ! [ -z "$FOUND" ]; then printf -- '%s\n' $FOUND; return 0; fi
   return 1
@@ -3567,7 +3573,7 @@ function system_byname {
     --audit) system_audit $1;;
     --check) system_check $1;;
     --deploy) system_deploy $1;;
-    --deprovision) system_deprovision $1;;
+    --deprovision) system_deprovision $1 ${@:3};;
     --provision) system_provision $1 ${@:3};;
     --push-build-scripts) system_push_build_scripts $1 ${@:3};;
     --release) system_release $1;;
@@ -3783,41 +3789,55 @@ function system_deploy {
 # destroy and permantantly delete a system
 #
 function system_deprovision {
-  start_modify
   # input validation
-  test $# -eq 1 || err "Provide the system name"
+  test $# -ge 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH F LIST DRY_RUN=0 HVFIRST
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  # check for dry-run flag
+  [ "$1" == "--dry-run" ] && DRY_RUN=1
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
-  # locate
-  HV=$( hypervisor_locate_system $1 )
-  test -z "$HV" && err "Unable to locate hypervisor for this system"
-  # load hypervisor settings
-  # [FORMAT:hypervisor]
-  read -r HVIP VMPATH <<< "$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $1,$4}' )"
   # confirm
-  printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
-  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$1' (y/n)? " || return
-  # test connection
-  nc -z -w 2 $HV 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor"
-  # get disks
-  LIST=" /etc/libvirt/qemu/$1.xml $( system_vm_disks $1 )"
-  # destroy
-  ssh $HV "virsh destroy $1; sleep 1; virsh undefine $1" >/dev/null 2>&1
-  # delete files / cleanup
-  for F in $LIST; do
-    if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
-    ssh -n $HV "test -f $F && rm -f $F"
+  if [ $DRY_RUN -ne 1 ]; then
+    printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
+  else
+    printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
+  fi
+  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)? " || return
+  # locate
+  HV=$( hypervisor_locate_system $NAME )
+  test -z "$HV" && err "Unable to locate hypervisor for this system"
+  while ! [ -z "$HV" ]; do
+    # load hypervisor settings
+    # [FORMAT:hypervisor]
+    read -r HVIP VMPATH <<< "$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $1,$4}' )"
+    # test connection
+    nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
+    # get disks
+    LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
+    # destroy
+    if [ $DRY_RUN -ne 1 ]; then
+      ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
+    else
+      echo ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
+      test -z "$HVFIRST" && HVFIRST="$HV"
+    fi
+    # delete files / cleanup
+    for F in $LIST; do
+      if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
+      if [ $DRY_RUN -ne 1 ]; then
+        ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && rm -f $F"
+      else
+        echo ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && rm -f $F"
+      fi
+    done
+    HV=$( hypervisor_locate_system $NAME )
+    if [[ $DRY_RUN -eq 1 && "$HV" == "$HVFIRST" ]]; then HV=""; fi
   done
-  # unmap
-  # [FORMAT:hv-system]
-  sed -i '/^'$1',/d' ${CONF}/hv-system >/dev/null 2>&1
-  commit_file hv-system
-  printf -- '\n%s has been removed\n' "$1"
+  printf -- '\n%s has been removed\n' "$NAME"
   return 0
 }
 
@@ -3937,11 +3957,7 @@ _EOF
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
   nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN $REPO_ADDR $REPO_PATH </dev/null >/dev/null 2>&1 &
   #  - update hypervisor-system map
-  # [FORMAT:hv-system]
-  sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
-  # [FORMAT:hv-system]
-  printf -- '%s,%s\n' "$NAME" "$HV" >>${CONF}/hv-system
-  commit_file hv-system
+  hypervisor_locate_system $NAME >/dev/null 2>&1
   #  - phase 1 complete
   /usr/bin/logger -t "scs" "[$$] build phase 1 complete"
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
@@ -4196,6 +4212,8 @@ function system_release {
       elif [ "$FTYPE" == "symlink" ]; then
         # tar will preserve the symlink so go ahead and create it
         ln -s $FTARGET $TMP/$FPTH
+        # special case -- symlinks always stat as 0777
+        FOCT=777
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
         test -f $CONF/binary/$EN/$FNAME || err "Error - binary file '$FNAME' does not exist for $EN."
