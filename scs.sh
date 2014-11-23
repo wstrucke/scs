@@ -290,6 +290,7 @@
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
+#     - system_builder function to generate overlays and dependencies
 #   - environment stuff:
 #     - an environment instance can force systems to 'standalone' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -3901,22 +3902,32 @@ function system_exists {
 
 # create a system
 #
+# optional:
+#  --network <name>
+#  --[skip-]distribute
+#
 function system_provision {
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
-  # phase handler
-  if [ $# -gt 1 ]; then
-    case "$2" in
-      --phase-2) system_provision_phase2 $1 ${@:3};;
-      *) err "Invalid argument"
-    esac
-  fi
+
   # select and validate the system
   generic_choose system "$1" C && shift
+
+  # phase handler
+  while [ $# -gt 0 ]; do case "$1" in
+    --distribute) REDIST=y;;
+    --network) NETNAME="$2"; shift;;
+    --phase-2) system_provision_phase2 $1 ${@:3}; return;;
+    --skip-distribute) REDIST=n;;
+    *) err "Invalid argument";;
+  esac; shift; done
+
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$C," ${CONF}/system )"
+
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
+
   if [ "$IP" != "dhcp" ]; then
     # verify the system's IP is not in use
     nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
@@ -3928,6 +3939,8 @@ function system_provision {
     #  - look up the network for this IP
     NETNAME=$( network_list --match $IP )
     test -z "$NETNAME" && err "No network was found matching this system's IP address"
+  elif ! [ -z "$NETNAME" ]; then
+    network_exists "$NETNAME" || err "Invalid network"
   else
     network_list
     printf -- "\n"
@@ -3935,6 +3948,7 @@ function system_provision {
     printf -- "\n"
     network_exists "$NETNAME" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   fi
+
   #  - lookup the build network for this system
   network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
   if [ $? -eq 0 ]; then
@@ -3942,6 +3956,7 @@ function system_provision {
   else
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
+
   #  - lookup network details for the build network (used in the kickstart configuration)
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
@@ -3949,21 +3964,25 @@ function system_provision {
   valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
   valid_ip $DNS || err "Build network does not have a defined DNS server"
   if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
+
   #  - locate available HVs
   LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
   test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+
   #  - poll list of HVs for availability then rank for free storage, free mem, and load
   HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
   test -z "$HV" && err "There are no available hypervisors at this time"
+
   #  - get the build and dest interfaces on the hypervisor
   HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
   HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
   [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
+
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
   # check redistribute
-  if [ "$BASE_IMAGE" == "y" ]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
+  if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
   
   start_modify
   #  - assign a temporary IP as needed
@@ -4025,6 +4044,22 @@ _EOF
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
   return 0
 }
+function system_provision_help { cat <<_EOF
+Instantiate a virtual machine or base image for a defined system.
+
+Usage: $0 system <name> --provision [--network <name>] [--[skip-]distribute]
+
+Fields:
+  <name>		Name of the defined system
+  --network <name>	optional name of the network to deploy to - this is only useful for systems
+			  configured to use DHCP since the user will be prompted for a network in order
+			  to auto-assign an IP address
+  --distribute		optional - for base images, answers 'yes' to distribute the image to all hypervisors
+  --skip-distribute	optional - for base images, answers 'no' to distribute the image to all hypervisors
+
+_EOF
+}
+
 
 # build phase 2
 #
