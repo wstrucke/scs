@@ -3366,7 +3366,7 @@ function hypervisor_locate_system {
     nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
     # search
     if [ "$BASE_IMAGE" == "y" ]; then
-      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img |sed 's/\.img//'" )
+      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |sed 's/\.img//'" )
       if [ -z "$VM" ]; then STATE=""; else STATE="shut"; fi
     else
       read VM STATE <<<"$( ssh -o "StrictHostKeyChecking no" $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
@@ -3961,6 +3961,9 @@ function system_provision {
   [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
+
+  # check redistribute
+  if [ "$BASE_IMAGE" == "y" ]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
   
   start_modify
   #  - assign a temporary IP as needed
@@ -4014,7 +4017,7 @@ _EOF
   echo "Creating virtual machine..."
   ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $IP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $BUILD $LOC $EN $REPO_ADDR $REPO_PATH </dev/null >/dev/null 2>&1 &
+  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST </dev/null >/dev/null 2>&1 &
   #  - update hypervisor-system map
   hypervisor_locate_system $NAME >/dev/null 2>&1
   #  - phase 1 complete
@@ -4027,10 +4030,19 @@ _EOF
 #
 function system_provision_phase2 {
   # load arguments passed in from phase1
-  read -r NAME HV BUILDIP IP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME BUILD LOC EN REPO_ADDR REPO_PATH <<< "$@"
-  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV at $BUILDIP"
+  read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST <<< "$@"
+
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  system_exists $NAME
+  if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] error staring build phase 2 - system '$NAME' does not exist - check $HV"; exit 1; fi
+
+  # [FORMAT:hypervisor]
+  read -r HVIP VMPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV ($HVIP) at $BUILDIP"
   # wait a few minutes before even trying to connect
-  #sleep 180
+  sleep 30
   # max iterations, wait 60 minutes or 4 per min x 60 = 240
   #local i=0
   # confirm with targer server that base build is complete
@@ -4043,7 +4055,7 @@ function system_provision_phase2 {
   #  - sleep 30 or so
   #sleep 30
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh -n -o "StrictHostKeyChecking no" $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
   #  - check for abort
   check_abort
@@ -4119,7 +4131,7 @@ function system_provision_phase2 {
   ssh -n -o "StrictHostKeyChecking no" $BUILDIP "/sbin/shutdown -P now" >/dev/null 2>&1
 
   # wait for power off
-  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  ssh -n -o "StrictHostKeyChecking no" $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully stopped $NAME"
 
   #  - check for abort
@@ -4127,26 +4139,54 @@ function system_provision_phase2 {
 
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
-    ssh -n $HV "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    ssh -n -o "StrictHostKeyChecking no" $HVIP "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
   fi
 
-  #  - start vm
-  /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
-  ssh -n $HV "virsh start $NAME" >/dev/null 2>&1
- 
-  if [ "$IP" != "dhcp" ]; then
-    #  - update /etc/hosts and push-hosts (system_update_push_hosts)
-    /usr/bin/logger -t "scs" "[$$] updating hosts"
-    system_update_push_hosts $NAME $IP >/dev/null 2>&1
-
-    #  - wait for vm to come up
-    sleep 15
-    while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-    /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
-    while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-    /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+  if [ "$BASE_IMAGE" != "y" ]; then
+    #  - start vm
+    /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
+    ssh -n -o "StrictHostKeyChecking no" $HVIP "virsh start $NAME" >/dev/null 2>&1
+   
+    if [ "$IP" != "dhcp" ]; then
+      #  - update /etc/hosts and push-hosts (system_update_push_hosts)
+      /usr/bin/logger -t "scs" "[$$] updating hosts"
+      system_update_push_hosts $NAME $IP >/dev/null 2>&1
+  
+      #  - wait for vm to come up
+      sleep 15
+      while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+      /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+      while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+      /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+    else
+      /usr/bin/logger -t "scs" "[$$] $NAME is configured to use DHCP and can not be traced at this time"
+    fi
   else
-    /usr/bin/logger -t "scs" "[$$] $NAME is configured to use DHCP and can not be traced at this time"
+    # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
+    # create backing folder as needed and move disk image
+    /usr/bin/logger -t "scs" "[$$] moving base_image to ${VMPATH}/${BACKING_FOLDER}${NAME}.img"
+    ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${VMPATH}/${BACKING_FOLDER} || mkdir -p ${VMPATH}/${BACKING_FOLDER}; mv ${VMPATH}/${NAME}.img ${VMPATH}/${BACKING_FOLDER}${NAME}.img" >/dev/null 2>&1
+    # undefine vm
+    /usr/bin/logger -t "scs" "[$$] undefining virtual machine $NAME on $HV"
+    ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; sleep 1; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+    # redistribute if configured
+    if [ "$REDIST" == "y" ]; then
+      for H in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN | tr '\n' ' ' ); do
+        if [ "$H" == "$HV" ]; then continue; fi
+        # [FORMAT:hypervisor]
+        read -r HIP VPATH <<< "$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+        # test connection
+        nc -z -w 2 $HIP 22 >/dev/null 2>&1
+        if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] error connecting to hypervisor '$H' for base_image redistribution"; continue; fi
+        ssh -o "StrictHostKeyChecking no" $HIP "test -d ${VPATH}/${BACKING_FOLDER} || mkdir -p ${VPATH}/${BACKING_FOLDER}"
+        srcp -t /bkup1 $HVIP:${VMPATH}/${BACKING_FOLDER}${NAME}.img $HIP:${VPATH}/${BACKING_FOLDER}${NAME}.img >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+          /usr/bin/logger -t "scs" "[$$] successfully transferred base_image to $H"
+        else
+          /usr/bin/logger -t "scs" "[$$] error transferring base_image to $H"
+        fi
+      done
+    fi
   fi
 
   /usr/bin/logger -t "scs" "[$$] system build complete for $NAME"
