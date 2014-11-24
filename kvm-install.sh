@@ -42,22 +42,24 @@ function usage {
 Usage: $0 [...args...] vm-name
 
 Options:
-  --arch <string>  system architecture: either i386 or x86_64, default i386
-  --base <string>  use a base qcow2 image as a backing file for the new VM
-  --cpu <int>      number of processors, default 1
-  --destroy        forcibly remove the VM if it already exists - DATA LOSS WARNING -
-  --disk <int>     size of disk in GB, default 30
-  --dry-run        do not make any changes, simply output the expected commands
-  --ip <string>    specify static ip during build, default dhcp
-  --ks <URL>       full URL to optional kick-start answer file
-  --mac <string>   physical address to assign, default auto-generate
-  --no-console     do not automatically connect the console, useful for automation
-  --no-reboot      do not automatically restart the system following the install
-  --os <string>    operating system for build: either centos5 or centos6, default centos5
-  --quiet          silence as much output as possible
-  --ram <int>      amount of ram in MB, default 512
-  --uuid <string>  specify the uuid to assign, default auto-generate
-  --yes-i-am-sure  do not prompt for confirmation of destructive changes
+  --arch <string>       system architecture: either i386 or x86_64, default i386
+  --base <string>       use a base qcow2 image as a backing file for the new VM
+  --cpu <int>           number of processors, default 1
+  --destroy             forcibly remove the VM if it already exists - DATA LOSS WARNING -
+  --disk <int>          size of disk in GB, default 30
+  --dry-run             do not make any changes, simply output the expected commands
+  --ip <string>         specify static ip during build, default dhcp
+  --interface <string>  specify the bridge interface to attach to (default $BUILD_NET_INTERFACE)
+  --ks <URL>            full URL to optional kick-start answer file
+  --mac <string>        physical address to assign, default auto-generate
+  --no-console          do not automatically connect the console, useful for automation
+  --no-install          do not kickstart or install an OS, just create a VM around the new disk image
+  --no-reboot           do not automatically restart the system following the install
+  --os <string>         operating system for build: either centos5 or centos6, default centos5
+  --quiet               silence as much output as possible
+  --ram <int>           amount of ram in MB, default 512
+  --uuid <string>       specify the uuid to assign, default auto-generate
+  --yes-i-am-sure       do not prompt for confirmation of destructive changes
 
 _EOF
   exit 2
@@ -134,19 +136,21 @@ BASE=""
 DESTROY=0
 DRYRUN=0
 KSURL=""
+INSTALL=1
 INSTALL_URL=""
+INTERFACE=""
 QUIET=0
 SURE=0
 VMADDR=""
-VMARCH="i386"
+VMARCH="x86_64"
 VMCONSOLE=1
 VMCPUS=1
 VMIP=""
 VMNAME=""
-VMOS="centos5"
-VMRAM=512
+VMOS="centos6"
+VMRAM=1024
 VMREBOOT=1
-VMSIZE=30
+VMSIZE=40
 VMUUID=""
 
 # settings
@@ -156,6 +160,7 @@ while [ $# -gt 0 ]; do case $1 in
   -c|--cpu) VMCPUS="$2"; shift;;
   -d|--disk) VMSIZE="$2"; shift;;
   -k|--ks) KSURL="$2"; shift;;
+  -I|--interface) INTERFACE="$2"; shift;;
   -i|--ip) VMIP="$2"; shift;;
   -m|--mac) VMADDR="$2"; shift;;
   -o|--os) VMOS="$2"; shift;;
@@ -165,6 +170,7 @@ while [ $# -gt 0 ]; do case $1 in
   --destroy) DESTROY=1;;
   --dry-run) DRYRUN=1;;
   --no-console) VMCONSOLE=0;;
+  --no-install) INSTALL=0;;
   --no-reboot) VMREBOOT=0;;
   --yes-i-am-sure) SURE=1;;
   *) test -z "$VMNAME" && VMNAME="$1" || usage;;
@@ -186,6 +192,13 @@ if [ ! -z "$VMIP" ]; then valid_ip $VMIP || err "Invalid IP address"; fi
 printf -- " $ARCHLIST " |grep -q " $VMARCH " || err "Invalid system architecture"
 printf -- " $OSLIST " |grep -q " $VMOS " || err "Invalid operating system"
 if [ ! -z "$BASE" ]; then test -f "$BASE" || err "Invalid base image"; fi
+if [ ! -z "$INTERFACE" ]; then
+  /sbin/ifconfig $INTERFACE >/dev/null 2>&1 || err "Invalid interface"
+fi
+
+# if no interface was specified, use the default
+if [ -z "$BUILD_NET_INTERFACE" ]; then BUILD_NET_INTERFACE=$( netstat -rn |grep -E '^0\.0\.0\.0' |awk '{print $NF}' ); fi
+if [ -z "$INTERFACE" ]; then INTERFACE=$BUILD_NET_INTERFACE; fi
 
 # check minimum system requirements
 if [[ "$VMOS" == "centos4" && "$VMARCH" != "i386" ]]; then err "Centos 4 only supports i386 architecture"; fi
@@ -245,16 +258,21 @@ test $VMREBOOT -eq 0 && ARGS="$ARGS --noreboot"
 
 # set args conditionally on base image
 #
-ARGS="$ARGS --accelerate --hvm \
---network=bridge:${BUILD_NET_INTERFACE} --location=${INSTALL_URL} --nographics \
---extra-args=\"ks=${KSURL} ksdevice=${BUILD_NET_INTERFACE}"
+ARGS="$ARGS --accelerate --hvm --nographics --network=bridge:${INTERFACE}"
 
-# optionally append ip data if a static address was provided
-if [ ! -z "$VMIP" ]; then
-  ARGS="$ARGS ip=${VMIP} netmask=${BUILD_NET_MASK} dns=${BUILD_NET_DNS} gateway=${BUILD_NET_GW}"
+# optionally add kickstart settings
+if [ $INSTALL -eq 1 ]; then
+  ARGS="$ARGS --location=${INSTALL_URL} --extra-args=\"ks=${KSURL} ksdevice=${INTERFACE}"
+
+  # optionally append ip data if a static address was provided
+  if [ ! -z "$VMIP" ]; then
+    ARGS="$ARGS ip=${VMIP} netmask=${BUILD_NET_MASK} dns=${BUILD_NET_DNS} gateway=${BUILD_NET_GW}"
+  fi
+  
+  ARGS="$ARGS console=ttyS0\""
+else
+  ARGS="$ARGS --extra-args=\"console=ttyS0\" --import"
 fi
-
-ARGS="$ARGS console=ttyS0\""
 
 if ! [ -z "$BASE" ]; then
   ARGS="$ARGS --disk path=${VMDIR}/${VMNAME}.img,format=qcow2,cache=writeback"
@@ -272,9 +290,9 @@ if [ $DRYRUN -eq 1 ]; then
   echo
 else
   if [ $QUIET -eq 1 ]; then
-    qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE} >/dev/null 2>&1
+    eval qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE} >/dev/null 2>&1
   else
-    qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}
+    eval qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}
   fi
   test $? -eq 0 || err "Error creating disk"
 echo
