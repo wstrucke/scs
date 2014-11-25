@@ -47,17 +47,21 @@ Options:
   --cpu <int>           number of processors, default 1
   --destroy             forcibly remove the VM if it already exists - DATA LOSS WARNING -
   --disk <int>          size of disk in GB, default 30
+  --disk-path <string>  override path to the system disk
+  --disk-type <string>  override disk type, option must be one of 'ide', 'scsi', 'usb', 'virtio' or 'xen'
   --dry-run             do not make any changes, simply output the expected commands
   --ip <string>         specify static ip during build, default dhcp
   --interface <string>  specify the bridge interface to attach to (default $BUILD_NET_INTERFACE)
   --ks <URL>            full URL to optional kick-start answer file
   --mac <string>        physical address to assign, default auto-generate
+  --nic <string>        NIC model, one of 'e1000', 'rtl8139', or 'virtio'
   --no-console          do not automatically connect the console, useful for automation
   --no-install          do not kickstart or install an OS, just create a VM around the new disk image
   --no-reboot           do not automatically restart the system following the install
   --os <string>         operating system for build: either centos5 or centos6, default centos5
   --quiet               silence as much output as possible
   --ram <int>           amount of ram in MB, default 512
+  --vnc <port>          activate VNC server on tcp port <port>
   --uuid <string>       specify the uuid to assign, default auto-generate
   --yes-i-am-sure       do not prompt for confirmation of destructive changes
 
@@ -129,7 +133,9 @@ centos6_x86_64_root="${WEBROOT}/6/os/x86_64/"
 
 # argument validation
 ARCHLIST="i386 x86_64"
-OSLIST="centos4 centos5 centos6"
+DISK_TYPE_LIST="ide scsi usb virtio xen"
+NIC_LIST="e1000 rtl8139 virtio"
+OSLIST="centos4 centos5 centos6 ubuntu generic"
 
 # defaults
 BASE=""
@@ -145,13 +151,17 @@ VMADDR=""
 VMARCH="x86_64"
 VMCONSOLE=1
 VMCPUS=1
+VMDISK=""
+VMDISK_TYPE="virtio"
 VMIP=""
 VMNAME=""
+VMNIC=""
 VMOS="centos6"
 VMRAM=1024
 VMREBOOT=1
 VMSIZE=40
 VMUUID=""
+VNC=""
 
 # settings
 while [ $# -gt 0 ]; do case $1 in
@@ -159,14 +169,18 @@ while [ $# -gt 0 ]; do case $1 in
   -b|--base) BASE="$2"; shift;;
   -c|--cpu) VMCPUS="$2"; shift;;
   -d|--disk) VMSIZE="$2"; shift;;
+  -D|--disk-path) VMDISK="$2"; shift;;
   -k|--ks) KSURL="$2"; shift;;
   -I|--interface) INTERFACE="$2"; shift;;
   -i|--ip) VMIP="$2"; shift;;
   -m|--mac) VMADDR="$2"; shift;;
+  -n|--nic) VMNIC="$2"; shift;;
   -o|--os) VMOS="$2"; shift;;
   -q|--quiet) QUIET=1;;
   -r|--ram) VMRAM="$2"; shift;;
+  -T|--disk-type) VMDISK_TYPE="$2"; shift;;
   -u|--uuid) VMUUID="$2"; shift;;
+  -v|--vnc) VNC="$2"; shift;;
   --destroy) DESTROY=1;;
   --dry-run) DRYRUN=1;;
   --no-console) VMCONSOLE=0;;
@@ -191,10 +205,14 @@ test $VMRAM -gt 131072 && err "Maximum system memory is 128GB. Yes, this is arbi
 if [ ! -z "$VMIP" ]; then valid_ip $VMIP || err "Invalid IP address"; fi
 printf -- " $ARCHLIST " |grep -q " $VMARCH " || err "Invalid system architecture"
 printf -- " $OSLIST " |grep -q " $VMOS " || err "Invalid operating system"
+printf -- " $DISK_TYPE_LIST " |grep -q " $VMDISK_TYPE " || err "Invalid bus (disk type). Must be one of $DISK_TYPE_LIST."
+if [ ! -z "$VMNIC" ]; then printf -- " $NIC_LIST " |grep -q " $VMNIC " || err "Invalid NIC model. Must be one of $NIC_LIST."; fi
+if [[ ! -z "$VMDISK" && ! -f "$VMDISK" ]]; then err "Invalid disk specified: $VMDISK"; fi
 if [ ! -z "$BASE" ]; then test -f "$BASE" || err "Invalid base image"; fi
 if [ ! -z "$INTERFACE" ]; then
   /sbin/ifconfig $INTERFACE >/dev/null 2>&1 || err "Invalid interface"
 fi
+if [ ! -z "$VNC" ]; then printf -- " $( /bin/netstat -ln |grep '^tcp' |awk '{print $4}' |cut -d: -f2 |tr '\n' ' ' ) " |grep -q " $VNC " && err "VNC port in use"; fi
 
 # if no interface was specified, use the default
 if [ -z "$BUILD_NET_INTERFACE" ]; then BUILD_NET_INTERFACE=$( netstat -rn |grep -E '^0\.0\.0\.0' |awk '{print $NF}' ); fi
@@ -213,7 +231,7 @@ if [ -z "$KSURL" ]; then VAR="${VMOS}_${VMARCH}_ks"; KSURL=${!VAR}; fi
 VAR="${VMOS}_${VMARCH}_root"; INSTALL_URL=${!VAR}
 
 # protection
-if [ -f ${VMDIR}/${VMNAME}.img ]; then
+if [[ -z ${VMDISK} && -f ${VMDIR}/${VMNAME}.img ]]; then
   if [ $DESTROY -eq 0 ]; then
     err "VM already exists"
   else
@@ -235,9 +253,12 @@ if [ -f ${VMDIR}/${VMNAME}.img ]; then
     fi
   fi
 fi
+printf -- " $( /usr/bin/virsh list --all 2>/dev/null |awk '{print $2}' |grep -vE '^(Name)?$' | tr '\n' ' ' ) " |grep -q " $VMNAME "
+if [[ $? -eq 0 && $DESTROY -eq 0 ]]; then err "VM already registered"; fi
+
 
 # build the installation arguments
-ARGS="--name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} --os-type=linux"
+ARGS="--name ${VMNAME} --ram=${VMRAM} --vcpus=${VMCPUS} --os-type=linux --accelerate --hvm"
 
 case $VMARCH in
   i386|i686) ARGS="$ARGS --arch=i686";;
@@ -248,6 +269,8 @@ case $VMOS in
   centos4) ARGS="$ARGS --os-variant=rhel4";;
   centos5) ARGS="$ARGS --os-variant=rhel5.4";;
   centos6) ARGS="$ARGS --os-variant=rhel6";;
+  generic) ARGS="$ARGS --os-variant=generic";;
+  ubuntu)  ARGS="$ARGS --os-variant=ubuntuoneiric";;
 esac
 
 # add optional arguments
@@ -256,9 +279,20 @@ test ! -z "$VMUUID" && ARGS="$ARGS --uuid=${VMUUID}"
 test $VMCONSOLE -eq 0 && ARGS="$ARGS --noautoconsole"
 test $VMREBOOT -eq 0 && ARGS="$ARGS --noreboot"
 
-# set args conditionally on base image
+# set NIC settings
 #
-ARGS="$ARGS --accelerate --hvm --nographics --network=bridge:${INTERFACE}"
+if [ -z "$VMNIC" ]; then
+  ARGS="$ARGS --network=bridge:${INTERFACE}"
+else
+  ARGS="$ARGS --network=bridge:${INTERFACE},model=${VMNIC}"
+fi
+
+# set graphics settings
+if [ -z "$VNC" ]; then
+  ARGS="$ARGS --nographics"
+else
+  ARGS="$ARGS --graphics vnc,password=admin123,port=$VNC,listen=0.0.0.0"
+fi
 
 # optionally add kickstart settings
 if [ $INSTALL -eq 1 ]; then
@@ -271,31 +305,39 @@ if [ $INSTALL -eq 1 ]; then
   
   ARGS="$ARGS console=ttyS0\""
 else
-  ARGS="$ARGS --extra-args=\"console=ttyS0\" --import"
+  ARGS="$ARGS --boot kernel_args=\"console=/dev/ttyS0,menu=off\" --import"
 fi
 
-if ! [ -z "$BASE" ]; then
-  ARGS="$ARGS --disk path=${VMDIR}/${VMNAME}.img,format=qcow2,cache=writeback"
+# set disk path
+if [ -z "$VMDISK" ]; then VMDISK="${VMDIR}/${VMNAME}.img"; fi
+
+# set bus
+if [ ! -z "$VMDISK_TYPE" ]; then VMDISK_TYPE=",bus=${VMDISK_TYPE}"; fi
+
+if [[ ! -z "$BASE" || -f "${VMDISK}" ]]; then
+  ARGS="$ARGS --disk path=${VMDISK},format=qcow2,cache=writeback${VMDISK_TYPE}"
   BASE="-b $BASE "
   VMSIZE=""
 else
-  ARGS="$ARGS --disk path=${VMDIR}/${VMNAME}.img,size=${VMSIZE},format=qcow2,cache=writeback"
+  ARGS="$ARGS --disk path=${VMDISK},size=${VMSIZE},format=qcow2,cache=writeback${VMDISK_TYPE}"
   VMSIZE="${VMSIZE}G"
 fi
 
-# create the disk
-if [ $DRYRUN -eq 1 ]; then
-  echo "DRY-RUN: Create disk..."
-  echo "qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}"
-  echo
-else
-  if [ $QUIET -eq 1 ]; then
-    eval qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE} >/dev/null 2>&1
+if ! [ -f "${VMDISK}" ]; then
+  # create the disk
+  if [ $DRYRUN -eq 1 ]; then
+    echo "DRY-RUN: Create disk..."
+    echo "qemu-img create ${BASE}-f qcow2 ${VMDISK} ${VMSIZE}"
+    echo
   else
-    eval qemu-img create ${BASE}-f qcow2 ${VMDIR}/${VMNAME}.img ${VMSIZE}
+    if [ $QUIET -eq 1 ]; then
+      eval qemu-img create ${BASE}-f qcow2 ${VMDISK} ${VMSIZE} >/dev/null 2>&1
+    else
+      eval qemu-img create ${BASE}-f qcow2 ${VMDISK} ${VMSIZE}
+    fi
+    test $? -eq 0 || err "Error creating disk"
+  echo
   fi
-  test $? -eq 0 || err "Error creating disk"
-echo
 fi
 
 # create the virtual machine
