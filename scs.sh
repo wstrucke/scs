@@ -170,7 +170,7 @@
 #
 #   network
 #   --description: network registry
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
 #   --search: [FORMAT:network]
 #   --storage:
 #   ----location        location code for the network (primary key part 1/3)
@@ -190,6 +190,7 @@
 #   ----build           'y' or 'n', yes if this network has DHCP with PXE to boot into a network install image
 #   ----default-build   'y' or 'n', yes if this network is the *default* build network at the location
 #   ----ntp_ip          default ntp server in IP notation
+#   ----dhcp_ip         ip of the network dhcp server (to look up leases) -- optional
 #
 #   net/a.b.c.0
 #   --description: subnet ip assignment registry
@@ -2378,6 +2379,7 @@ function network_by_ip {
 #    location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
 #
 function network_create {
+  local LOC ZONE ALIAS DESC BITS GW HAS_ROUTES DNS DHCP NTP BUILD DEFAULT_BUILD REPO_ADDR REPO_PATH REPO_URL
   start_modify
   # get user input and validate
   get_input LOC "Location Code" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
@@ -2392,6 +2394,7 @@ function network_create {
   get_input GW "Gateway Address" --null
   get_yn HAS_ROUTES "Does this network have host static routes (y/n)?" && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null
+  get_input DHCP "DHCP Server Address" --null
   get_input NTP "NTP Server Address" --null
   get_input VLAN "VLAN Tag/Number" --null
   get_yn BUILD "Use network for system builds (y/n)?"
@@ -2413,9 +2416,9 @@ function network_create {
     REPO_URL=""
   fi
   # add
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
   # [FORMAT:network]
-  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP}\n" >>$CONF/network
+  printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}\n" >>$CONF/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   # [FORMAT:location/network]
@@ -2424,7 +2427,7 @@ function network_create {
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y$%\1,y,n%' ${CONF}/network
+    sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
@@ -2837,8 +2840,8 @@ function network_list {
     case "$1" in
       --build)
         test -z "$2" && return
-        DEFAULT=$( grep -E "^$2," ${CONF}/network |grep -E ',y,y,[^,]*$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' )
-        ALL=$( grep -E "^$2," ${CONF}/network |grep -E ',y,[yn],[^,]*$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' |tr '\n' ' ' )
+        DEFAULT=$( grep -E "^$2," ${CONF}/network |grep -E ',y,y(,[^,]*){2}$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' )
+        ALL=$( grep -E "^$2," ${CONF}/network |grep -E ',y,[yn](,[^,]*){2}$' |awk 'BEGIN{FS=","}{print $1"-"$2"-"$3}' |tr '\n' ' ' )
         test ! -z "$DEFAULT" && printf -- "default: $DEFAULT\n"
         test ! -z "$ALL" && printf -- "available: $ALL\n"
         ;;
@@ -2877,7 +2880,7 @@ function network_routes_by_ip {
   test -z "$NAME" && return 1
   printf -- '%s' "$NAME" |grep -q " " && err "Error: more than one network was returned for the provided address"
   # [FORMAT:network]
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${NAME//-/,}," ${CONF}/network )"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP <<< "$( grep -E "^${NAME//-/,}," ${CONF}/network )"
   if [ "$HAS_ROUTES" != "y" ]; then return; fi
   if [ -f "${CONF}/net/${NET}-routes" ]; then mkdir $TMP >/dev/null 2>&1; cat ${CONF}/net/${NET}-routes >$TMP/${NET}-routes; printf -- '%s\n' "$TMP/${NET}-routes"; fi
 }
@@ -2893,8 +2896,8 @@ function network_show {
   [ "$2" == "--brief" ] && BRIEF=1
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build\n
   # [FORMAT:network]
-  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
-  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
+  IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP <<< "$( grep -E "^${1//-/,}," ${CONF}/network )"
+  printf -- "Location Code: $LOC\nNetwork Zone: $ZONE\nSite Alias: $ALIAS\nDescription: $DESC\nNetwork: $NET\nSubnet Mask: $MASK\nSubnet Bits: $BITS\nGateway Address: $GW\nDNS Server: $DNS\nDHCP Server: $DHCP\nNTP Server: $NTP\nVLAN Tag/Number: $VLAN\nBuild Network: $BUILD\nDefault Build Network: $DEFAULT_BUILD\nRepository Address: $REPO_ADDR\nRepository Path: $REPO_PATH\nRepository URL: $REPO_URL\n"
   test $BRIEF -eq 1 && return
   printf -- "Static Routes:\n"
   if [ "$HAS_ROUTES" == "y" ]; then
@@ -2910,6 +2913,7 @@ function network_show {
 #   location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip
 #
 function network_update {
+  local L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP
   start_modify
   if [ -z "$1" ]; then
     network_list
@@ -2921,7 +2925,7 @@ function network_update {
   fi
   network_exists "$C" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # [FORMAT:network]
-  IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
+  IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
   get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
@@ -2936,6 +2940,7 @@ function network_update {
   get_input GW "Gateway Address" --default "$GW" --null
   get_yn HAS_ROUTES "Does this network have host static routes (y/n)?" --default "$HAS_ROUTES" && network_edit_routes $NET
   get_input DNS "DNS Server Address" --null --default "$DNS"
+  get_input DHCP "DHCP Server Address" --null --default "$DHCP"
   get_input NTP "NTP Server Address" --null --default "$NTP"
   get_input VLAN "VLAN Tag/Number" --default "$VLAN" --null
   get_yn BUILD "Use network for system builds (y/n)?" --default "$BUILD"
@@ -2962,13 +2967,13 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y$%\1,y,n%' ${CONF}/network
+    sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:location/network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}'%' ${CONF}/network
+  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -4243,6 +4248,9 @@ function system_provision {
     # [FORMAT:system]
     IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
+    # must set these values since they are passed to phase2 (not used for overlays so the value can be anything without a space)
+    REPO_ADDR="-"; REPO_PATH="-"
+
     # list hypervisors capable of hosting this system
     # -- if none, build it ? 
     LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
@@ -4345,10 +4353,11 @@ _EOF
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-    nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST </dev/null >/dev/null 2>&1 &
+    nohup $0 system $NAME --provision --phase-2 "$HV" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     /usr/bin/logger -t "scs" "[$$] starting phase 2 in foreground process"
-    system_provision_phase2 $NAME $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST
+    echo "system_provision_phase2 \"$NAME\" \"$HV\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
+    system_provision_phase2 "$NAME" "$HV" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
   fi
 
   #  - phase 1 complete
@@ -4387,10 +4396,11 @@ _EOF
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
         REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
-        HVIP VMPATH
+        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP
 
   # load arguments passed in from phase1
-  read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST <<< "$@"
+  echo "Args: $@" >&2
+  read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST ARCH DISK OS RAM MAC UUID <<< "$@"
 
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
@@ -4399,6 +4409,10 @@ function system_provision_phase2 {
 
   # [FORMAT:hypervisor]
   read -r HVIP VMPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+  # [FORMAT:network]
+  DHCP=$( network_show $BUILDNET 2>/dev/null |grep DHCP |awk '{print $3}' )
+  if ! [ -z "$DHCP" ]; then valid_ip $DHCP || err "Invalid DHCP server"; fi
 
   /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV ($HVIP) at $BUILDIP"
 
@@ -4423,6 +4437,30 @@ function system_provision_phase2 {
     if [ $? -ne 0 ]; then
       echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
+    fi
+    ssh -o "StrictHostKeyChecking no" -n $HV "virsh start $NAME" >/dev/null 2>&1
+
+    if ! [ -z "$DHCP" ]; then
+
+      DHCPIP=""
+      /usr/bin/logger -t "scs" "[$$] attempting to trace DHCP IP"
+ 
+      # get DHCP lease
+      while [ -z "$DHCPIP" ]; do
+        sleep 5
+        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -i "$MAC" |awk '{print $2}' )"
+      done
+      
+      if ! [ -z "$DHCPIP" ]; then
+        DHCPNETNAME=$( network_ip_locate $BUILDIP )
+        # [FORMAT:network]
+        read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
+        /usr/bin/logger -t "scs" "[$$] found DHCP address '$DHCPIP' for system with physical address '$MAC'"
+        while [ "$( exit_status nc -z -w 2 $DHCPIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+        while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now"
+        /usr/bin/logger -t "scs" "[$$] successfully moved system to assigned build address"
+      fi
     fi
   fi
 
@@ -4454,6 +4492,7 @@ function system_provision_phase2 {
 
   #  - sysbuild_install (do not change the IP here)
   system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
+  /usr/bin/logger -t "scs" "[$$] started remote build"
 
   if [ -z "$OVERLAY" ]; then
     #  - clean up kickstart file
@@ -4954,23 +4993,22 @@ function system_show {
 }
 
 function system_start_remote_build {
-  if [[ $# -eq 0 || -z "$1" ]]; then echo -e "Usage: sysbuild_install current-ip [role]\n"; return 1; fi
-  if [ "`whoami`" != "root" ]; then echo "You must be root"; return 2; fi
-  valid_ip $1 || return 1
+  if [[ $# -eq 0 || -z "$1" ]]; then err "Usage: sysbuild_install current-ip [role]"; fi
+  valid_ip $1 || err "An invalid IP was provided"
   # confirm availabilty
-  nc -z -w2 $1 22
-  if [ $? -ne 0 ]; then echo "Host is down. Aborted."; return 2; fi
+  nc -z -w2 $1 22 >/dev/null 2>&1 || err "Host is down. Aborted."
   # remove any stored keys for the current and target IPs since this is a new build
   cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
   sed -i "/$( printf -- "$1" |sed 's/\./\\./g' )/d" /root/.ssh/known_hosts
   diff /root/.ssh/known_hosts{.$$,}; rm -f /root/.ssh/known_hosts.$$
   # kick-off install and return
   if [ -z "$2" ]; then
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &"
+#    /usr/bin/logger -t "scs" "[$$] \"$1\" \"nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &\""
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown >/dev/null 2>&1 </dev/null &"
   else
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &"
+#    /usr/bin/logger -t "scs" "[$$] \"$1\" \"nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &\""
+    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown $2 >/dev/null 2>&1 </dev/null &"
   fi
-  return 0
 }
 
 # print the type of the system: physical, single, backing, or overlay
@@ -5093,7 +5131,7 @@ function system_vars {
   local SYSNET=$( network_list --match $IP )
   if [ ! -z "$SYSNET" ]; then
     # [FORMAT:network]
-    IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
+    IFS="," read -r LOC ZONE ALIAS NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP <<< "$( grep -E "^${SYSNET//-/,}," ${CONF}/network )"
     echo -e "system.zone ${ZONE}-${ALIAS}\nsystem.network $NET\nsystem.netmask $MASK\nsystem.gateway $GW"
     echo "system.broadcast $( ipadd $NET $(( $( cdr2size $BITS ) -1 )) )"
     if [ ! -z "$DNS" ]; then echo "system.dns $DNS"; fi
