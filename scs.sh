@@ -3033,9 +3033,9 @@ function parse_template {
         sed -i s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
         RETVAL=1
         continue
-       else
-         return 1
-       fi
+      else
+        return 1
+      fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
     sed -i s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
@@ -3800,29 +3800,29 @@ function system_check {
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
       # missing file
-      if [ -z "$FNAME" ]; then printf -- "Error: '${FILES[i]}' is invalid. Critical error.\n"; VALID=1; continue; fi
+      if [ -z "$FNAME" ]; then printf -- "Error: '${FILES[i]}' is invalid. Critical error.\n" >&2; VALID=1; continue; fi
       # skip if path is null (implies an error occurred)
-      if [ -z "$FPTH" ]; then printf -- "Error: '$FNAME' has no path (index $i). Critical error.\n"; VALID=1; continue; fi
+      if [ -z "$FPTH" ]; then printf -- "Error: '$FNAME' has no path (index $i). Critical error.\n" >&2; VALID=1; continue; fi
       # ensure the relative path (directory) exists
       mkdir -p $TMP/`dirname $FPTH`
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
         file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/$FPTH
-        if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n"; VALID=1; continue; fi
+        if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
         test -f $CONF/binary/$EN/$FNAME
-        if [ $? -ne 0 ]; then printf -- "Error: $FNAME does not exist for $EN.\n"; VALID=1; fi
+        if [ $? -ne 0 ]; then printf -- "Error: $FNAME does not exist for $EN.\n" >&2; VALID=1; fi
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
         scp $FTARGET $TMP/ >/dev/null 2>&1
-        if [ $? -ne 0 ]; then printf -- "Error: $FNAME is not available at '$FTARGET'\n"; VALID=1; fi
+        if [ $? -ne 0 ]; then printf -- "Error: $FNAME is not available at '$FTARGET'\n" >&2; VALID=1; fi
       fi
     done
   fi
   test $VALID -eq 0 && printf -- "System check PASSED\n" || printf -- "\nSystem check FAILED\n"
-  exit $VALID
+  return $VALID
 }
 
 # output a list of constants and values assigned to a system
@@ -4189,6 +4189,9 @@ function system_provision {
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
 
+  get_user
+  /usr/bin/logger -t "scs" "[$$] system build requested for $NAME by $USERNAME"
+
   # check redistribute
   if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
   
@@ -4283,6 +4286,8 @@ function system_provision {
 
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
+#  FILE=$( system_release $NAME |tail -n1 )
+#  test -s "$FILE" || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
   start_modify
   #  - assign a temporary IP as needed
@@ -4578,7 +4583,8 @@ function system_provision_phase2 {
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
       /usr/bin/logger -t "scs" "[$$] updating hosts"
-      system_update_push_hosts $NAME $IP >/dev/null 2>&1
+      system_update_push_hosts $NAME $IP >>/root/scs_log 2>&1
+      /usr/bin/logger -t "scs" "[$$] hosts updated"
   
       #  - wait for vm to come up
       sleep 15
@@ -5101,9 +5107,11 @@ function system_update_push_hosts {
     # sync
     test -x /usr/local/etc/push-hosts.sh && /usr/local/etc/push-hosts.sh
   elif [ $H -eq 0 ]; then
-    err "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted."
+    echo "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted." >&2
+    return 1
   elif [ $J -eq 0 ]; then
-    err "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted."
+    echo "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted." >&2
+    return 1
   fi
   # add host to lpad as needed
   test -f /usr/local/etc/lpad/hosts/managed-hosts || return 0
