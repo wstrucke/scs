@@ -305,7 +305,11 @@ if [ $INSTALL -eq 1 ]; then
   
   ARGS="$ARGS console=ttyS0\""
 else
-  ARGS="$ARGS --boot kernel_args=\"console=/dev/ttyS0,menu=off\" --import"
+  if [ "$( yum list installed python-virtinst |grep python-virtinst |awk '{print $2}' |cut -d. -f1,2 )" == "0.400" ]; then
+    ARGS="$ARGS --import"
+  else
+    ARGS="$ARGS --boot kernel_args=\"console=/dev/ttyS0,menu=off\" --import"
+  fi
 fi
 
 # set disk path
