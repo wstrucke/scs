@@ -531,11 +531,11 @@ function get_input {
     # output the list of valid options if one was provided
     if ! [ -z "$OPT" ]; then
       LEN=$( printf -- "$OPT" |wc -c )
-      if [ $LEN -gt $(( $WIDTH - 40 )) ]; then
+      if [ $LEN -gt $(( $WIDTH - 25 )) ]; then
         printf -- " ( .. long list .. )"
         tput smcup; clear; CL=1
         printf -- "Select an option from the below list:\n"
-        printf -- "$OPT" |tr ',' '\n' |fold_list |sed 's/^/ /'
+        printf -- "$OPT\n" |tr ',' '\n' |fold_list |sed 's/^/ /'
         test $NUL -eq 0 && printf -- '*'; printf -- "$P"
       else
         printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`"
@@ -3852,8 +3852,9 @@ function system_convert {
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
     --backing)    newType=backing;;
-    --distribute) Distribute=1; shift;;
+    --distribute) Distribute=1;;
     --force)      Force=1;;
+    --network)    NETNAME="$2"; shift;;
     --no-prompt)  Confirm=0;;
     --overlay)    newType=overlay; backingImage="$2"; shift;;
     --single)     newType=single;;
@@ -3871,7 +3872,9 @@ function system_convert {
   curType=$( system_type $NAME )
   
   # get the network by the system IP
-  NETNAME=$( network_list --match $IP ); if [ -z "$NETNAME" ]; then err "Unable to identify a registered network for the system"; fi
+  if [ -z "$NETNAME" ]; then
+    NETNAME=$( network_list --match $IP ); if [ -z "$NETNAME" ]; then err "Unable to identify a registered network for the system"; fi
+  fi
 
   # special cases
   if [ "$curType" == "physical" ]; then err "I am not nearly advanced enough to virtualize a physical server (yet)"; fi
@@ -3990,6 +3993,7 @@ _EOF
 #    name,build,ip,location,environment,virtual,backing_image,overlay\n
 #
 function system_create {
+  local NAME BUILD LOC EN IP NETNAME VIRTUAL BASE_IMAGE OVERLAY_Q OVERLAY
   start_modify
   # get user input and validate
   get_input NAME "Hostname" --auto "$1"
@@ -4011,7 +4015,7 @@ function system_create {
     get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?" --auto "$7"
     get_yn OVERLAY_Q "Overlay on another system (y/n)?" --auto "$8"
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$9"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$9"
     else
       OVERLAY=""
     fi
@@ -4037,14 +4041,14 @@ function system_delete {
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # verify this is not a backing image for other servers
   # [FORMAT:system]
-  grep -qE ",$1\$" ${CONF}/system
+  grep -qE ",$1,.*\$" ${CONF}/system
   if [ $? -eq 0 ]; then
     printf -- "%s\n" "Warning - this system is the backing image for one or more other virtual machines"
     get_yn R "Are you SURE you want to delete it (y/n)?" || exit
   fi
   generic_delete system $1 || return
   # free IP address assignment
-  network_ip_unassign $IP
+  network_ip_unassign $IP >/dev/null 2>&1
 }
 
 # deploy release to system
@@ -4136,15 +4140,27 @@ function system_exists {
   grep -qE "^$1," $CONF/system || return 1
 }
 
+# get the parent of a system
+#
+function system_parent {
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  printf -- "$OVERLAY\n"
+  test -z "$OVERLAY" && return 1 || return 0
+}
+
 # create a system
 #
 # optional:
 #  --network <name>
 #  --[skip-]distribute
+#  --foreground
 #
 function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME \
-        GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate
+        GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
+        BuildParent BUILDNET VMPath Foreground=0
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -4155,8 +4171,9 @@ function system_provision {
   # phase handler
   while [ $# -gt 0 ]; do case "$1" in
     --distribute)       REDIST=y;;
+    --foreground)       Foreground=1;;
     --network)          NETNAME="$2"; shift;;
-    --phase-2)          system_provision_phase2 $C ${@:2}; return;;
+    --phase-2)          exec 1>>/root/scs_log 2>>/root/scs_error_log; system_provision_phase2 $C ${@:2}; return;;
     --skip-distribute)  REDIST=n;;
     *)                  err "Invalid argument";;
   esac; shift; done
@@ -4167,6 +4184,9 @@ function system_provision {
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
 
+  # check redistribute
+  if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
+  
   if [ "$IP" != "dhcp" ]; then
     # verify the system's IP is not in use
     nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
@@ -4188,17 +4208,17 @@ function system_provision {
     network_exists "$NETNAME" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   fi
 
-  if [ -z "$OVERLAY" ]; then
-    # this is a single system build (neither backing nor overlay)
-
-    #  - lookup the build network for this system
-    network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
-    if [ $? -eq 0 ]; then
-      BUILDNET=$NETNAME
-    else
-      BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
-    fi
+  #  - lookup the build network for this system
+  network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
+  if [ $? -eq 0 ]; then
+    BUILDNET=$NETNAME
+  else
+    BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
+  fi
   
+  if [ -z "$OVERLAY" ]; then
+    # this is a single or backing system build (not overlay)
+
     #  - lookup network details for the build network (used in the kickstart configuration)
     #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
     # [FORMAT:network]
@@ -4215,38 +4235,47 @@ function system_provision {
     HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
     test -z "$HV" && err "There are no available hypervisors at this time"
   
-    #  - get the build and dest interfaces on the hypervisor
-    HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-    HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-    [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
   else
 
     # this is an overlay build
-    if [ "$OVERLAY" == "auto" ]; then
-      # auto-select backing image
-      BackingList="$( system_list --no-format --backing --build $BUILD |tr '\n' ' ' )"
-echo "Backing candidates: $BackingList" >&2
-      echo "AUTO OVERLAY SELECTION NOT COMPLETED" >&2; exit 2
-    fi
+    if [ "$OVERLAY" == "auto" ]; then system_resolve_autooverlay $NAME; fi
+
+    # [FORMAT:system]
+    IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
     # list hypervisors capable of hosting this system
     # -- if none, build it ? 
     LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
-    test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+
+    if [ -z "$LIST" ]; then
+      # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
+      #   does not exist than just ignore and continue since the entire chain can be built later
+      LIST=$( hypervisor_list --backing $OVERLAY | tr '\n' ' ' )
+      test ! -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+
+      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+      test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+    fi
   
     #  - poll list of HVs for availability then rank for free storage, free mem, and load
     HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
     test -z "$HV" && err "There are no available hypervisors at this time"
 
-    echo "OVERLAY not completed"; exit 2
   fi
+
+  #  - get the build and dest interfaces on the hypervisor
+  # [FORMAT:hv-network]
+  HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
+
+  # get the hypervisor vmpath
+  # [FORMAT:hypervisor]
+  read -r VMPath <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $4}' )"
 
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
-  # check redistribute
-  if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
-  
   start_modify
   #  - assign a temporary IP as needed
   if [[ "$NETNAME" != "$BUILDNET" || "$IP" == "dhcp" ]]; then
@@ -4270,10 +4299,20 @@ echo "Backing candidates: $BackingList" >&2
   if [ -z "$DISK" ]; then DISK=$RDISK; fi
   if [ -z "$RAM" ]; then RAM=$RRAM; fi
 
-  #  - generate KS and deploy to local build server
-  mkdir -p ${TMP}
-  cp ${KSTEMPLATE}/${OS}.tpl ${TMP}/${NAME}.cfg
-  cat <<_EOF >${TMP}/${NAME}.const
+  #  - get disk size and memory
+  test -z "$DISK" && DISK=$DEF_HDD
+  test -z "$RAM" && RAM=$DEF_MEM
+
+  #  - get globally unique mac address and uuid for the new server
+  read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+
+  if [ -z "$OVERLAY" ]; then
+    # this is a single or backing system build (not overlay)
+
+    #  - generate KS and deploy to local build server
+    mkdir -p ${TMP}
+    cp ${KSTEMPLATE}/${OS}.tpl ${TMP}/${NAME}.cfg
+    cat <<_EOF >${TMP}/${NAME}.const
 system.name $NAME
 system.ip $BUILDIP
 system.netmask $NETMASK
@@ -4282,30 +4321,36 @@ system.dns $DNS
 system.arch $ARCH
 resource.sm-web $REPO_ADDR
 _EOF
-  parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
-  # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
-  if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
-  #  - send custom kickstart file over to the local sm-web repo/mirror
-  ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
-  scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
-  KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
-  #  - get disk size and memory
-  test -z "$DISK" && DISK=$DEF_HDD
-  test -z "$RAM" && RAM=$DEF_MEM
-  #  - get globally unique mac address and uuid for the new server
-  read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
-  #  - kick off provision system
-  /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
-  echo "Creating virtual machine..."
-  ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
-  if [ $? -ne 0 ]; then
-    echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
-    err "Error creating VM!"
+    parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
+    # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
+    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
+    #  - send custom kickstart file over to the local sm-web repo/mirror
+    ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
+    scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
+    KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
+
+    #  - kick off provision system
+    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
+    echo "Creating virtual machine..."
+    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    if [ $? -ne 0 ]; then
+      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+      err "Error creating VM!"
+    fi
+
+    #  - update hypervisor-system map
+    hypervisor_locate_system $NAME >/dev/null 2>&1
+
   fi
-  #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-  nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST </dev/null >/dev/null 2>&1 &
-  #  - update hypervisor-system map
-  hypervisor_locate_system $NAME >/dev/null 2>&1
+
+  if [ $Foreground -eq 0 ]; then
+    #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
+    nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST </dev/null >/dev/null 2>&1 &
+  else
+    /usr/bin/logger -t "scs" "[$$] starting phase 2 in foreground process"
+    system_provision_phase2 $NAME $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST
+  fi
+
   #  - phase 1 complete
   /usr/bin/logger -t "scs" "[$$] build phase 1 complete"
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
@@ -4341,7 +4386,8 @@ _EOF
 #
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
-        REPO_PATH REDIST SystemBuildDate
+        REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
+        HVIP VMPATH
 
   # load arguments passed in from phase1
   read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST <<< "$@"
@@ -4355,51 +4401,75 @@ function system_provision_phase2 {
   read -r HVIP VMPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
 
   /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV ($HVIP) at $BUILDIP"
-  # wait a few minutes before even trying to connect
-  sleep 30
-  # max iterations, wait 60 minutes or 4 per min x 60 = 240
-  #local i=0
-  # confirm with targer server that base build is complete
-  #while [ "$( nc $BUILDIP 80 )" != "OK" ]; do
-  #  sleep 15
-  #  i=$(( $i + 1 ))
-  #  if [ $i -ge 240 ]; then errlog "Unable to connect to server $NAME at $BUILDIP for build phase 2"; fi
-  #  check_abort "Was waiting for server $NAME at $BUILDIP to finish CentOS install"
-  #done
-  #  - sleep 30 or so
-  #sleep 30
+
+  if ! [ -z "$OVERLAY" ]; then
+    # this is an overlay system
+ 
+    # build the parent system as needed
+    hypervisor_locate_system $OVERLAY >/dev/null 2>&1
+
+    if [ $? -ne 0 ]; then
+      if [ "$REDIST" == "y" ]; then
+        system_provision $OVERLAY --network $BUILDNET --distribute --foreground
+      else
+        system_provision $OVERLAY --network $BUILDNET --skip-distribute --foreground
+      fi
+    fi
+
+    #  - kick off provision system
+    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
+    echo "Creating virtual machine..."
+    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    if [ $? -ne 0 ]; then
+      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+      err "Error creating VM!"
+    fi
+  fi
+
+  # wait a moment before even trying to connect
+  sleep 15
+
   #  - connect to hypervisor, wait until vm is off, then start it up again
   ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
+
   #  - check for abort
   check_abort
+
   #  - wait for vm to come up
-  sleep 30
+  sleep 15
+  /usr/bin/logger -t "scs" "[$$] waiting for $NAME at $BUILDIP"
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
   /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+
   #  - load the role
   # [FORMAT:build]
   ROLE=$( grep -E "^$BUILD," ${CONF}/build |awk 'BEGIN{FS=","}{print $2}' )
+
   #  - install_build
   system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
   /usr/bin/logger -t "scs" "[$$] build scripts deployed to $NAME"
+
   #  - sysbuild_install (do not change the IP here)
   system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
-  #    - when complete launch nc -l 80 to send response back to provisioning server - install success/failure
 
-  #  - clean up kickstart file
-  nc -z -w 2 $REPO_ADDR 22 >/dev/null 2>&1
-  [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+  if [ -z "$OVERLAY" ]; then
+    #  - clean up kickstart file
+    nc -z -w 2 $REPO_ADDR 22 >/dev/null 2>&1
+    [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+  fi
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
   ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
+
   #  - check for abort
   check_abort
+
   #  - wait for vm to come up
-  sleep 30
+  sleep 15
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
   /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
@@ -4486,9 +4556,9 @@ function system_provision_phase2 {
     /usr/bin/logger -t "scs" "[$$] converting VM to backing image"
 
     if [ "$REDIST" == "y" ]; then
-      system_convert $NAME --backing --distribute --no-prompt --force
+      system_convert $NAME --backing --distribute --no-prompt --force --network $NETNAME
     else
-      system_convert $NAME --backing --no-prompt --force
+      system_convert $NAME --backing --no-prompt --force --network $NETNAME
     fi
 
   fi
@@ -4524,6 +4594,47 @@ function system_push_build_scripts {
   return 0
 }
 
+function system_resolve_autooverlay {
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate BuildParent \
+        BuildGrandParent BackingList ParentName
+
+  system_exists $1 || err
+
+  start_modify
+
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  # auto-select backing image
+  BackingList="$( system_list --no-format --backing --build $BUILD --sort-by-build-date --exclude-parent $NAME --location $LOC --environment $EN |tr '\n' ' ' )"
+
+  if [ -z "$BackingList" ]; then
+
+    # automatically create backing systems
+    BuildParent=$( build_parent $BUILD )
+    BuildGrandParent=$( build_parent $BuildParent)
+    ParentName="${BuildParent}_$( date +'%s' )"
+
+    if [ -z "$BuildGrandParent" ]; then
+      # this is the full build
+      system_create $ParentName $BuildParent $LOC $EN dhcp y y n >/dev/null 2>&1
+    else
+      system_create $ParentName $BuildParent $LOC $EN dhcp y y y auto >/dev/null 2>&1
+      # recursion ;)
+      system_resolve_autooverlay $ParentName
+    fi
+
+  else      
+    ParentName=$( printf -- "$BackingList" |awk '{print $1}' )
+  fi
+
+  # save changes
+  # [FORMAT:system]
+  sed -i 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' ${CONF}/system
+  
+  commit_file system
+}
+
 function system_list {
   if [ "$1" == "--no-format" ]; then shift; system_list_unformatted $@; return; fi
   local LIST NUM
@@ -4532,19 +4643,23 @@ function system_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  printf -- "$LIST" |tr ' ' '\n' |fold_list |sed 's/^/   /'
+  printf -- "$LIST\n" |tr ' ' '\n' |fold_list |sed 's/^/   /'
 }
 
 # system:
 #   name,build,ip,location,environment,virtual,backing_image,overlay\n
 #
 # optional:
-#   --backing               show systems of type backing image
-#   --overlay               show systems of type overlay
-#   --build <string>        show systems using build <string>, or having it in the build lineage
+#   --backing                   show systems of type backing image
+#   --build <string>            show systems using build <string>, or having it in the build lineage
+#   --environment <string>      show systems in environment <string>
+#   --exclude-parent <string>   do not show systems with parent (or inherited parent) system named <string>
+#   --location <string>         show systems at location <string>
+#   --overlay                   show systems of type overlay
+#   --sort-by-build-date        sort output by build date (descending) instead of alphabetically
 #
 function system_list_unformatted {
-  local Backing=0 Overlay=0 Build BuildList LIST N NL M
+  local Backing=0 Overlay=0 Build BuildList LIST N NL M SortByDate=0 System PassTests
 
   if [ $# -eq 0 ]; then
 
@@ -4569,7 +4684,7 @@ function system_list_unformatted {
 
       --build)
         NL=""
-        BuildList="$( build_lineage_unformatted $2 --reverse |awk '{print $NL}' )"
+        BuildList="$( build_lineage_unformatted $( build_parent $2 ) --reverse |awk '{print $NL}' )"
         for N in $LIST; do
           # [FORMAT:system]
           grep -qE '^'$N','$2',.*$' ${CONF}/system
@@ -4585,6 +4700,39 @@ function system_list_unformatted {
         shift
         ;;
 
+      --environment)
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:system]
+          grep -qE '^'$N',([^,]*,){3}'$2',.*$' ${CONF}/system && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
+
+      --exclude-parent)
+        NL=""
+        for N in $LIST; do
+          System=$N; PassTests=1
+          while ! [ -z "$System" ]; do
+            if [ "$System" == "$2" ]; then PassTests=0; break; fi
+            System=$( system_parent $System )
+          done
+          if [ $PassTests -eq 1 ]; then NL="$NL $N"; fi
+        done
+        LIST="$NL"
+        ;;
+
+      --location)
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:system]
+          grep -qE '^'$N',([^,]*,){2}'$2',.*$' ${CONF}/system && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
+
       --overlay)
         NL=""
         for N in $LIST; do
@@ -4594,9 +4742,18 @@ function system_list_unformatted {
         LIST="$NL"
         ;;
 
+      --sort-by-build-date) SortByDate=1;;
+
     esac; shift; done
 
-    for N in $LIST; do printf -- "$N\n"; done |sort
+    if [ $SortByDate -eq 0 ]; then
+      for N in $LIST; do printf -- "$N\n"; done |sort
+    else
+      # [FORMAT:system]
+      for N in $LIST; do
+        grep -E "^$N," ${CONF}/system |awk 'BEGIN{FS=","}{print $1,$9}'
+      done |sort -rnk2 |awk '{print $1}'
+    fi
 
   fi
 }
@@ -4757,7 +4914,7 @@ function system_show {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # output the status/summary
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\nLast Build: $( date +'%c' -d @${SystemBuildDate} )\n"
+  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\nLast Build: $( date +'%c' -d @${SystemBuildDate} 2>/dev/null )\n"
   test $BRIEF -eq 1 && return
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
@@ -4863,7 +5020,7 @@ function system_update {
       get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing |sed ':a;N;$!ba;s/\n/,/g' )" --default "$ORIGOVERLAY"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed ':a;N;$!ba;s/\n/,/g' )" --default "$ORIGOVERLAY"
     else
       OVERLAY=""
     fi
