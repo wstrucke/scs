@@ -4699,6 +4699,7 @@ function system_list {
 #   --build <string>            show systems using build <string>, or having it in the build lineage
 #   --environment <string>      show systems in environment <string>
 #   --exclude-parent <string>   do not show systems with parent (or inherited parent) system named <string>
+#   --grep <string>             show systems matching <string>
 #   --location <string>         show systems at location <string>
 #   --overlay                   show systems of type overlay
 #   --sort-by-build-date        sort output by build date (descending) instead of alphabetically
@@ -4766,6 +4767,11 @@ function system_list_unformatted {
           if [ $PassTests -eq 1 ]; then NL="$NL $N"; fi
         done
         LIST="$NL"
+        ;;
+
+      --grep)
+        LIST="$( printf -- "$LIST" |tr ' ' '\n' |grep -i "$2" |tr '\n' ' ' )"
+        shift
         ;;
 
       --location)
