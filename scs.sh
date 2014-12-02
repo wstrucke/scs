@@ -222,7 +222,7 @@
 #   ----environment     environment name
 #   ----virtual         'y' or 'n', yes if this is a virtual machine
 #   ----backing_image   'y' or 'n', yes if this is a VM and is unregistered, always SHUT OFF, and read-only as a backing image for overlays
-#   ----overlay         null or the name of the VM this system is an overlay on
+#   ----overlay         'null', 'auto', or '<name>'. null=>full system (a.k.a. single), auto=>auto-select base system/image during provisioning, or the name of the base system
 #
 #   value/constant
 #   --description: global values for constants
@@ -279,10 +279,7 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - rewrite modules in a proper programming language
 #     - add file groups
-#     - system can be 'standalone', 'backing' or 'overlay'
-#     - 'backing' systems should be built then undefined and moved into a subfolder as read-only until no longer needed
-#     - when provisioning a backing image, ask if it should be deployed to one or all hypervisors at the site
-#     - when deleting a system that is a backing image check all hypervisors at the site for the disk image
+#     - system can be 'single', 'backing' or 'overlay'
 #     - store vm uuid with system to use as a sanity check when manipulating remote vms
 #     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
 #     - all systems should use the same backing image, and instead of a larger disk get a second disk with a unique LVM name
@@ -291,8 +288,10 @@
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
 #     - system_builder function to generate overlays and dependencies
+#     - add locking to systems to prevent unintended changes, or worse, removal
+#     - finish implementing system_convert
 #   - environment stuff:
-#     - an environment instance can force systems to 'standalone' or 'overlay'
+#     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
 #     - files that only appear for clustered environments??
 #     - load balancer support ? auto-create cluster and manage nodes?
@@ -433,6 +432,19 @@ function expand_verb_alias {
   esac
 }
 
+# fold a list into pretty columns
+#
+# this is a rough attempt to approximate 'column -t' due to the "column: line too long" issue
+#  we run into trouble with 'fold' since it doesn't care about the columns.  if the output
+#  looks wonky, that's why.
+#
+function fold_list {
+  local foo food maxlen
+  while read foo; do test -z "$food" && food="$foo" || food="$food $foo"; done
+  maxlen=$( printf -- "$food" |tr ' ' '\n' |wc -L |awk '{print $1}' )
+  printf -- "$food" |tr ' ' '\n' |awk '{printf "%-*s", '$((maxlen + 3))', $1}END{print "\n"}' |fold -s |sed 's/^ *//'
+}
+
 # generic choose function, since they are all exactly the same
 #
 # required:
@@ -518,12 +530,11 @@ function get_input {
     # output the list of valid options if one was provided
     if ! [ -z "$OPT" ]; then
       LEN=$( printf -- "$OPT" |wc -c )
-      if [ $LEN -gt $(( $WIDTH - 30 )) ]; then
+      if [ $LEN -gt $(( $WIDTH - 40 )) ]; then
         printf -- " ( .. long list .. )"
         tput smcup; clear; CL=1
         printf -- "Select an option from the below list:\n"
-        for O in ${OPT//,/ }; do printf -- " - $O\n"; done
-        printf -- "\n\n"
+        printf -- "$OPT" |tr ',' '\n' |fold_list |sed 's/^/ /'
         test $NUL -eq 0 && printf -- '*'; printf -- "$P"
       else
         printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`"
@@ -603,7 +614,7 @@ function get_user {
 #
 function get_yn {
   test $# -lt 2 && return
-  local RL="" P RETVAR EXTRA PLUSARGS
+  local YNRL="" P RETVAR EXTRA PLUSARGS
   RETVAR="$1"; P="$2"; shift 2
   while [ $# -gt 0 ]; do case $1 in
     --extra) EXTRA="$2"; shift;;
@@ -611,12 +622,12 @@ function get_yn {
   esac; shift; done
   PLUSARGS=${PLUSARGS# }
   if ! [ -z "$EXTRA" ]; then
-    while [[ "$RL" != "y" && "$RL" != "n" && "$RL" != "$EXTRA" ]]; do eval "get_input RL \"$P\" $PLUSARGS"; done
+    while [[ "$YNRL" != "y" && "$YNRL" != "n" && "$YNRL" != "$EXTRA" ]]; do eval "get_input YNRL \"$P\" $PLUSARGS"; done
   else
-    while [[ "$RL" != "y" && "$RL" != "n" ]]; do eval "get_input RL \"$P\" $PLUSARGS"; done
+    while [[ "$YNRL" != "y" && "$YNRL" != "n" ]]; do eval "get_input YNRL \"$P\" $PLUSARGS"; done
   fi
-  eval "$RETVAR='$RL'"
-  if [ "$RL" == "y" ]; then return 0; elif [ "$RL" == "$EXTRA" ]; then return 2; else return 1; fi
+  eval "$RETVAR='$YNRL'"
+  if [ "$YNRL" == "y" ]; then return 0; elif [ "$YNRL" == "$EXTRA" ]; then return 2; else return 1; fi
 }
 
 # help wrapper
@@ -742,7 +753,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
-              $0 diff | lock | log | status
+              $0 diff | lock | log | status | unlock
 
 Run commit when complete to finalize changes.
 
@@ -777,7 +788,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--vars]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars]
 
 Verbs - all top level components:
   create
@@ -871,13 +882,15 @@ function cancel_modify {
   # make sure we are on the correct branch...
   git branch |grep -E '^\*' |grep -q $USERNAME
   if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
+  N=`git diff --name-status master |wc -l 2>/dev/null`
   # confirm
-  get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"
+  if [[ $L -gt 0 || $N -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
   if [ "$DF" == "y" ]; then
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
     git checkout master >/dev/null 2>&1
     git branch -D $USERNAME >/dev/null 2>&1
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
   fi
   popd >/dev/null 2>&1
 }
@@ -923,7 +936,15 @@ function git_log {
 #
 function git_status {
   pushd $CONF >/dev/null 2>&1
-  git status
+  local BRANCH=$( git branch |grep -E '^\*' |awk '{print $2}' )
+  local N=`git diff --name-status master |wc -l 2>/dev/null`
+  if [ "$BRANCH" == "master" ]; then
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
+    if [ $N -gt 0 ]; then git status; fi
+  else
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****"
+    if [ $N -gt 0 ]; then git status; fi
+  fi
   popd >/dev/null 2>&1
 }
 
@@ -936,6 +957,7 @@ function start_modify {
   cd $CONF || err
   git branch |grep -E '^\*' |grep -q master
   if [ $? -eq 0 ]; then
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****"
     git branch $USERNAME >/dev/null 2>&1
     git checkout $USERNAME >/dev/null 2>&1
   else
@@ -988,6 +1010,7 @@ function stop_modify {
   git commit -a -m"$MSG" >/dev/null 2>&1
   git branch -D $USERNAME >/dev/null 2>&1
   popd >/dev/null 2>&1
+  printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
 }
 
 
@@ -3277,6 +3300,7 @@ function hypervisor_exists {
 #   --location <string>     limit to the specified location
 #   --environment <string>  limit to the specified environment
 #   --network <string>      limit to the specified network (may be specified up to two times)
+#   --backing <string>      limit to hypervisors containing the specified backing image
 #
 function hypervisor_list {
  NUM=$( wc -l ${CONF}/hypervisor |awk '{print $1}' )
@@ -3316,6 +3340,18 @@ function hypervisor_list {
         LIST="$NL"
         shift
         ;;
+      --backing)
+        system_exists $2 || err "Invalid system"
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:hypervisor]
+          read -r HypervisorIP VMPath <<< "$( grep -E "^$N," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+          nc -z -w 2 $HypervisorIP 22 >/dev/null 2>&1 || continue
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" >/dev/null 2>&1 && NL="$NL $N"
+        done
+        LIST="$NL"
+        shift
+        ;;
       *) err "Invalid argument";;
     esac; shift; done
     for N in $LIST; do printf -- "$N\n"; done
@@ -3328,35 +3364,62 @@ function hypervisor_list {
 #   on will be returned. if it is not running, one of the HVs will be picked and
 #   returned
 #
-# --quick   try to use the cached location (if available)
+# --all                 show all hosts this system was found on
+# --quick               try to use the cached location (if available)
+# --search-as-backing   force search as a backing image regardless of system configuration
+# --search-as-single    force search as a single regardless of system configuration
 #
 function hypervisor_locate_system {
+
   # input validation
   test $# -ge 1 || err "Provide the system name"
   grep -qE "^$1," ${CONF}/system || err "Unknown system"
+
   # variable scope
-  local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED VM STATE FOUND VMPATH
+  local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
+        VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0
+
+  # load the system
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  test "$VIRTUAL" == "n" && err "Not a virtual machine"
+
+  # process args
+  while [ $# -ne 0 ]; do case $1 in
+    --all)                ALL=1;;
+    --quick)              QUICK=1;;
+    --search-as-backing)  ForceBacking=1;;
+    --search-as-single)   ForceSingle=1;;
+  esac; shift; done
+
+  if [ $ForceBacking -eq 1 ]; then BASE_IMAGE="y"; fi
+  if [ $ForceSingle -eq 1 ] ; then BASE_IMAGE="n"; fi
+
   # cache check
-  if [ "$2" == "--quick" ]; then
+  if [ $QUICK -eq 1 ]; then
+    if [ $ALL -eq 1 ]; then
+      # [FORMAT:hv-system]
+      grep -E '^'$NAME',' ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' |sort
+      grep -qE '^'$NAME',' ${CONF}/hv-system && return 0 || return 1
+    fi
     # [FORMAT:hv-system]
     while read -r NAME H PREF; do
       if [[ -z "$HV" || "$PREF" == "y" ]]; then HV=$H; fi
-    done <<< "$( grep -E '^'$1',' ${CONF}/hv-system |tr ',' ' ' )"
-    if ! [ -z "$HV" ]; then printf -- '%s\n' "$HV"; return; fi
+    done <<< "$( grep -E '^'$NAME',' ${CONF}/hv-system |tr ',' ' ' )"
+    if ! [ -z "$HV" ]; then printf -- '%s\n' "$HV"; return 0; fi
   fi
-  # load the system
-  # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
-  test "$VIRTUAL" == "n" && err "Not a virtual machine"
+
   # load hypervisors
   LIST=$( hypervisor_list --location $LOC --environment $EN )
   test -z "$LIST" && return 1
+
   # check if there is a preferred HV already
   # [FORMAT:hv-system]
-  PREF="$( grep -E "^$1,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
+  PREF="$( grep -E "^$NAME,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
   start_modify
   # [FORMAT:hv-system]
   sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+
   # set defaults
   for HV in $LIST; do
     # load the host
@@ -3376,14 +3439,22 @@ function hypervisor_locate_system {
     if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
     printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
   done
+
   # check results
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
   if ! [ -z "$ON" ]; then FOUND="$ON"; PREF="$ON"; fi
+
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
   if ! [ -z "$PREF" ]; then sed -i 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
   commit_file hv-system
+
   # output results and return status
+  if [ $ALL -eq 1 ]; then
+    # [FORMAT:hv-system]
+    grep -E '^'$NAME',' ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' |sort
+    grep -qE '^'$NAME',' ${CONF}/hv-system && return 0 || return 1
+  fi
   if ! [ -z "$FOUND" ]; then printf -- '%s\n' $FOUND; return 0; fi
   return 1
 }
@@ -3403,7 +3474,7 @@ function hypervisor_poll {
   # test the connection
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
   # collect memory usage
-  FREEMEM=$( ssh $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
+  FREEMEM=$( ssh -o "StrictHostKeyChecking no" $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
   MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed 's/\..*//' )
   # optionally only return memory
   if [ "$2" == "--mem" ]; then
@@ -3412,7 +3483,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect disk usage
-  N=$( ssh $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
+  N=$( ssh -o "StrictHostKeyChecking no" $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
   case "${N: -1}" in
     T) M="* 1024 * 1024";;
     G) M="* 1024";;
@@ -3430,7 +3501,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect load data
-  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh $IP "uptime |sed 's/.* load average: //'" )"
+  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" $IP "uptime |sed 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
 }
@@ -3530,7 +3601,7 @@ function hypervisor_search {
   # validate search string
   test -z "$2" && err "Missing search operand"
   # search
-  local LIST=$( ssh $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
+  local LIST=$( ssh -o "StrictHostKeyChecking no" $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
   test -z "$LIST" && return 1
   printf -- "$LIST\n"
 }
@@ -3613,16 +3684,18 @@ function system_byname {
   system_exists "$1" || err "Unknown or missing system name"
   # function
   case "$2" in
-    --audit) system_audit $1;;
-    --check) system_check $1;;
-    --deploy) system_deploy $1;;
-    --deprovision) system_deprovision $1 ${@:3};;
-    --provision) system_provision $1 ${@:3};;
-    --push-build-scripts) system_push_build_scripts $1 ${@:3};;
-    --release) system_release $1;;
-    --start-remote-build) system_start_remote_build $1 ${@:3};;
-    --vars) system_vars $1;;
-    --vm-disks) system_vm_disks $1;;
+    --audit)               system_audit $1;;
+    --check)               system_check $1;;
+    --convert)             system_convert $1 ${@:3};;
+    --deploy)              system_deploy $1;;
+    --deprovision)         system_deprovision $1 ${@:3};;
+    --provision)           system_provision $1 ${@:3};;
+    --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
+    --release)             system_release $1;;
+    --start-remote-build)  system_start_remote_build $1 ${@:3};;
+    --type)                system_type $1;;
+    --vars)                system_vars $1;;
+    --vm-disks)            system_vm_disks $1;;
   esac
 }
 
@@ -3656,7 +3729,7 @@ function system_audit {
     mkdir -p $TMP/ACTUAL/`dirname $F`
     scp -p $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/scs-actual
+  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/scs-actual
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
@@ -3750,6 +3823,151 @@ function system_constant_list {
   rm -f $TMP/clist{,.1}
 }
 
+# convert a system to a different type
+#
+function system_convert {
+  system_exists "$1" || err "Unknown or missing system name"
+
+  # scope variables
+  local NAME=$1 BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY curType newType \
+        Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
+        VMPath HV HVIP HVPATH NETNAME Force=0; shift
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    --backing)    newType=backing;;
+    --distribute) Distribute=1; shift;;
+    --force)      Force=1;;
+    --no-prompt)  Confirm=0;;
+    --overlay)    newType=overlay; backingImage="$2"; shift;;
+    --single)     newType=single;;
+    *)            err;;
+  esac; shift; done
+
+  # validate
+  if [ "$newType" == "overlay" ]; then system_exists "$backingImage" || err "Unknown or missing backing system"; fi
+
+  # load the system
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$NAME," ${CONF}/system )"
+
+  # get current type
+  curType=$( system_type $NAME )
+  
+  # get the network by the system IP
+  NETNAME=$( network_list --match $IP ); if [ -z "$NETNAME" ]; then err "Unable to identify a registered network for the system"; fi
+
+  # special cases
+  if [ "$curType" == "physical" ]; then err "I am not nearly advanced enough to virtualize a physical server (yet)"; fi
+  if [[ "$curType" == "$newType" && $Force -eq 0 ]]; then return 0; fi
+
+  # confirm operation (unless explicitly told not to)
+  if [ $Confirm -ne 0 ]; then get_yn RL "Are you sure you want to convert $NAME from $curType to $newType (y/n)?" || return 0; fi
+
+  # locate system
+  Hypervisor=$( hypervisor_locate_system $NAME )
+  
+  if [[ -z "$Hypervisor" && $Force -eq 1 ]]; then
+    Hypervisor=$( hypervisor_locate_system $NAME --search-as-single )         ; if [ -z "$Hypervisor" ]; then err "Unable to locate hypervisor"; fi
+    HypervisorAll=$( hypervisor_locate_system $NAME --all --search-as-single ); if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; fi
+    curType=single
+  elif [ -z "$Hypervisor" ]; then
+    err "Unable to locate hypervisor"
+  else
+    HypervisorAll=$( hypervisor_locate_system $NAME --all )                   ; if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; fi
+  fi
+
+  # load primary hypervisor
+  # [FORMAT:hypervisor]
+  read -r HypervisorIP VMPath <<< "$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+  case "$curType->$newType" in
+
+    'single->backing')
+
+      for HV in $HypervisorAll; do
+        # load hypervisor configuration
+        # [FORMAT:hypervisor]
+        read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+        # shut off vm if running
+        ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+      done
+
+      # move disk image
+      ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${VMPath}/${NAME}.img ${VMPath}/${BACKING_FOLDER}${NAME}.img" >/dev/null 2>&1
+
+      # undefine vm
+      for HV in $HypervisorAll; do
+        # load hypervisor configuration
+        # [FORMAT:hypervisor]
+        read -r HVIP <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2}' )"
+
+        # undefine vm
+        ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+      done
+
+      # redistribute vm (as needed)
+      if [ $Distribute -eq 1 ]; then for HV in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN | tr '\n' ' ' ); do
+        
+        if [ "$HV" == "$Hypervisor" ]; then continue; fi
+
+        # load hypervisor configuration
+        # [FORMAT:hypervisor]
+        read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+        # test connection
+        nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
+
+        ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+        ssh -o "StrictHostKeyChecking no" $HVIP "test -f ${HVPATH}/${BACKING_FOLDER}${NAME}.img" && continue
+
+        srcp -t ${TMPLarge} $HypervisorIP:${VMPath}/${BACKING_FOLDER}${NAME}.img $HVIP:${HVPATH}/${BACKING_FOLDER}${NAME}.img >/dev/null 2>&1 
+
+      done; fi
+
+      ;;
+
+    'single->overlay')
+      err "not implemented... and potentially hazardous"
+      ;;
+
+    'backing->single')
+      err "not implemented... and potentially destructive"
+      ;;
+
+    'backing->overlay')
+      # this case is interesting because a backing system can also be an overlay
+      err "not implemented... and potentially destructive"
+      ;;
+
+    'overlay->backing')
+      # this case is interesting because a backing system can also be an overlay
+      err "not implemented... and potentially hazardous"
+      ;;
+
+    'overlay->single')
+      err "not implemented... and potentially hazardous"
+      ;;
+
+    *)
+      err "Unknown transition: $curType->$newType"
+      ;;
+  esac
+}
+function system_convert_help { cat <<_EOF >&2
+Usage: $0 system <name> --convert [--single|--backing|--overlay <backing_system>] [--distribute] [--no-prompt]
+
+Converts a virtual-machine to a different base type. The only 100% safe use case is converting a single (full deploy) to a backing image.
+
+It may be safe to convert an overlay to single or backing provided we can figure out non-destrutive logic to merge the overlay into
+the backing image, especially in the case where the backing image is shared with other systems.
+
+WARNING: This function can be massively destructive if used improperly.
+         E.g. converting the backing image for an entire DC to single or overlay could blow up everything all at once...
+_EOF
+}
+
 # define a new system
 #
 # system:
@@ -3768,15 +3986,16 @@ function system_create {
   # automatic IP selection
   if [ "$IP" == "auto" ]; then
     get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
+    shift
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
   fi
-  get_yn VIRTUAL "Virtual Server (y/n)"
+  get_yn VIRTUAL "Virtual Server (y/n)" --auto "$6"
   if [ "$VIRTUAL" == "y" ]; then
-    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?"
-    get_yn OVERLAY_Q "Overlay on another system (y/n)?"
+    get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?" --auto "$7"
+    get_yn OVERLAY_Q "Overlay on another system (y/n)?" --auto "$8"
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted --backing )"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$9"
     else
       OVERLAY=""
     fi
@@ -3792,7 +4011,7 @@ function system_create {
   commit_file system
 }
 function system_create_help {
-  echo "Usage: $0 system create [hostname] [build] [location] [environment] [(n.n.n.n|auto)] [loc-zone-alias]"
+  echo "Usage: $0 system create [hostname] [build] [location] [environment] [(n.n.n.n|auto)] [loc-zone-alias] [virtual:y/n] [backing_image:y/n] [overlay:y/n] [overlay:auto|<name>]"
 }
 
 function system_delete {
@@ -3873,14 +4092,14 @@ function system_deprovision {
     if [ $DRY_RUN -ne 1 ]; then
       ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
     else
-      echo ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
+      echo ssh $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
       test -z "$HVFIRST" && HVFIRST="$HV"
     fi
     # delete files / cleanup
     for F in $LIST; do
       if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
       if [ $DRY_RUN -ne 1 ]; then
-        ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && rm -f $F"
+        ssh -o "StrictHostKeyChecking no" -n $HVIP "test -f $F && rm -f $F"
       else
         echo ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && rm -f $F"
       fi
@@ -3915,11 +4134,11 @@ function system_provision {
 
   # phase handler
   while [ $# -gt 0 ]; do case "$1" in
-    --distribute) REDIST=y;;
-    --network) NETNAME="$2"; shift;;
-    --phase-2) system_provision_phase2 $1 ${@:3}; return;;
-    --skip-distribute) REDIST=n;;
-    *) err "Invalid argument";;
+    --distribute)       REDIST=y;;
+    --network)          NETNAME="$2"; shift;;
+    --phase-2)          system_provision_phase2 $C ${@:2}; return;;
+    --skip-distribute)  REDIST=n;;
+    *)                  err "Invalid argument";;
   esac; shift; done
 
   # [FORMAT:system]
@@ -3949,34 +4168,56 @@ function system_provision {
     network_exists "$NETNAME" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   fi
 
-  #  - lookup the build network for this system
-  network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
-  if [ $? -eq 0 ]; then
-    BUILDNET=$NETNAME
+  if [ -z "$OVERLAY" ]; then
+    # this is a single system build (neither backing nor overlay)
+
+    #  - lookup the build network for this system
+    network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
+    if [ $? -eq 0 ]; then
+      BUILDNET=$NETNAME
+    else
+      BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
+    fi
+  
+    #  - lookup network details for the build network (used in the kickstart configuration)
+    #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+    # [FORMAT:network]
+    read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
+    valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
+    valid_ip $DNS || err "Build network does not have a defined DNS server"
+    if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
+  
+    #  - locate available HVs
+    LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+    test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+  
+    #  - poll list of HVs for availability then rank for free storage, free mem, and load
+    HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+    test -z "$HV" && err "There are no available hypervisors at this time"
+  
+    #  - get the build and dest interfaces on the hypervisor
+    HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+    HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+    [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
   else
-    BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
+
+    # this is an overlay build
+    if [ "$OVERLAY" == "auto" ]; then
+      # auto-select backing image
+      echo "AUTO OVERLAY SELECTION NOT COMPLETED" >&2; exit 2
+    fi
+
+    # list hypervisors capable of hosting this system
+    # -- if none, build it ? 
+    LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
+    test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+  
+    #  - poll list of HVs for availability then rank for free storage, free mem, and load
+    HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+    test -z "$HV" && err "There are no available hypervisors at this time"
+
+    echo "OVERLAY not completed"; exit 2
   fi
-
-  #  - lookup network details for the build network (used in the kickstart configuration)
-  #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
-  # [FORMAT:network]
-  read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
-  valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
-  valid_ip $DNS || err "Build network does not have a defined DNS server"
-  if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
-
-  #  - locate available HVs
-  LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
-  test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-
-  #  - poll list of HVs for availability then rank for free storage, free mem, and load
-  HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
-  test -z "$HV" && err "There are no available hypervisors at this time"
-
-  #  - get the build and dest interfaces on the hypervisor
-  HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-  HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-  [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
 
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
@@ -4023,7 +4264,7 @@ _EOF
   # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
   if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
   #  - send custom kickstart file over to the local sm-web repo/mirror
-  ssh -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
   scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
   KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
   #  - get disk size and memory
@@ -4034,7 +4275,11 @@ _EOF
   #  - kick off provision system
   /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
   echo "Creating virtual machine..."
-  ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+  ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+  if [ $? -ne 0 ]; then
+    echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    err "Error creating VM!"
+  fi
   #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
   nohup $0 system $NAME --provision --phase-2 $HV $BUILDIP $HV_BUILD_INT $HV_FINAL_INT $BUILDNET $NETNAME $REPO_ADDR $REPO_PATH $REDIST </dev/null >/dev/null 2>&1 &
   #  - update hypervisor-system map
@@ -4090,7 +4335,7 @@ function system_provision_phase2 {
   #  - sleep 30 or so
   #sleep 30
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -n -o "StrictHostKeyChecking no" $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
   #  - check for abort
   check_abort
@@ -4112,10 +4357,10 @@ function system_provision_phase2 {
 
   #  - clean up kickstart file
   nc -z -w 2 $REPO_ADDR 22 >/dev/null 2>&1
-  [ $? -eq 0 ] && ssh $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+  [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
   #  - check for abort
   check_abort
@@ -4135,7 +4380,7 @@ function system_provision_phase2 {
   scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -n -o "StrictHostKeyChecking no" $BUILDIP "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
   
   # !!FIXME!!
   #  * - ship over latest code release
@@ -4151,9 +4396,9 @@ function system_provision_phase2 {
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
       read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-      ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
     else
-      ssh -n -o "StrictHostKeyChecking no" $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
+      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
     fi
     sleep 5
     # update ip assignment
@@ -4162,11 +4407,16 @@ function system_provision_phase2 {
     if [ "$IP" != "dhcp" ]; then network_ip_assign $IP $NAME --force >/dev/null 2>&1; fi
   fi
 
-  # power down vm
-  ssh -n -o "StrictHostKeyChecking no" $BUILDIP "/sbin/shutdown -P now" >/dev/null 2>&1
+  if [ "$BASE_IMAGE" == "y" ]; then
+    # flush hardware address, ssh host keys, and device mappings to anonymize system
+    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1
+  else
+    # power down vm
+    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "/sbin/shutdown -P now" >/dev/null 2>&1
+  fi
 
   # wait for power off
-  ssh -n -o "StrictHostKeyChecking no" $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
   /usr/bin/logger -t "scs" "[$$] successfully stopped $NAME"
 
   #  - check for abort
@@ -4174,13 +4424,13 @@ function system_provision_phase2 {
 
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
-    ssh -n -o "StrictHostKeyChecking no" $HVIP "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
   fi
 
   if [ "$BASE_IMAGE" != "y" ]; then
     #  - start vm
     /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
-    ssh -n -o "StrictHostKeyChecking no" $HVIP "virsh start $NAME" >/dev/null 2>&1
+    ssh -o "StrictHostKeyChecking no" -n $HVIP "virsh start $NAME" >/dev/null 2>&1
    
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
@@ -4197,31 +4447,16 @@ function system_provision_phase2 {
       /usr/bin/logger -t "scs" "[$$] $NAME is configured to use DHCP and can not be traced at this time"
     fi
   else
+
     # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
-    # create backing folder as needed and move disk image
-    /usr/bin/logger -t "scs" "[$$] moving base_image to ${VMPATH}/${BACKING_FOLDER}${NAME}.img"
-    ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${VMPATH}/${BACKING_FOLDER} || mkdir -p ${VMPATH}/${BACKING_FOLDER}; mv ${VMPATH}/${NAME}.img ${VMPATH}/${BACKING_FOLDER}${NAME}.img" >/dev/null 2>&1
-    # undefine vm
-    /usr/bin/logger -t "scs" "[$$] undefining virtual machine $NAME on $HV"
-    ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; sleep 1; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
-    # redistribute if configured
+    /usr/bin/logger -t "scs" "[$$] converting VM to backing image"
+
     if [ "$REDIST" == "y" ]; then
-      for H in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN | tr '\n' ' ' ); do
-        if [ "$H" == "$HV" ]; then continue; fi
-        # [FORMAT:hypervisor]
-        read -r HIP VPATH <<< "$( grep -E "^$H," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
-        # test connection
-        nc -z -w 2 $HIP 22 >/dev/null 2>&1
-        if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] error connecting to hypervisor '$H' for base_image redistribution"; continue; fi
-        ssh -o "StrictHostKeyChecking no" $HIP "test -d ${VPATH}/${BACKING_FOLDER} || mkdir -p ${VPATH}/${BACKING_FOLDER}"
-        srcp -t /bkup1 $HVIP:${VMPATH}/${BACKING_FOLDER}${NAME}.img $HIP:${VPATH}/${BACKING_FOLDER}${NAME}.img >/dev/null 2>&1
-        if [ $? -eq 0 ]; then
-          /usr/bin/logger -t "scs" "[$$] successfully transferred base_image to $H"
-        else
-          /usr/bin/logger -t "scs" "[$$] error transferring base_image to $H"
-        fi
-      done
+      system_convert $NAME --backing --distribute --no-prompt --force
+    else
+      system_convert $NAME --backing --no-prompt --force
     fi
+
   fi
 
   /usr/bin/logger -t "scs" "[$$] system build complete for $NAME"
@@ -4256,11 +4491,12 @@ function system_push_build_scripts {
 }
 
 function system_list {
-  NUM=$( wc -l ${CONF}/system |awk '{print $1}' )
+  if [ "$1" == "--no-format" ]; then shift; system_list_unformatted $@; return; fi
+  NUM=$( system_list_unformatted $@ |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  system_list_unformatted $@ |sed 's/^/   /'
+  system_list_unformatted $@ |fold_list |sed 's/^/   /'
 }
 
 # system:
@@ -4397,7 +4633,11 @@ function system_release {
     popd >/dev/null 2>&1
     printf -- "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE\n"
   else
-    err "No managed configuration files."
+    # some operations (such as system_provision) require the release file, even if it's empty
+    pushd $TMP >/dev/null 2>&1
+    tar czf $RELEASEDIR/$RELEASEFILE --files-from /dev/null
+    popd >/dev/null 2>&1
+    printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
   fi
 }
 
@@ -4486,6 +4726,24 @@ function system_start_remote_build {
   return 0
 }
 
+# print the type of the system: physical, single, backing, or overlay
+#
+function system_type {
+  system_exists "$1" || err "Unknown or missing system name"
+
+  # scope variables
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY
+
+  # load the system
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  if [ "$VIRTUAL" == "n" ];    then printf -- "physical\n"; return; fi
+  if [ "$BASE_IMAGE" == "y" ]; then printf -- "backing\n"; return; fi
+  if [ -z "$OVERLAY" ];        then printf -- "single\n"; return; fi
+                                    printf -- "overlay\n"
+}
+
 function system_update {
   start_modify
   generic_choose system "$1" C && shift
@@ -4515,7 +4773,7 @@ function system_update {
       get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY --options "$( system_list_unformatted --backing )"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing |sed ':a;N;$!ba;s/\n/,/g' )" --default "$ORIGOVERLAY"
     else
       OVERLAY=""
     fi
@@ -4635,7 +4893,7 @@ function system_vm_disks {
     if [ "$XMLPATH" == "/domain/devices/disk/source/" ]; then
       printf -- '%s\n' "$ATTRIBUTES" |sed "s/'//g; s/file=//"
     fi
-  done <<< "$( ssh $IP virsh dumpxml $1 )"
+  done <<< "$( ssh -o "StrictHostKeyChecking no" $IP virsh dumpxml $1 )"
 }
 
 
@@ -4691,6 +4949,9 @@ RELEASEDIR=/bkup1/scs-release
 #
 # path to the temp file for patching configuration files
 TMP=/tmp/generate-patch.$$
+#
+# path to a large local folder for temporary file transfers
+TMPLarge=/bkup1
 
 
  #     #    #    ### #     # 
@@ -4737,7 +4998,7 @@ SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # intercept non subject/verb commands
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
-if [ "$SUBJ" == "cancel" ]; then cancel_modify $@; exit 0; fi
+if [[ "$SUBJ" == "cancel" || "$SUBJ" == "unlock" ]]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
 if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
 if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
