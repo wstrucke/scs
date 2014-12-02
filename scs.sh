@@ -763,6 +763,7 @@ Component:
   application
     file [--add|--remove|--list]
   build
+    lineage <name> [--reverse]
     list [--tree] [--detail]
   constant
   environment
@@ -1266,23 +1267,37 @@ function build_exists {
 }
 
 function build_lineage {
-  build_lineage_unformatted $1 |sed 's/,/ -> /g'
+  build_lineage_unformatted $@ |sed 's/,/ -> /g'
 }
 
 # return the lineage of a build
 #
 #   root,child,grandchild,etc...
 #
+# optional:
+#   --reverse   lookup all builds containing X instead of from X
+#
 function build_lineage_unformatted {
   generic_choose build "$1" C
-  local LINEAGE PARENT
-  LINEAGE="$C"
-  PARENT=$( build_parent $C )
-  while [ ! -z "$PARENT" ]; do
-    LINEAGE="$PARENT,$LINEAGE"
-    PARENT=$( build_parent $PARENT )
-  done
-  printf -- "$LINEAGE"
+  local LINEAGE PARENT Build BuildList LocalLineage
+  if [ "$2" == "--reverse" ]; then
+    BuildList="$( build_list_unformatted |tr '\n' ' ' )"
+    LINEAGE="$1"
+    for Build in $BuildList; do
+      [ "$Build" == "$1" ] && continue
+      LocalLineage="$( build_lineage $Build |sed 's/^.* '$1' /'$1' /' )"
+      printf -- " -> ${LocalLineage} -> " |grep -q " -> $1 -> " && LINEAGE="${LINEAGE}\t${LocalLineage}"
+    done
+    printf -- "$LINEAGE" |tr '\t' '\n'
+  else
+    LINEAGE="$C"
+    PARENT=$( build_parent $C )
+    while [ ! -z "$PARENT" ]; do
+      LINEAGE="$PARENT,$LINEAGE"
+      PARENT=$( build_parent $PARENT )
+    done
+    printf -- "$LINEAGE"
+  fi
 }
 
 function build_list {
@@ -4492,23 +4507,79 @@ function system_push_build_scripts {
 
 function system_list {
   if [ "$1" == "--no-format" ]; then shift; system_list_unformatted $@; return; fi
-  NUM=$( system_list_unformatted $@ |wc -l )
+  local LIST NUM
+  LIST="$( system_list_unformatted $@ |tr '\n' ' ' )"
+  NUM=$( printf -- "$LIST" |wc -w )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  system_list_unformatted $@ |fold_list |sed 's/^/   /'
+  printf -- "$LIST" |tr ' ' '\n' |fold_list |sed 's/^/   /'
 }
 
 # system:
 #   name,build,ip,location,environment,virtual,backing_image,overlay\n
 #
+# optional:
+#   --backing               show systems of type backing image
+#   --overlay               show systems of type overlay
+#   --build <string>        show systems using build <string>, or having it in the build lineage
+#
 function system_list_unformatted {
-  case "$1" in
+  local Backing=0 Overlay=0 Build BuildList LIST N NL M
+
+  if [ $# -eq 0 ]; then
+
     # [FORMAT:system]
-    --backing) grep -E '^([^,]*,){6}y,[^,]*$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
-    --overlay) grep -E '^([^,]*,){7}y$' ${CONF}/system |awk 'BEGIN{FS=","}{print $1}';;
-    *) awk 'BEGIN{FS=","}{print $1}' ${CONF}/system;;
-  esac |sort
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/system
+    return
+
+  else
+
+    LIST="$( awk 'BEGIN{FS=","}{print $1}' ${CONF}/system |tr '\n' ' ' )"
+
+    while [ $# -gt 0 ]; do case "$1" in
+
+      --backing)
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:system]
+          grep -qE '^'$N',([^,]*,){5}y,[^,]*$' ${CONF}/system && NL="$NL $N"
+        done
+        LIST="$NL"
+        ;;
+
+      --build)
+        NL=""
+        BuildList="$( build_lineage_unformatted $2 --reverse |awk '{print $NL}' )"
+        for N in $LIST; do
+          # [FORMAT:system]
+          grep -qE '^'$N','$2',.*$' ${CONF}/system
+          if [ $? -eq 0 ]; then NL="$NL $N"; else
+            for M in $BuildList; do
+              if [ "$M" == "$2" ]; then continue; fi
+              grep -qE '^'$N','$M',.*$' ${CONF}/system
+              if [ $? -eq 0 ]; then NL="$NL $N"; break; fi
+            done
+          fi
+        done
+        LIST="$NL"
+        shift
+        ;;
+
+      --overlay)
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:system]
+          grep -qE '^'$N',([^,]*,){6}.+$' ${CONF}/system && NL="$NL $N"
+        done
+        LIST="$NL"
+        ;;
+
+    esac; shift; done
+
+    for N in $LIST; do printf -- "$N\n"; done |sort
+
+  fi
 }
 
 function system_release {
@@ -5010,6 +5081,8 @@ VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
+
+if [[ "$VERB" == "lineage" && "$SUBJ" == "build" ]]; then build_lineage $@; echo; exit 0; fi
 
 # validate subject and verb
 printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
