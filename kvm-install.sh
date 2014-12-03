@@ -49,8 +49,10 @@ Options:
   --disk <int>          size of disk in GB, default 30
   --disk-path <string>  override path to the system disk
   --disk-type <string>  override disk type, option must be one of 'ide', 'scsi', 'usb', 'virtio' or 'xen'
+  --dns <string>        specify the dns server to use for the installation
   --dry-run             do not make any changes, simply output the expected commands
-  --ip <string>         specify static ip during build, default dhcp
+  --gateway <string>    specify the default network gateway
+  --ip <string>[/mask]  specify static ip during build, default dhcp - optionally include netmask (CIDR or standard notation)
   --interface <string>  specify the bridge interface to attach to (default $BUILD_NET_INTERFACE)
   --ks <URL>            full URL to optional kick-start answer file
   --mac <string>        physical address to assign, default auto-generate
@@ -91,16 +93,79 @@ function valid_ip() {
     return $stat
 }
 
+# convert subnet mask bits into a network mask
+#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+#
+# required:
+#   $1    X (where X is greater than or equal to 0 and less than or equal to 32)
+#
+function cdr2mask {
+  test $# -ne 1 && return 1
+  test "$1" != "${1/[^0-9]/}" && return 1
+  if [[ $1 -lt 0 || $1 -gt 32 ]]; then return 1; fi
+  set -- $(( 5 - ($1 / 8) )) 255 255 255 255 $(( (255 << (8 - ($1 % 8))) & 255 )) 0 0 0
+  [ $1 -gt 1 ] && shift $1 || shift
+  echo ${1-0}.${2-0}.${3-0}.${4-0}
+  return 0
+}
+
+# convert subnet mask into subnet mask bits
+#   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
+#
+# required
+#   $1    W.X.Y.Z (a valid subnet mask)
+#
+function mask2cdr {
+  valid_mask "$1" || return 1
+  # Assumes there's no "255." after a non-255 byte in the mask
+  local x=${1##*255.}
+  set -- 0^^^128^192^224^240^248^252^254^ $(( (${#1} - ${#x})*2 )) ${x%%.*}
+  x=${1%%$3*}
+  echo $(( $2 + (${#x}/4) ))
+  return 0
+}
+
+# Test a Network Mask for validity:
+# Usage:
+#      valid_mask NETMASK
+#      if [[ $? -et 0 ]]; then echo good; else echo bad; fi
+#   OR
+#      if valid_mask NETMASK; then echo good; else echo bad; fi
+#
+function valid_mask() {
+  test $# -eq 1 || return 1
+  # extract mask into four numbers
+  IFS=. read -r i1 i2 i3 i4 <<< "$1"
+  # verify each number is not null
+  [[ -z "$i1" || -z "$i2" || -z "$i3" || -z "$i4" ]] && return 1
+  # verify each value is numeric only and a positive integer
+  test "${1//[^0-9]/}" != "${i1}${i2}${i3}${i4}" && return 1
+  # verify any number less than 255 has 255s preceding and 0 following
+  [[ $i4 -gt 0 && $i4 -lt 255 && "$i1$i2$i3" != "255255255" ]] && return 1
+  [[ $i3 -gt 0 && $i3 -lt 255 && "$i1$i2$i4" != "2552550" ]] && return 1
+  [[ $i2 -gt 0 && $i2 -lt 255 && "$i1$i3$i4" != "25500" ]] && return 1
+  [[ $i1 -gt 0 && $i1 -lt 255 && "$i2$i3$i4" != "000" ]] && return 1
+  # verify each component of the mask is a valid mask
+  #   !!FIXME!! i am certain there is a much better way to do this but i could not
+  #             come up with it in the time allocated to developing this function
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i1 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i2 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
+  printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i4 " || return 1
+  return 0
+}
+
+
 
 # local constants
 #
-# primary dns server in build network
+# dns server in primary build network
 BUILD_NET_DNS=""
 #
-# gateway in build network
+# gateway in primary build network
 BUILD_NET_GW=""
 #
-# network mask for build network
+# network mask for primary build network
 BUILD_NET_MASK=""
 #
 # hypervisor interface name for the build network (bridge)
@@ -153,8 +218,11 @@ VMCONSOLE=1
 VMCPUS=1
 VMDISK=""
 VMDISK_TYPE="virtio"
+VMDNS=""
+VMGATEWAY=""
 VMIP=""
 VMNAME=""
+VMNETMASK=""
 VMNIC=""
 VMOS="centos6"
 VMRAM=1024
@@ -170,11 +238,13 @@ while [ $# -gt 0 ]; do case $1 in
   -c|--cpu) VMCPUS="$2"; shift;;
   -d|--disk) VMSIZE="$2"; shift;;
   -D|--disk-path) VMDISK="$2"; shift;;
+  -g|--gateway) VMGATEWAY="$2"; shift;;
   -k|--ks) KSURL="$2"; shift;;
   -I|--interface) INTERFACE="$2"; shift;;
   -i|--ip) VMIP="$2"; shift;;
   -m|--mac) VMADDR="$2"; shift;;
   -n|--nic) VMNIC="$2"; shift;;
+  -N|--dns) VMDNS="$2"; shift;;
   -o|--os) VMOS="$2"; shift;;
   -q|--quiet) QUIET=1;;
   -r|--ram) VMRAM="$2"; shift;;
@@ -202,7 +272,6 @@ test $VMSIZE -lt 15 && err "Minimum disk size is 15 GB"
 test $VMCPUS -gt 48 && err "Maximum expected CPU value"
 test $VMRAM -lt 128 && err "Minimum system memory is 128MB. Yes, this is arbitrary."
 test $VMRAM -gt 131072 && err "Maximum system memory is 128GB. Yes, this is arbitrary."
-if [ ! -z "$VMIP" ]; then valid_ip $VMIP || err "Invalid IP address"; fi
 printf -- " $ARCHLIST " |grep -q " $VMARCH " || err "Invalid system architecture"
 printf -- " $OSLIST " |grep -q " $VMOS " || err "Invalid operating system"
 printf -- " $DISK_TYPE_LIST " |grep -q " $VMDISK_TYPE " || err "Invalid bus (disk type). Must be one of $DISK_TYPE_LIST."
@@ -214,9 +283,33 @@ if [ ! -z "$INTERFACE" ]; then
 fi
 if [ ! -z "$VNC" ]; then printf -- " $( /bin/netstat -ln |grep '^tcp' |awk '{print $4}' |cut -d: -f2 |tr '\n' ' ' ) " |grep -q " $VNC " && err "VNC port in use"; fi
 
+# ip verification
+if [ ! -z "$VMIP" ]; then
+  if [ "$VMIP" == "dhcp" ]; then VMIP=""; else
+    # if there is a '/' then this is two parameters -- an IP and netmask
+    printf -- '%s' $VMIP | grep -q '/'
+    if [ $? -eq 0 ]; then
+      VMNETMASK=$( printf -- '%s' $VMIP |sed 's%.*/%%' )
+      VMIP=$( printf -- '%s' $VMIP |sed 's%/.*%%' )
+      valid_mask $VMNETMASK || VMNETMASK=$( cdr2mask $VMNETMASK )
+      valid_mask $VMNETMASK || err "Invalid network mask provided in IP settings (syntax: '--ip a.b.c.d/xx' or '--ip a.b.c.d/w.x.y.z')"
+    fi
+    valid_ip $VMIP || err "Invalid IP address"
+  fi
+fi
+
 # if no interface was specified, use the default
 if [ -z "$BUILD_NET_INTERFACE" ]; then BUILD_NET_INTERFACE=$( netstat -rn |grep -E '^0\.0\.0\.0' |awk '{print $NF}' ); fi
 if [ -z "$INTERFACE" ]; then INTERFACE=$BUILD_NET_INTERFACE; fi
+
+# if no netmask was set, use the default
+if [ -z "$VMNETMASK" ]; then VMNETMASK=$BUILD_NET_MASK; fi
+
+# if no gateway was set, use the default
+if [ -z "$VMGATEWAY" ]; then VMGATEWAY=$BUILD_NET_GW; fi
+
+# if no dns was set, use the default
+if [ -z "$VMDNS" ]; then VMDNS=$BUILD_NET_DNS; fi
 
 # check minimum system requirements
 if [[ "$VMOS" == "centos4" && "$VMARCH" != "i386" ]]; then err "Centos 4 only supports i386 architecture"; fi
@@ -225,6 +318,9 @@ if [[ "$VMOS" == "centos6" && $VMSIZE -lt 30 ]]; then err "CentOS 6 requires at 
 
 # check settings
 if [[ -z "$BUILD_NET_DNS" || -z "$BUILD_NET_GW" || -z "$BUILD_NET_MASK" || -z "$BUILD_NET_INTERFACE" || -z "$VMDIR" ]]; then err "Settings are not defined"; fi
+valid_mask "$BUILD_NET_MASK" || err "The default build network mask is not valid"
+valid_ip "$BUILD_NET_GW"     || err "The default build network gateway is not valid"
+valid_ip "$BUILD_NET_DNS"    || err "The default build network DNS server IP is not valid"
 
 # set up urls
 if [ -z "$KSURL" ]; then VAR="${VMOS}_${VMARCH}_ks"; KSURL=${!VAR}; fi
@@ -300,7 +396,7 @@ if [ $INSTALL -eq 1 ]; then
 
   # optionally append ip data if a static address was provided
   if [ ! -z "$VMIP" ]; then
-    ARGS="$ARGS ip=${VMIP} netmask=${BUILD_NET_MASK} dns=${BUILD_NET_DNS} gateway=${BUILD_NET_GW}"
+    ARGS="$ARGS ip=${VMIP} netmask=${VMNETMASK} dns=${VMDNS} gateway=${VMGATEWAY}"
   fi
   
   ARGS="$ARGS console=ttyS0\""

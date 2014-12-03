@@ -267,6 +267,9 @@
 #     - deleting a build should prompt/list systems using that build
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
+#     - need to be able to remove a partially built backing system
+#     - remove ssh host key mismatch debug message
+#     - correct host name when creating overlays
 #   - clean up:
 #     - deleting an application should also unassign resources and undefine constants
 #     - simplify IP management functions by reducing code duplication
@@ -281,7 +284,6 @@
 #     - overhaul scs - split into modules, put in installed path with sub-folder, dependencies, and config file
 #     - rewrite modules in a proper programming language
 #     - add file groups
-#     - system can be 'single', 'backing' or 'overlay'
 #     - store vm uuid with system to use as a sanity check when manipulating remote vms
 #     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
 #     - all systems should use the same backing image, and instead of a larger disk get a second disk with a unique LVM name
@@ -295,6 +297,7 @@
 #     - colorize system list output (different color per build)?
 #     - deprecate external kvm-install and kvm-uuid scripts and remove dependencies on external servers
 #     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
+#     - send a deployment report when automatic provisioning and system creation occurs
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -312,6 +315,15 @@
  #     #    #     #  #        #     #       #    
  #     #    #     #  #        #     #       #    
   #####     #    ### ####### ###    #       #
+
+# write to the activity log
+#
+function scslog {
+  test $# -eq 0 && return
+  get_user --no-prompt
+  printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+  return 0
+}
 
 # convert subnet mask bits into a network mask
 #   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
@@ -384,9 +396,10 @@ function err {
 # error / exit function for daemon processes
 #
 function errlog {
-  test ! -z "$1" && MSG="$1" || MSG="An error occurred"
+  get_user --no-prompt
+  test ! -z "$1" && MSG="$@" || MSG="An error occurred"
   echo "$MSG" >&2
-  /usr/bin/logger -t "scs" "$MSG"
+  printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$MSG" >>$SCS_Error_Log
   exit 1
 }
 
@@ -599,11 +612,18 @@ function get_network {
 #
 # sets the variable USERNAME
 #
+# optional:
+#   --no-prompt
+#
 function get_user {
   if ! [ -z "$USERNAME" ]; then return; fi
   if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
-    read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
-    U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
+    if [ "$1" == "--no-prompt" ]; then
+      U="root"
+    else
+      read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
+      U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
+    fi
   fi
   test -z "$U" && err "A user name is required to make modifications."
   USERNAME="$U"
@@ -4186,7 +4206,7 @@ function system_parent {
 #  --hypervisor <name>   # bypass auto-selection of a hypervisor for the build
 #
 function system_provision {
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME \
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME NETMASK \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
         BuildParent BUILDNET VMPath Foreground=0 Hypervisor
 
@@ -4202,7 +4222,7 @@ function system_provision {
     --foreground)       Foreground=1;;
     --hypervisor)       Hypervisor="$2"; shift;;
     --network)          NETNAME="$2"; shift;;
-    --phase-2)          exec 1>>/root/scs_log 2>>/root/scs_error_log; system_provision_phase2 $C ${@:2}; return;;
+    --phase-2)          exec 1>>$SCS_Background_Log 2>&1; system_provision_phase2 $C ${@:2}; return;;
     --skip-distribute)  REDIST=n;;
     *)                  err "Invalid argument";;
   esac; shift; done
@@ -4216,8 +4236,7 @@ function system_provision {
   # verify hypervisor
   if ! [ -z "$Hypervisor" ]; then hypervisor_exists $Hypervisor || err "Invalid hypervisor specified"; fi
 
-  get_user
-  /usr/bin/logger -t "scs" "[$$] system build requested for $NAME by $USERNAME"
+  scslog "system build requested for $NAME"
 
   # check redistribute
   if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
@@ -4260,6 +4279,7 @@ function system_provision {
     read -r NETMASK GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9,$12,$13,$14}' )"
     valid_ip $GATEWAY || err "Build network does not have a defined gateway address"
     valid_ip $DNS || err "Build network does not have a defined DNS server"
+    valid_mask $NETMASK || err "Build network does not have a valid network mask"
     if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
   
     if [ -z "$Hypervisor" ]; then
@@ -4374,11 +4394,12 @@ _EOF
     KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
 
     #  - kick off provision system
-    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $Hypervisor at $BUILDIP"
     echo "Creating virtual machine..."
-    ssh -o "StrictHostKeyChecking no" -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    scslog "starting system build for $NAME on $Hypervisor at $BUILDIP"
+    scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    ssh -o "StrictHostKeyChecking no" -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+      echo ssh -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
       err "Error creating VM!"
     fi
 
@@ -4391,13 +4412,13 @@ _EOF
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
     nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
-    /usr/bin/logger -t "scs" "[$$] starting phase 2 in foreground process"
+    scslog "starting phase 2 in foreground process"
     echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
     system_provision_phase2 "$NAME" "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
   fi
 
   #  - phase 1 complete
-  /usr/bin/logger -t "scs" "[$$] build phase 1 complete"
+  scslog "build phase 1 complete"
   echo "Build for $NAME at $LOC $EN has been started successfully and will continue in the background."
 
   # update last build date
@@ -4432,7 +4453,7 @@ _EOF
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
         REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
-        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP
+        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS
 
   # load arguments passed in from phase1
   echo "Args: $@" >&2
@@ -4441,7 +4462,7 @@ function system_provision_phase2 {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   system_exists $NAME
-  if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] error staring build phase 2 - system '$NAME' does not exist - check $HV"; exit 1; fi
+  if [ $? -ne 0 ]; then errlog "error staring build phase 2 - system '$NAME' does not exist - check $HV"; exit 1; fi
 
   # [FORMAT:hypervisor]
   read -r HVIP VMPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
@@ -4450,11 +4471,19 @@ function system_provision_phase2 {
   DHCP=$( network_show $BUILDNET 2>/dev/null |grep DHCP |awk '{print $3}' )
   if ! [ -z "$DHCP" ]; then valid_ip $DHCP || err "Invalid DHCP server"; fi
 
-  /usr/bin/logger -t "scs" "[$$] starting build phase 2 for $NAME on $HV ($HVIP) at $BUILDIP"
+  scslog "starting build phase 2 for $NAME on $HV ($HVIP) at $BUILDIP"
 
   if ! [ -z "$OVERLAY" ]; then
     # this is an overlay system
  
+    #  - lookup network details for the build network (used in the kickstart configuration)
+    #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
+    # [FORMAT:network]
+    read -r NETMASK GATEWAY DNS <<< "$( grep -E "^${BUILDNET//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $5,$7,$9}' )"
+    valid_ip $GATEWAY || errlog "Build network does not have a defined gateway address"
+    valid_ip $DNS || errlog "Build network does not have a defined DNS server"
+    valid_mask $NETMASK || errlog "Build network does not have a valid network mask"
+
     # build the parent system as needed
     hypervisor_locate_system $OVERLAY >/dev/null 2>&1
 
@@ -4467,11 +4496,12 @@ function system_provision_phase2 {
     fi
 
     #  - kick off provision system
-    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
+    scslog "starting system build for $NAME on $HV at $BUILDIP"
     echo "Creating virtual machine..."
-    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
     ssh -o "StrictHostKeyChecking no" -n $HV "virsh start $NAME" >/dev/null 2>&1
@@ -4479,7 +4509,7 @@ function system_provision_phase2 {
     if ! [ -z "$DHCP" ]; then
 
       DHCPIP=""
-      /usr/bin/logger -t "scs" "[$$] attempting to trace DHCP IP"
+      scslog "attempting to trace DHCP IP"
  
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
@@ -4492,11 +4522,11 @@ function system_provision_phase2 {
         DHCPNETNAME=$( network_ip_locate $BUILDIP )
         # [FORMAT:network]
         read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-        /usr/bin/logger -t "scs" "[$$] found DHCP address '$DHCPIP' for system with physical address '$MAC'"
+        scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status nc -z -w 2 $DHCPIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
         while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
         ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now"
-        /usr/bin/logger -t "scs" "[$$] successfully moved system to assigned build address"
+        scslog "successfully moved system to assigned build address"
       fi
     fi
   fi
@@ -4506,18 +4536,18 @@ function system_provision_phase2 {
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
   ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
-  /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
+  scslog "successfully started $NAME"
 
   #  - check for abort
   check_abort
 
   #  - wait for vm to come up
   sleep 15
-  /usr/bin/logger -t "scs" "[$$] waiting for $NAME at $BUILDIP"
+  scslog "waiting for $NAME at $BUILDIP"
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+  scslog "ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+  scslog "$NAME verified UP"
 
   #  - load the role
   # [FORMAT:build]
@@ -4525,11 +4555,11 @@ function system_provision_phase2 {
 
   #  - install_build
   system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
-  /usr/bin/logger -t "scs" "[$$] build scripts deployed to $NAME"
+  scslog "build scripts deployed to $NAME"
 
   #  - sysbuild_install (do not change the IP here)
   system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
-  /usr/bin/logger -t "scs" "[$$] started remote build"
+  scslog "started remote build"
 
   if [ -z "$OVERLAY" ]; then
     #  - clean up kickstart file
@@ -4539,7 +4569,7 @@ function system_provision_phase2 {
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
   ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
-  /usr/bin/logger -t "scs" "[$$] successfully started $NAME"
+  scslog "successfully started $NAME"
 
   #  - check for abort
   check_abort
@@ -4547,18 +4577,18 @@ function system_provision_phase2 {
   #  - wait for vm to come up
   sleep 15
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+  scslog "ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-  /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+  scslog "$NAME verified UP"
 
   # deploy system configuration
-  /usr/bin/logger -t "scs" "[$$] generating release..."
+  scslog "generating release..."
   FILE=$( system_release $NAME 2>/dev/null |tail -n1 )
-  if [ -z "$FILE" ]; then /usr/bin/logger -t "scs" "[$$] Error generating release for '$NAME'"; return 1; fi
-  if ! [ -f "$FILE" ]; then /usr/bin/logger -t "scs" "[$$] Unable to read release file for '$NAME'"; return 1; fi
-  /usr/bin/logger -t "scs" "[$$] copying release to remote system..."
+  if [ -z "$FILE" ]; then errlog "Error generating release for '$NAME'"; return 1; fi
+  if ! [ -f "$FILE" ]; then errlog "Unable to read release file for '$NAME'"; return 1; fi
+  scslog "copying release to remote system..."
   scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
-  if [ $? -ne 0 ]; then /usr/bin/logger -t "scs" "[$$] Error copying release to '$NAME'@$BUILDIP"; return 1; fi
+  if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
   ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
   
@@ -4571,7 +4601,7 @@ function system_provision_phase2 {
   
   # update system ip as needed
   if [ "$BUILDIP" != "$IP" ]; then
-    /usr/bin/logger -t "scs" "[$$] Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
+    scslog "Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
     if [ "$IP" != "dhcp" ]; then
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
@@ -4582,7 +4612,7 @@ function system_provision_phase2 {
     fi
     sleep 5
     # update ip assignment
-    /usr/bin/logger -t "scs" "[$$] Updating IP assignments"
+    scslog "Updating IP assignments"
     network_ip_unassign $BUILDIP >/dev/null 2>&1
     if [ "$IP" != "dhcp" ]; then network_ip_assign $IP $NAME --force >/dev/null 2>&1; fi
   fi
@@ -4597,7 +4627,7 @@ function system_provision_phase2 {
 
   # wait for power off
   ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
-  /usr/bin/logger -t "scs" "[$$] successfully stopped $NAME"
+  scslog "successfully stopped $NAME"
 
   #  - check for abort
   check_abort
@@ -4609,28 +4639,28 @@ function system_provision_phase2 {
 
   if [ "$BASE_IMAGE" != "y" ]; then
     #  - start vm
-    /usr/bin/logger -t "scs" "[$$] starting $NAME on $HV"
+    scslog "starting $NAME on $HV"
     ssh -o "StrictHostKeyChecking no" -n $HVIP "virsh start $NAME" >/dev/null 2>&1
    
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
-      /usr/bin/logger -t "scs" "[$$] updating hosts"
+      scslog "updating hosts"
       system_update_push_hosts $NAME $IP >>/root/scs_log 2>&1
-      /usr/bin/logger -t "scs" "[$$] hosts updated"
+      scslog "hosts updated"
   
       #  - wait for vm to come up
       sleep 15
       while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
-      /usr/bin/logger -t "scs" "[$$] ssh connection succeeded to $NAME"
+      scslog "ssh connection succeeded to $NAME"
       while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-      /usr/bin/logger -t "scs" "[$$] $NAME verified UP"
+      scslog "$NAME verified UP"
     else
-      /usr/bin/logger -t "scs" "[$$] $NAME is configured to use DHCP and can not be traced at this time"
+      scslog "$NAME is configured to use DHCP and can not be traced at this time"
     fi
   else
 
     # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
-    /usr/bin/logger -t "scs" "[$$] converting VM to backing image"
+    scslog "converting VM to backing image"
 
     if [ "$REDIST" == "y" ]; then
       system_convert $NAME --backing --distribute --no-prompt --force --network $NETNAME
@@ -4640,7 +4670,7 @@ function system_provision_phase2 {
 
   fi
 
-  /usr/bin/logger -t "scs" "[$$] system build complete for $NAME"
+  scslog "system build complete for $NAME"
 }
 
 # deploy the current system build scripts to a remote server
@@ -5047,10 +5077,10 @@ function system_start_remote_build {
   diff /root/.ssh/known_hosts{.$$,}; rm -f /root/.ssh/known_hosts.$$
   # kick-off install and return
   if [ -z "$2" ]; then
-#    /usr/bin/logger -t "scs" "[$$] \"$1\" \"nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &\""
+    scslog "\"$1\" \"nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &\""
     ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown >/dev/null 2>&1 </dev/null &"
   else
-#    /usr/bin/logger -t "scs" "[$$] \"$1\" \"nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &\""
+    scslog "\"$1\" \"nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &\""
     ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown $2 >/dev/null 2>&1 </dev/null &"
   fi
 }
@@ -5279,6 +5309,15 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
 RELEASEDIR=/bkup1/scs-release
+#
+# path to activity log
+SCS_Activity_Log=/var/log/scs_activity.log
+#
+# path to background task log
+SCS_Background_Log=/var/log/scs_bg.log
+#
+# path to error log
+SCS_Error_Log=/var/log/scs_error.log
 #
 # path to the temp file for patching configuration files
 TMP=/tmp/generate-patch.$$
