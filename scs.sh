@@ -436,15 +436,16 @@ function expand_verb_alias {
 
 # fold a list into pretty columns
 #
-# this is a rough attempt to approximate 'column -t' due to the "column: line too long" issue
+# this is a rough attempt to approximate 'column -t' due to the "column: line too long" issue.
 #  we run into trouble with 'fold' since it doesn't care about the columns.  if the output
 #  looks wonky, that's why.
 #
 function fold_list {
-  local foo food maxlen
+  local foo food maxlen width
   while read foo; do test -z "$food" && food="$foo" || food="$food $foo"; done
   maxlen=$( printf -- "$food" |tr ' ' '\n' |wc -L |awk '{print $1}' )
-  printf -- "$food" |tr ' ' '\n' |awk '{printf "%-*s", '$((maxlen + 3))', $1}END{print "\n"}' |fold -s |sed 's/^ *//'
+  width=$(( $(tput cols) / ( $maxlen + 5 )))
+  printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=0}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
 }
 
 # generic choose function, since they are all exactly the same
