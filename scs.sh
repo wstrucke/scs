@@ -259,19 +259,19 @@
 # External requirements:
 #   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
 #     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
-#   My stuff - kvm-uuid, kvm-install.sh
+#   My stuff - kvm-uuid, kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
 #
 # TO DO:
 #   - bug fix:
 #     - renaming a build should update systems using that build
 #     - deleting a build should prompt/list systems using that build
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
+#     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #   - clean up:
 #     - deleting an application should also unassign resources and undefine constants
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
-#     - every line that reads from a storage file should have a comment to enable more accurate schema changes
 #   - enhancements:
 #     - finish IPAM and IP allocation components
 #     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
@@ -292,6 +292,9 @@
 #     - system_builder function to generate overlays and dependencies
 #     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
+#     - colorize system list output (different color per build)?
+#     - deprecate external kvm-install and kvm-uuid scripts and remove dependencies on external servers
+#     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -749,6 +752,23 @@ function read_dom () {
   return $RET
 }
 
+function scs_abort {
+  case $1 in
+    '--disable'|'disable'|'--cancel'|'cancel')
+      test -f $ABORTFILE && /bin/rm -f $ABORTFILE
+      printf -- '\E[32;47m%s\E[0m\n' "***** ABORT DISABLED *****"
+      return
+      ;;
+  esac
+  if [ -f $ABORTFILE ]; then
+    printf -- 'Abort file already exists.\n'
+    return
+  fi
+  get_yn RL "Are you sure want to stop all running scs tasks (y/n)?" || return
+  touch $ABORTFILE
+  printf -- 'Abort file has been created. All background processes will exit.\n'
+}
+
 function usage {
   echo "Simple Configuration [Management] System
 Manage application/server configurations and base templates across all environments.
@@ -756,7 +776,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
               $0 commit [-m 'commit message']
               $0 cancel [--force]
-              $0 diff | lock | log | status | unlock
+              $0 abort | diff | lock | log | status | unlock
 
 Run commit when complete to finalize changes.
 
@@ -3267,7 +3287,8 @@ function hypervisor_add_network {
 #   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
-  if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
+  if [ "$1" == "--system-audit" ]; then hypervisor_system_audecho; it ${@:2}; return; fi
+  if [ "$1" == "--rank" ]; then hypervisor_rank ${@:2}; echo; return; fi
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   case "$2" in
     --add-environment) hypervisor_add_environment $1 ${@:3};;
@@ -4161,12 +4182,13 @@ function system_parent {
 # optional:
 #  --network <name>
 #  --[skip-]distribute
-#  --foreground
+#  --foreground          # stay in the foreground instead of launching a background process
+#  --hypervisor <name>   # bypass auto-selection of a hypervisor for the build
 #
 function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
-        BuildParent BUILDNET VMPath Foreground=0
+        BuildParent BUILDNET VMPath Foreground=0 Hypervisor
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -4178,6 +4200,7 @@ function system_provision {
   while [ $# -gt 0 ]; do case "$1" in
     --distribute)       REDIST=y;;
     --foreground)       Foreground=1;;
+    --hypervisor)       Hypervisor="$2"; shift;;
     --network)          NETNAME="$2"; shift;;
     --phase-2)          exec 1>>/root/scs_log 2>>/root/scs_error_log; system_provision_phase2 $C ${@:2}; return;;
     --skip-distribute)  REDIST=n;;
@@ -4189,6 +4212,9 @@ function system_provision {
 
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
+
+  # verify hypervisor
+  if ! [ -z "$Hypervisor" ]; then hypervisor_exists $Hypervisor || err "Invalid hypervisor specified"; fi
 
   get_user
   /usr/bin/logger -t "scs" "[$$] system build requested for $NAME by $USERNAME"
@@ -4236,13 +4262,15 @@ function system_provision {
     valid_ip $DNS || err "Build network does not have a defined DNS server"
     if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
   
-    #  - locate available HVs
-    LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
-    test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-  
-    #  - poll list of HVs for availability then rank for free storage, free mem, and load
-    HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
-    test -z "$HV" && err "There are no available hypervisors at this time"
+    if [ -z "$Hypervisor" ]; then
+      #  - locate available HVs
+      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+      test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+    
+      #  - poll list of HVs for availability then rank for free storage, free mem, and load
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+      test -z "$Hypervisor" && err "There are no available hypervisors at this time"
+    fi
   
   else
 
@@ -4255,35 +4283,37 @@ function system_provision {
     # must set these values since they are passed to phase2 (not used for overlays so the value can be anything without a space)
     REPO_ADDR="-"; REPO_PATH="-"
 
-    # list hypervisors capable of hosting this system
-    # -- if none, build it ? 
-    LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
-
-    if [ -z "$LIST" ]; then
-      # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
-      #   does not exist than just ignore and continue since the entire chain can be built later
-      LIST=$( hypervisor_list --backing $OVERLAY | tr '\n' ' ' )
-      test ! -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-
-      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
-      test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-    fi
+    if [ -z "$Hypervisor" ]; then
+      # list hypervisors capable of hosting this system
+      # -- if none, build it ? 
+      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
   
-    #  - poll list of HVs for availability then rank for free storage, free mem, and load
-    HV=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
-    test -z "$HV" && err "There are no available hypervisors at this time"
+      if [ -z "$LIST" ]; then
+        # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
+        #   does not exist than just ignore and continue since the entire chain can be built later
+        LIST=$( hypervisor_list --backing $OVERLAY | tr '\n' ' ' )
+        test ! -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+  
+        LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+        test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+      fi
+    
+      #  - poll list of HVs for availability then rank for free storage, free mem, and load
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+      test -z "$Hypervisor" && err "There are no available hypervisors at this time"
+    fi
 
   fi
 
   #  - get the build and dest interfaces on the hypervisor
   # [FORMAT:hv-network]
-  HV_BUILD_INT=$( grep -E "^$BUILDNET,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-  HV_FINAL_INT=$( grep -E "^$NETNAME,$HV," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-  [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$HV' is missing one or more interface mappings for the selected networks."
+  HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$Hypervisor' is missing one or more interface mappings for the selected networks."
 
   # get the hypervisor vmpath
   # [FORMAT:hypervisor]
-  read -r VMPath <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $4}' )"
+  read -r VMPath <<< "$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $4}' )"
 
   # verify configuration
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
@@ -4344,11 +4374,11 @@ _EOF
     KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
 
     #  - kick off provision system
-    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $HV at $BUILDIP"
+    /usr/bin/logger -t "scs" "[$$] starting system build for $NAME on $Hypervisor at $BUILDIP"
     echo "Creating virtual machine..."
-    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    ssh -o "StrictHostKeyChecking no" -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+      echo ssh -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip $BUILDIP --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
       err "Error creating VM!"
     fi
 
@@ -4359,11 +4389,11 @@ _EOF
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-    nohup $0 system $NAME --provision --phase-2 "$HV" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
+    nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     /usr/bin/logger -t "scs" "[$$] starting phase 2 in foreground process"
-    echo "system_provision_phase2 \"$NAME\" \"$HV\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
-    system_provision_phase2 "$NAME" "$HV" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
+    echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
+    system_provision_phase2 "$NAME" "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
   fi
 
   #  - phase 1 complete
@@ -4430,9 +4460,9 @@ function system_provision_phase2 {
 
     if [ $? -ne 0 ]; then
       if [ "$REDIST" == "y" ]; then
-        system_provision $OVERLAY --network $BUILDNET --distribute --foreground
+        system_provision $OVERLAY --network $BUILDNET --distribute --foreground --hypervisor $HV
       else
-        system_provision $OVERLAY --network $BUILDNET --skip-distribute --foreground
+        system_provision $OVERLAY --network $BUILDNET --skip-distribute --foreground --hypervisor $HV
       fi
     fi
 
@@ -4453,6 +4483,7 @@ function system_provision_phase2 {
  
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
+        check_abort
         sleep 5
         DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -i "$MAC" |awk '{print $2}' )"
       done
@@ -5306,12 +5337,16 @@ if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
 if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
+if [ "$SUBJ" == "abort" ]; then scs_abort $@; exit 0; fi
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
+
+# warn if lock file exists
+test -f $ABORTFILE && printf -- '\E[31;47m%s\E[0m\n' "***** WARNING: ABORT ENABLED *****"
 
 if [[ "$VERB" == "lineage" && "$SUBJ" == "build" ]]; then build_lineage $@; echo; exit 0; fi
 
