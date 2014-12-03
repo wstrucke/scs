@@ -445,7 +445,7 @@ function fold_list {
   while read foo; do test -z "$food" && food="$foo" || food="$food $foo"; done
   maxlen=$( printf -- "$food" |tr ' ' '\n' |wc -L |awk '{print $1}' )
   width=$(( $(tput cols) / ( $maxlen + 5 )))
-  printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=0}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
+  printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=1}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
 }
 
 # generic choose function, since they are all exactly the same
@@ -3432,7 +3432,7 @@ function hypervisor_locate_system {
   fi
 
   # load hypervisors
-  LIST=$( hypervisor_list --location $LOC --environment $EN )
+  LIST=$( hypervisor_list --location $LOC )
   test -z "$LIST" && return 1
 
   # check if there is a preferred HV already
@@ -4689,7 +4689,7 @@ function system_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  printf -- "$LIST\n" |tr ' ' '\n' |fold_list |sed 's/^/   /'
+  printf -- "$LIST\n" |tr ' ' '\n' |sort |fold_list |sed 's/^/   /'
 }
 
 # system:
