@@ -753,6 +753,36 @@ function octal2text {
   octal2perm ${N:3:1}
 }
 
+# purge entries for host and/or ip from ssh known_hosts
+#
+# optional:
+#   --name <string>
+#   --ip <string>
+#
+function purge_known_hosts {
+  if [ $? -eq 0 ]; then return; fi
+
+  local name ipaddy kh
+  kh=/root/.ssh/known_hosts
+
+  scslog "purge_known_hosts: '$@'"
+  while [ $# -gt 0 ]; do case $1 in
+    --name) grep -q "$2" $kh && name=$2; shift;;
+    --ip) valid_ip $2 && grep -q "$2" $kh && ipaddy=$2; shift;;
+  esac; shift; done
+
+  scslog "purge_known_hosts: '$name' '$ipaddy'"
+  test -z "${name}${ipaddy}" && return
+
+  printf -- "updating local known hosts\n" >>$SCS_Background_Log
+  cat $kh >$kh.$$
+  test -z "$name" || sed -i "/$( printf -- "$name" |sed 's/\./\\./g' )/d" $kh
+  test -z "$ipaddy" || sed -i "/$( printf -- "$ipaddy" |sed 's/\./\\./g' )/d" $kh
+  diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
+
+  return 0
+}
+
 # read xml data
 #
 # SOURCE: http://stackoverflow.com/questions/893585/how-to-parse-xml-in-bash
@@ -777,6 +807,7 @@ function scs_abort {
     '--disable'|'disable'|'--cancel'|'cancel')
       test -f $ABORTFILE && /bin/rm -f $ABORTFILE
       printf -- '\E[32;47m%s\E[0m\n' "***** ABORT DISABLED *****"
+      scslog "abort disabled"
       return
       ;;
   esac
@@ -787,6 +818,7 @@ function scs_abort {
   get_yn RL "Are you sure want to stop all running scs tasks (y/n)?" || return
   touch $ABORTFILE
   printf -- 'Abort file has been created. All background processes will exit.\n'
+  scslog "abort enabled"
 }
 
 function usage {
@@ -826,7 +858,7 @@ Component:
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
   network
     ip [--locate a.b.c.d]
-    <name> ip [--assign|--unassign|--list|--list-available|--list-assigned|--scan]
+    <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
     <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
   resource
     <value> [--assign] [<system>]
@@ -2595,6 +2627,7 @@ function network_ip {
   # function
   case "$2" in
     --assign) network_ip_assign ${@:3};;
+    --check) network_ip_check $3;;
     --unassign) network_ip_unassign ${@:3};;
     --list) echo "Not implemented: $@";;
     --list-available) network_ip_list_available $1 ${@:3};;
@@ -2629,7 +2662,7 @@ function network_ip_assign {
   # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # check if the ip is in use (last ditch effort)
-  if [[ $FORCE -eq 0 && "$ASSN" == "" && $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]]; then
+  if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $1 ) -ne 0 ]]; then
     # mark the address as reserved
     # [FORMAT:net/network]
     sed -i "s/^$( ip2dec $1 ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
@@ -2645,6 +2678,35 @@ function network_ip_assign {
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
   return $RET
+}
+
+# try to determine whether or not an IP is in use
+#
+# required:
+#   $1	ip to check
+#
+# optional:
+#   $2	hostname to match against
+#
+function network_ip_check {
+  valid_ip "$1" || return 1
+  # tcp port 22 (ssh), 80 (http), 443 (https), and 8080 (http-alt)
+  nc -z -w 2 $1 22 >/dev/null 2>&1 && return 1
+  nc -z -w 2 $1 80 >/dev/null 2>&1 && return 1
+  nc -z -w 2 $1 443 >/dev/null 2>&1 && return 1
+  nc -z -w 2 $1 8080 >/dev/null 2>&1 && return 1
+  # icmp/ping
+  if [ $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then return 1; fi
+  # optional /etc/hosts matching
+  if ! [ -z "$2" ]; then
+    grep -qE '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts
+    if [ $? -eq 0 ]; then
+      grep -E '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$2" || return 1
+    fi
+  else
+    grep -qE '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts && return 1
+  fi
+  return 0
 }
 
 # list unassigned and unreserved ip addresses in a network
@@ -2706,7 +2768,7 @@ function network_ip_scan {
     # skip the address if it is already marked reserved
     # [FORMAT:net/network]
     grep "^$i," ${CONF}/net/${FILENAME} |grep -qE '^[^,]*,[^,]*,y,' && continue
-    if [ $( /bin/ping -c4 -n -s8 -w3 -q $( dec2ip $i ) |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then
+    if [ $( exit_status network_ip_check $( dec2ip $i ) ) -ne 0 ]; then
       # mark the address as reserved
       # [FORMAT:net/network]
       IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
@@ -4208,7 +4270,7 @@ function system_parent {
 function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME NETMASK \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
-        BuildParent BUILDNET VMPath Foreground=0 Hypervisor
+        BuildParent BUILDNET VMPath Foreground=0 Hypervisor OS ARCH DISK RAM PARENT
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -4243,12 +4305,7 @@ function system_provision {
   
   if [ "$IP" != "dhcp" ]; then
     # verify the system's IP is not in use
-    nc -z -w 2 $IP 22 >/dev/null 2>&1 && err "System is alive; will not redeploy."
-    if [ $( /bin/ping -c4 -n -s8 -w4 -q $IP |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then err "System is alive; will not redeploy."; fi
-    grep -qE '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts
-    if [ $? -eq 0 ]; then
-      grep -E '^'$( echo $IP |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$NAME" || err "Another system with this IP is already configured in /etc/hosts."
-    fi
+    network_ip_check $IP $NAME || err "System is alive; will not redeploy."
     #  - look up the network for this IP
     NETNAME=$( network_list --match $IP )
     test -z "$NETNAME" && err "No network was found matching this system's IP address"
@@ -4341,12 +4398,22 @@ function system_provision {
 #  test -s "$FILE" || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
   start_modify
+
   #  - assign a temporary IP as needed
   if [[ "$NETNAME" != "$BUILDNET" || "$IP" == "dhcp" ]]; then
-    BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
-    valid_ip $BUILDIP || err "Automatic IP selection failed"
+
+    BUILDIP=""
+    while [ -z "$BUILDIP" ]; do
+      check_abort
+      BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
+      if [ $( exit_status valid_ip $BUILDIP ) -ne 0 ]; then BUILDIP=""; continue; fi
+      # verify the build IP is not in use
+      if [ $( exit_status network_ip_check $BUILDIP $NAME ) -ne 0 ]; then BUILDIP=""; continue; fi
+    done
+
     # assign/reserve IP
     network_ip_assign $BUILDIP $NAME || err "Unable to assign IP address"
+
   else
     BUILDIP=$IP
   fi
@@ -4359,6 +4426,8 @@ function system_provision {
   IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
 
+  scslog "prior to validation, using build $BUILD for system $NAME - assigned ram '$RAM' and disk '$DISK'"
+
   # set disk/ram
   if [ -z "$DISK" ]; then DISK=$RDISK; fi
   if [ -z "$RAM" ]; then RAM=$RRAM; fi
@@ -4366,6 +4435,8 @@ function system_provision {
   #  - get disk size and memory
   test -z "$DISK" && DISK=$DEF_HDD
   test -z "$RAM" && RAM=$DEF_MEM
+
+  scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
 
   #  - get globally unique mac address and uuid for the new server
   read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
@@ -4495,13 +4566,15 @@ function system_provision_phase2 {
       fi
     fi
 
+    scslog "ok, getting around to building the overlay for $NAME - assigned ram '$RAM' and disk '$DISK' - this should match the earlier value"
+
     #  - kick off provision system
     scslog "starting system build for $NAME on $HV at $BUILDIP"
     echo "Creating virtual machine..."
-    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
-    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
     ssh -o "StrictHostKeyChecking no" -n $HV "virsh start $NAME" >/dev/null 2>&1
@@ -4519,13 +4592,14 @@ function system_provision_phase2 {
       done
       
       if ! [ -z "$DHCPIP" ]; then
+        purge_known_hosts --ip $DHCPIP
         DHCPNETNAME=$( network_ip_locate $BUILDIP )
         # [FORMAT:network]
         read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status nc -z -w 2 $DHCPIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
         while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now"
+        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1
         scslog "successfully moved system to assigned build address"
       fi
     fi
@@ -4558,7 +4632,7 @@ function system_provision_phase2 {
   scslog "build scripts deployed to $NAME"
 
   #  - sysbuild_install (do not change the IP here)
-  system_start_remote_build $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
+  system_start_remote_build $NAME $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
   scslog "started remote build"
 
   if [ -z "$OVERLAY" ]; then
@@ -4578,6 +4652,7 @@ function system_provision_phase2 {
   sleep 15
   while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
+  purge_known_hosts --ip $BUILDIP
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
 
@@ -4606,15 +4681,17 @@ function system_provision_phase2 {
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
       read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
     else
-      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
+      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
     fi
     sleep 5
     # update ip assignment
     scslog "Updating IP assignments"
     network_ip_unassign $BUILDIP >/dev/null 2>&1
     if [ "$IP" != "dhcp" ]; then network_ip_assign $IP $NAME --force >/dev/null 2>&1; fi
+    purge_known_hosts --ip $BUILDIP
+    purge_known_hosts --name $NAME --ip $IP
   fi
 
   if [ "$BASE_IMAGE" == "y" ]; then
@@ -5066,22 +5143,34 @@ function system_show {
   printf -- '\n'
 }
 
+# start the system build (scripts) on the remote system
+#
+# arguments:
+#   $1	system-name
+#   $2	remote-ip (current address)
+#
+# optional:
+#   $3	role
+#
 function system_start_remote_build {
-  if [[ $# -eq 0 || -z "$1" ]]; then err "Usage: sysbuild_install current-ip [role]"; fi
-  valid_ip $1 || err "An invalid IP was provided"
+  if [[ $# -eq 0 || -z "$1" ]]; then err "Usage: scs system <name> --start-remote-build current-ip [role]"; fi
+
+  system_exists $1 || err "Unknown or missing system name"
+  valid_ip $2      || err "An invalid IP was provided"
+
   # confirm availabilty
-  nc -z -w2 $1 22 >/dev/null 2>&1 || err "Host is down. Aborted."
+  nc -z -w2 $2 22 >/dev/null 2>&1 || errlog "Host is down. Aborted."
+
   # remove any stored keys for the current and target IPs since this is a new build
-  cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
-  sed -i "/$( printf -- "$1" |sed 's/\./\\./g' )/d" /root/.ssh/known_hosts
-  diff /root/.ssh/known_hosts{.$$,}; rm -f /root/.ssh/known_hosts.$$
+  purge_known_hosts --name $1 --ip $2
+
   # kick-off install and return
-  if [ -z "$2" ]; then
-    scslog "\"$1\" \"nohup ESG/system-builds/role.sh --shutdown >/dev/null 2>&1 </dev/null &\""
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown >/dev/null 2>&1 </dev/null &"
+  if [ -z "$3" ]; then
+    scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown >/dev/null 2>&1 </dev/null &"
+    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   else
-    scslog "\"$1\" \"nohup ESG/system-builds/role.sh --shutdown $2 >/dev/null 2>&1 </dev/null &\""
-    ssh -o "StrictHostKeyChecking no" $1 "nohup ESG/system-builds/role.sh scs-build --shutdown $2 >/dev/null 2>&1 </dev/null &"
+    scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
+    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $2 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   fi
 }
 
