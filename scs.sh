@@ -760,12 +760,11 @@ function octal2text {
 #   --ip <string>
 #
 function purge_known_hosts {
-  if [ $? -eq 0 ]; then return; fi
+  if [ $# -eq 0 ]; then return; fi
 
   local name ipaddy kh
   kh=/root/.ssh/known_hosts
 
-  scslog "purge_known_hosts: '$@'"
   while [ $# -gt 0 ]; do case $1 in
     --name) grep -q "$2" $kh && name=$2; shift;;
     --ip) valid_ip $2 && grep -q "$2" $kh && ipaddy=$2; shift;;
@@ -5170,7 +5169,7 @@ function system_start_remote_build {
     ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   else
     scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
-    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $2 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   fi
 }
 
