@@ -3495,9 +3495,7 @@ function hypervisor_list {
 #
 function hypervisor_locate_system {
 
-  # input validation
-  test $# -ge 1 || err "Provide the system name"
-  grep -qE "^$1," ${CONF}/system || err "Unknown system"
+  system_exists $1 || err "Unknown system"
 
   # variable scope
   local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
@@ -3819,6 +3817,7 @@ function system_byname {
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
     --vars)                system_vars $1;;
+    --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
     --vm-disks)            system_vm_disks $1;;
   esac
 }
@@ -5317,6 +5316,111 @@ function system_vars {
     IFS="," read -r CN VAL <<< "$CNST"
     echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
   done
+}
+
+# create and attach a new disk to an existing virtual machine
+#
+function system_vm_disk_create {
+  #grep -q "CONFIG_HOTPLUG_PCI_ACPI=y" /boot/config-$( uname -r )
+
+  if [ $# -lt 2 ]; then system_vm_disk_create_help; return 1; fi
+
+  local Args Alias Backing Destroy=0 Disk DryRun=0 Size=40 Type=virtio VM \
+        Hypervisor AllHypervisors HypervisorIP VMPath HypervisorEnabled \
+        Disk_Type_List DevID NewDevID
+
+  VM="$1"; shift
+  Disk_Type_List="ide scsi usb virtio xen"
+
+  while [ $# -gt 0 ]; do case $1 in
+    -a|--alias) Alias="$2"; shift;;
+    -b|--backing) Backing="$2"; shift;;
+    -d|--disk) Disk="$2"; shift;;
+    -s|--size) Size="$2"; shift;;
+    -t|--type) Type="$2"; shift;;
+    --destroy) Destroy=1;;
+    --dry-run) DryRun=1;;
+  esac; shift; done
+
+  system_exists $VM || return 1
+  [ -z "$Alias" ] && return 1
+  printf -- " $Disk_Type_List " |grep -q " $Type " || err "Invalid bus (disk type). Must be one of $Disk_Type_List."
+  [ "$Size" != "${Size//[^0-9]/}" ] && err "Disk size must be a numeric integer"
+  [ $Size -lt 1 ] && err "Disk size must be at least 1 GB"
+  [ $Size -gt 2000 ] && err "Disk size must be less than 2 TB (this limit is arbitrary)"
+  printf -- "${Alias}${VM}${Disk}${Backing}" |grep -q "*" && err "Invalid character in system name, alias, or path."
+
+  Hypervisor="$( hypervisor_locate_system $VM )"
+  #AllHypervisors="$( hypervisor_locate_system $VM --all |tr '\n' ' ' )"
+
+  [ -z "$Hypervisor" ] && err "Unable to locate hypervisor for the specified system"
+  # [FORMAT:hypervisor]
+  read HypervisorIP VMPath HypervisorEnabled <<<"$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4,$7}' )"
+  [ "$HypervisorEnabled" == "y" ] || err "The primary hypervisor for this system is not enabled"
+  
+  if ! [ -z "$Backing" ]; then
+    ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f $Backing" >/dev/null 2>&1
+    if [ $? -ne 0 ]; then err "Specified backing disk does not exist"; fi
+  fi
+
+  [ -z "$Disk" ] && Disk="${VMPath}/${VM}.${Alias}.img"
+  ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f $Disk" >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    if [ $Destroy -eq 1 ]; then
+      ssh -o "StrictHostKeyChecking no" $HypervisorIP "/bin/rm -f $Disk" >/dev/null 2>&1
+    else
+      err "The specified disk already exists on $Hypervisor"
+    fi
+  fi
+
+  DevID=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
+  NewDevID="$( printf -- "${DevID}" |sed 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
+
+  if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
+
+  if [ $DryRun -eq 1 ]; then
+    echo "DRY-RUN: Create disk..."
+    echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
+    echo
+  else
+    ssh -o "StrictHostKeyChecking no" $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}" >/dev/null 2>&1
+    test $? -eq 0 || err "Error creating disk"
+  fi
+
+  if [ $DryRun -eq 1 ]; then
+
+    echo "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent"
+    echo
+    cat <<_EOF
+<disk type='file' device='disk'>
+  <driver name='qemu' type='qcow2' cache='writeback'/>
+  <source file='${Disk}'/>
+  <target dev='${NewDevID}' bus='${Type}'/>
+</disk>
+_EOF
+
+  else
+    cat <<_EOF |ssh -o "StrictHostKeyChecking no" $HypervisorIP "cat >/tmp/$VM.scs_add_disk.$$.xml"
+<disk type='file' device='disk'>
+  <driver name='qemu' type='qcow2' cache='writeback'/>
+  <source file='${Disk}'/>
+  <target dev='${NewDevID}' bus='${Type}'/>
+</disk>
+_EOF
+
+    ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent" >/dev/null 2>&1
+    test $? -eq 0 || err "Error attaching device - see $Hypervisor:/tmp/$VM.scs_add_disk.$$.xml"
+    echo "Successfully attached disk"
+    scslog "attached $Size disk '$Alias' to $VM on $Hypervisor"
+
+  fi
+
+  return 0
+}
+function system_vm_disk_create_help { cat <<_EOF
+Usage: ... --alias <name> --vm <name> [--backing </path/to/image.img>] [--disk </path/to/disk.img>] [--size N (in GB)] [--destroy] [--dry-run]
+
+_EOF
 }
 
 # output the virtual machine disk configuration for the system
