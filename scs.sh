@@ -291,7 +291,6 @@
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
-#     - system_builder function to generate overlays and dependencies
 #     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
 #     - colorize system list output (different color per build)?
@@ -965,7 +964,8 @@ function cancel_modify {
     git reset --hard >/dev/null 2>&1
     git checkout master >/dev/null 2>&1
     git branch -D $USERNAME >/dev/null 2>&1
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
+    if [[ $L -gt 0 || $N -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
   fi
   popd >/dev/null 2>&1
 }
@@ -1014,10 +1014,10 @@ function git_status {
   local BRANCH=$( git branch |grep -E '^\*' |awk '{print $2}' )
   local N=`git diff --name-status master |wc -l 2>/dev/null`
   if [ "$BRANCH" == "master" ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
     if [ $N -gt 0 ]; then git status; fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****"
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****" >&2
     if [ $N -gt 0 ]; then git status; fi
   fi
   popd >/dev/null 2>&1
@@ -1032,9 +1032,10 @@ function start_modify {
   cd $CONF || err
   git branch |grep -E '^\*' |grep -q master
   if [ $? -eq 0 ]; then
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****"
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****" >&2
     git branch $USERNAME >/dev/null 2>&1
     git checkout $USERNAME >/dev/null 2>&1
+    scslog "locked"
   else
     git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
   fi
@@ -1085,7 +1086,8 @@ function stop_modify {
   git commit -a -m"$MSG" >/dev/null 2>&1
   git branch -D $USERNAME >/dev/null 2>&1
   popd >/dev/null 2>&1
-  printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****"
+  printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
+  scslog "committed pending changes with message: $MSG"
 }
 
 
@@ -3954,12 +3956,13 @@ function system_convert {
   # scope variables
   local NAME=$1 BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY curType newType \
         Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
-        VMPath HV HVIP HVPATH NETNAME Force=0; shift
+        VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0; shift
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
     --backing)    newType=backing;;
     --distribute) Distribute=1;;
+    --dry-run)    DryRun=1;;
     --force)      Force=1;;
     --network)    NETNAME="$2"; shift;;
     --no-prompt)  Confirm=0;;
@@ -3986,22 +3989,28 @@ function system_convert {
   # special cases
   if [ "$curType" == "physical" ]; then err "I am not nearly advanced enough to virtualize a physical server (yet)"; fi
   if [[ "$curType" == "$newType" && $Force -eq 0 ]]; then return 0; fi
+  if [ -z "$newType" ]; then system_convert_help; return 1; fi
 
   # confirm operation (unless explicitly told not to)
   if [ $Confirm -ne 0 ]; then get_yn RL "Are you sure you want to convert $NAME from $curType to $newType (y/n)?" || return 0; fi
+  
+  if [ $DryRun -eq 0 ]; then start_modify; else echo "Dry Run - No changes will be made"; fi
 
   # locate system
   Hypervisor=$( hypervisor_locate_system $NAME )
   
   if [[ -z "$Hypervisor" && $Force -eq 1 ]]; then
-    Hypervisor=$( hypervisor_locate_system $NAME --search-as-single )         ; if [ -z "$Hypervisor" ]; then err "Unable to locate hypervisor"; fi
-    HypervisorAll=$( hypervisor_locate_system $NAME --all --search-as-single ); if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; fi
+    Hypervisor=$( hypervisor_locate_system $NAME --search-as-single )         ; if [ -z "$Hypervisor" ]; then err "Unable to locate hypervisor"; exit 1; fi
+    HypervisorAll=$( hypervisor_locate_system $NAME --all --search-as-single ); if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; exit 1; fi
     curType=single
   elif [ -z "$Hypervisor" ]; then
-    err "Unable to locate hypervisor"
+    err "Unable to locate hypervisor"; exit 1
   else
-    HypervisorAll=$( hypervisor_locate_system $NAME --all )                   ; if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; fi
+    HypervisorAll=$( hypervisor_locate_system $NAME --all )                   ; if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; exit 1; fi
   fi
+
+  # overlay to backing is the same as single to backing
+  if [[ "$curType" == "overlay" && "$newType" == "backing" ]]; then curType=single; fi
 
   # load primary hypervisor
   # [FORMAT:hypervisor]
@@ -4017,11 +4026,24 @@ function system_convert {
         read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
 
         # shut off vm if running
-        ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+        if [ $DryRun -eq 0 ]; then
+          ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+        else
+          echo ssh $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
+        fi
       done
 
       # move disk image
-      ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${VMPath}/${NAME}.img ${VMPath}/${BACKING_FOLDER}${NAME}.img" >/dev/null 2>&1
+      List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "ls ${VMPath}/${NAME}.*img" )"
+      for File in $List; do
+        if [ $DryRun -eq 0 ]; then
+          scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}" >/dev/null 2>&1
+        else
+          echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}"
+        fi
+      done
+      if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "ls ${VMPath}/${BACKING_FOLDER}${NAME}.*img" )"; fi
 
       # undefine vm
       for HV in $HypervisorAll; do
@@ -4030,13 +4052,18 @@ function system_convert {
         read -r HVIP <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2}' )"
 
         # undefine vm
-        ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+        if [ $DryRun -eq 0 ]; then
+          ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+        else
+          echo ssh $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
+        fi
       done
 
       # redistribute vm (as needed)
       if [ $Distribute -eq 1 ]; then for HV in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN | tr '\n' ' ' ); do
         
         if [ "$HV" == "$Hypervisor" ]; then continue; fi
+        if [ $DryRun -ne 0 ]; then echo "redistribute enabled to $HV"; continue; fi
 
         # load hypervisor configuration
         # [FORMAT:hypervisor]
@@ -4046,11 +4073,15 @@ function system_convert {
         nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
 
         ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
-        ssh -o "StrictHostKeyChecking no" $HVIP "test -f ${HVPATH}/${BACKING_FOLDER}${NAME}.img" && continue
 
-        srcp -t ${TMPLarge} $HypervisorIP:${VMPath}/${BACKING_FOLDER}${NAME}.img $HVIP:${HVPATH}/${BACKING_FOLDER}${NAME}.img >/dev/null 2>&1 
+        for File in $List; do
+          ssh -o "StrictHostKeyChecking no" $HVIP "test -f $File" && continue
+          srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPATH}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1 
+        done
 
       done; fi
+
+      if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
 
       ;;
 
@@ -4067,11 +4098,6 @@ function system_convert {
       err "not implemented... and potentially destructive"
       ;;
 
-    'overlay->backing')
-      # this case is interesting because a backing system can also be an overlay
-      err "not implemented... and potentially hazardous"
-      ;;
-
     'overlay->single')
       err "not implemented... and potentially hazardous"
       ;;
@@ -4080,9 +4106,10 @@ function system_convert {
       err "Unknown transition: $curType->$newType"
       ;;
   esac
+  return 0
 }
 function system_convert_help { cat <<_EOF >&2
-Usage: $0 system <name> --convert [--single|--backing|--overlay <backing_system>] [--distribute] [--no-prompt]
+Usage: $0 system <name> --convert [--single|--backing|--overlay <backing_system>] [--distribute] [--dry-run] [--no-prompt]
 
 Converts a virtual-machine to a different base type. The only 100% safe use case is converting a single (full deploy) to a backing image.
 
@@ -4212,10 +4239,11 @@ function system_deprovision {
     nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
     # get disks
     if [ "$BASE_IMAGE" == "y" ]; then
-      LIST="${VMPATH}/${BACKING_FOLDER}${NAME}.img"
+      LIST="$( ssh -o "StrictHostKeyChecking no" $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
     else
       LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
     fi
+    scslog "removing from $HV: $LIST"
     # destroy
     if [ $DRY_RUN -ne 1 ]; then
       ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
@@ -4236,6 +4264,7 @@ function system_deprovision {
     if [[ $DRY_RUN -eq 1 && "$HV" == "$HVFIRST" ]]; then HV=""; fi
   done
   printf -- '\n%s has been removed\n' "$NAME"
+  scslog "$NAME has been deprovisioned"
   return 0
 }
 
@@ -4522,7 +4551,7 @@ _EOF
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
         REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
-        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS
+        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS List File
 
   # load arguments passed in from phase1
   echo "Args: $@" >&2
@@ -4575,6 +4604,16 @@ function system_provision_phase2 {
       echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
+
+    # check for secondary disks
+    List="$( ssh -o "StrictHostKeyChecking no" $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
+    for File in $List; do
+      if [ "$File" == "${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img" ]; then continue; fi
+      system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${OVERLAY}'\.//; s/\.img$//' )" --backing $File
+      if [ $? -eq 0 ]; then scslog "successfully added secondary disk to $NAME using backing image $( basename $File )"; else scslog "error adding secondary disk to $NAME using backing image $( basename $File )"; fi
+    done
+
+    # start new virtual machine
     ssh -o "StrictHostKeyChecking no" -n $HV "virsh start $NAME" >/dev/null 2>&1
 
     if ! [ -z "$DHCP" ]; then
@@ -5227,6 +5266,31 @@ function system_update {
     BASE_IMAGE="n"
     OVERLAY=""
   fi
+
+  # handle single or overlay -> backing image
+  if [[ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" && "$BASE_IMAGE" == "y" && $( exit_status valid_ip $IP ) -eq 0 && $( exit_status nc -z -w 2 $IP 22 ) -eq 0 ]]; then
+
+    if [ "$( ssh -o "StrictHostKeyChecking no" $IP "hostname" )" != "$NAME" ]; then
+      scslog "refusing to change system type since the system at the registered IP does not match the host name"
+      echo "refusing to change system type since the system at the registered IP does not match the host name" >&2
+      BASE_IMAGE=$ORIGBASE_IMAGE
+    else
+      #  - look up the network for this IP
+      NETNAME=$( network_list --match $IP )
+      test -z "$NETNAME" && err "No network was found matching this system's IP address"
+      # flush hardware address, ssh host keys, and device mappings to anonymize system
+      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1 
+      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
+      #scslog "successfully stopped $NAME"
+      sleep 15
+      # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
+      scslog "converting VM to backing image"
+      system_convert $NAME --backing --no-prompt --force --network $NETNAME
+      if [ $? -eq 0 ]; then IP=dhcp; scslog "successfully converted vm"; else scslog "conversion failed"; fi
+    fi
+
+  fi
+
   # save changes
   # [FORMAT:system]
   sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
