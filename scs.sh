@@ -3370,7 +3370,7 @@ function hypervisor_add_network {
 #   [<name>] [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
-  if [ "$1" == "--system-audit" ]; then hypervisor_system_audit; it ${@:2}; return; fi
+  if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
   if [ "$1" == "--rank" ]; then hypervisor_rank ${@:2}; echo; return; fi
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   case "$2" in
