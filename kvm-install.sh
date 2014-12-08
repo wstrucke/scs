@@ -64,6 +64,7 @@ Options:
   --quiet               silence as much output as possible
   --ram <int>           amount of ram in MB, default 512
   --vnc <port>          activate VNC server on tcp port <port>
+  --use-existing        use an existing disk image instead of creating a new one
   --uuid <string>       specify the uuid to assign, default auto-generate
   --yes-i-am-sure       do not prompt for confirmation of destructive changes
 
@@ -206,6 +207,7 @@ OSLIST="centos4 centos5 centos6 ubuntu generic"
 BASE=""
 DESTROY=0
 DRYRUN=0
+Existing=0
 KSURL=""
 INSTALL=1
 INSTALL_URL=""
@@ -238,6 +240,7 @@ while [ $# -gt 0 ]; do case $1 in
   -c|--cpu) VMCPUS="$2"; shift;;
   -d|--disk) VMSIZE="$2"; shift;;
   -D|--disk-path) VMDISK="$2"; shift;;
+  -e|--use-existing) Existing=1;;
   -g|--gateway) VMGATEWAY="$2"; shift;;
   -k|--ks) KSURL="$2"; shift;;
   -I|--interface) INTERFACE="$2"; shift;;
@@ -282,6 +285,7 @@ if [ ! -z "$INTERFACE" ]; then
   /sbin/ifconfig $INTERFACE >/dev/null 2>&1 || err "Invalid interface"
 fi
 if [ ! -z "$VNC" ]; then printf -- " $( /bin/netstat -ln |grep '^tcp' |awk '{print $4}' |cut -d: -f2 |tr '\n' ' ' ) " |grep -q " $VNC " && err "VNC port in use"; fi
+if [[ $Existing -eq 1 && -z "$VMDISK" ]]; then err "Please provide the path to the existing disk"; fi
 
 # ip verification
 if [ ! -z "$VMIP" ]; then
@@ -417,6 +421,9 @@ if [ ! -z "$VMDISK_TYPE" ]; then VMDISK_TYPE=",bus=${VMDISK_TYPE}"; fi
 if [[ ! -z "$BASE" || -f "${VMDISK}" ]]; then
   ARGS="$ARGS --disk path=${VMDISK},format=qcow2,cache=writeback${VMDISK_TYPE}"
   BASE="-b $BASE "
+  VMSIZE=""
+elif [ $Existing -eq 1 ]; then
+  ARGS="$ARGS --disk path=${VMDISK},format=qcow2,cache=writeback${VMDISK_TYPE}"
   VMSIZE=""
 else
   ARGS="$ARGS --disk path=${VMDISK},size=${VMSIZE},format=qcow2,cache=writeback${VMDISK_TYPE}"

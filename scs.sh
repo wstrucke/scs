@@ -3956,7 +3956,7 @@ function system_convert {
   # scope variables
   local NAME=$1 BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY curType newType \
         Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
-        VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0; shift
+        VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0 Count; shift
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -4016,25 +4016,27 @@ function system_convert {
   # [FORMAT:hypervisor]
   read -r HypervisorIP VMPath <<< "$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
 
+  for HV in $HypervisorAll; do
+    # load hypervisor configuration
+    # [FORMAT:hypervisor]
+    read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+    # shut off vm if running
+    if [ $DryRun -eq 0 ]; then
+      ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+    else
+      echo ssh $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
+    fi
+  done
+
+  # enumerate disk images
+  List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+
   case "$curType->$newType" in
 
     'single->backing')
 
-      for HV in $HypervisorAll; do
-        # load hypervisor configuration
-        # [FORMAT:hypervisor]
-        read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
-
-        # shut off vm if running
-        if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
-        else
-          echo ssh $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
-        fi
-      done
-
       # move disk image
-      List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "ls ${VMPath}/${NAME}.*img" )"
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
           scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
@@ -4043,7 +4045,7 @@ function system_convert {
           echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}"
         fi
       done
-      if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "ls ${VMPath}/${BACKING_FOLDER}${NAME}.*img" )"; fi
+      if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
 
       # undefine vm
       for HV in $HypervisorAll; do
@@ -4089,13 +4091,106 @@ function system_convert {
       err "not implemented... and potentially hazardous"
       ;;
 
-    'backing->single')
-      err "not implemented... and potentially destructive"
-      ;;
+    'backing->single'|'backing->overlay')
 
-    'backing->overlay')
-      # this case is interesting because a backing system can also be an overlay
-      err "not implemented... and potentially destructive"
+      # verify no other systems overlay on this one
+      for File in $List; do
+        Count=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l" )
+        if [ $DryRun -eq 0 ]; then
+          if [ $Count -gt 0 ]; then errlog "found $Count system overlay images on '$File': aborting"; exit 1; fi
+        else
+          echo ssh $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l"
+          echo "found $Count system overlay images on '$File': anything over 0 will normally cause an error"
+        fi
+      done
+
+      # move images out of backing folder
+      for File in $List; do
+        if [ $DryRun -eq 0 ]; then
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${File} ${VMPath}/"
+        else
+          echo ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${File} ${VMPath}/"
+        fi
+      done
+      List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+
+      #  - lookup the build network for this system
+      network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
+      if [ $? -eq 0 ]; then
+        BUILDNET=$NETNAME
+      else
+        BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
+      fi
+  
+      #  - get the network interfaces on the hypervisor
+      # [FORMAT:hv-network]
+      HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+      HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+      [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$Hypervisor' is missing one or more interface mappings for the selected networks."
+
+      #  - load the architecture and operating system for the build
+      # [FORMAT:build]
+      IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+      ROOT=$( build_root $BUILD )
+      # [FORMAT:build]
+      IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+      test -z "$OS" && err "Error loading build"
+    
+      # set disk/ram
+      if [ -z "$DISK" ]; then DISK=$RDISK; fi
+      if [ -z "$RAM" ]; then RAM=$RRAM; fi
+    
+      #  - get disk size and memory
+      test -z "$DISK" && DISK=$DEF_HDD
+      test -z "$RAM" && RAM=$DEF_MEM
+    
+      scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
+    
+      #  - get globally unique mac address and uuid for the new server
+      read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+
+      # create new vm
+      if [ $DryRun -eq 0 ]; then
+        scslog "starting system build for $NAME on $Hypervisor at $BUILDIP"
+        echo "Creating virtual machine..."
+  #    scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+  # need ... buildip/mask, gateway, dns, interface
+        scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+        ssh -o "StrictHostKeyChecking no" -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+        if [ $? -ne 0 ]; then
+          echo ssh -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+          err "Error creating VM!"
+        fi
+      else
+        echo ssh -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+      fi
+
+      # check for secondary disks
+      for File in $List; do
+        if [ "$File" == "${VMPath}/${NAME}.img" ]; then continue; fi
+        if [ $DryRun -eq 0 ]; then
+          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor
+          if [ $? -eq 0 ]; then scslog "successfully added secondary disk to $NAME"; else scslog "error adding secondary disk to $NAME"; fi
+        else
+          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor --dry-run
+        fi
+      done
+
+      if [ $DryRun -eq 0 ]; then
+        # start new virtual machine
+        ssh -o "StrictHostKeyChecking no" -n $HypervisorIP "virsh start $NAME" >/dev/null 2>&1
+      fi
+
+      # update system configuration
+      # [FORMAT:system]
+      IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+      # save changes
+      # [FORMAT:system]
+      sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+      commit_file system
+
+      if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
+
       ;;
 
     'overlay->single')
@@ -4665,11 +4760,11 @@ function system_provision_phase2 {
   ROLE=$( grep -E "^$BUILD," ${CONF}/build |awk 'BEGIN{FS=","}{print $2}' )
 
   #  - install_build
-  system_push_build_scripts $BUILDIP >/dev/null 2>&1 || logerr "Error pushing build scripts to remote server $NAME at $IP"
+  system_push_build_scripts $BUILDIP >/dev/null 2>&1 || errlog "Error pushing build scripts to remote server $NAME at $IP"
   scslog "build scripts deployed to $NAME"
 
   #  - sysbuild_install (do not change the IP here)
-  system_start_remote_build $NAME $BUILDIP $ROLE >/dev/null 2>&1 || logerr "Error starting remote build on $NAME at $IP"
+  system_start_remote_build $NAME $BUILDIP $ROLE >/dev/null 2>&1 || errlog "Error starting remote build on $NAME at $IP"
   scslog "started remote build"
 
   if [ -z "$OVERLAY" ]; then
@@ -5391,7 +5486,7 @@ function system_vm_disk_create {
 
   local Args Alias Backing Destroy=0 Disk DryRun=0 Size=40 Type=virtio VM \
         Hypervisor AllHypervisors HypervisorIP VMPath HypervisorEnabled \
-        Disk_Type_List DevID NewDevID
+        Disk_Type_List DevID NewDevID Existing=0
 
   VM="$1"; shift
   Disk_Type_List="ide scsi usb virtio xen"
@@ -5400,6 +5495,8 @@ function system_vm_disk_create {
     -a|--alias) Alias="$2"; shift;;
     -b|--backing) Backing="$2"; shift;;
     -d|--disk) Disk="$2"; shift;;
+    -e|--use-existing) Existing=1;;
+    -h|--hypervisor) Hypervisor="$2"; shift;;
     -s|--size) Size="$2"; shift;;
     -t|--type) Type="$2"; shift;;
     --destroy) Destroy=1;;
@@ -5414,7 +5511,7 @@ function system_vm_disk_create {
   [ $Size -gt 2000 ] && err "Disk size must be less than 2 TB (this limit is arbitrary)"
   printf -- "${Alias}${VM}${Disk}${Backing}" |grep -q "*" && err "Invalid character in system name, alias, or path."
 
-  Hypervisor="$( hypervisor_locate_system $VM )"
+  if [ -z "$Hypervisor" ]; then Hypervisor="$( hypervisor_locate_system $VM )"; else hypervisor_exists $Hypervisor || err "Invalid hypervisor"; fi
   #AllHypervisors="$( hypervisor_locate_system $VM --all |tr '\n' ' ' )"
 
   [ -z "$Hypervisor" ] && err "Unable to locate hypervisor for the specified system"
@@ -5432,7 +5529,7 @@ function system_vm_disk_create {
   if [ $? -eq 0 ]; then
     if [ $Destroy -eq 1 ]; then
       ssh -o "StrictHostKeyChecking no" $HypervisorIP "/bin/rm -f $Disk" >/dev/null 2>&1
-    else
+    elif [ $Existing -eq 0 ]; then
       err "The specified disk already exists on $Hypervisor"
     fi
   fi
@@ -5440,15 +5537,17 @@ function system_vm_disk_create {
   DevID=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
   NewDevID="$( printf -- "${DevID}" |sed 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
 
-  if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
-
-  if [ $DryRun -eq 1 ]; then
-    echo "DRY-RUN: Create disk..."
-    echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
-    echo
-  else
-    ssh -o "StrictHostKeyChecking no" $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}" >/dev/null 2>&1
-    test $? -eq 0 || err "Error creating disk"
+  if [ $Existing -eq 0 ]; then
+    if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
+  
+    if [ $DryRun -eq 1 ]; then
+      echo "DRY-RUN: Create disk..."
+      echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
+      echo
+    else
+      ssh -o "StrictHostKeyChecking no" $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}" >/dev/null 2>&1
+      test $? -eq 0 || err "Error creating disk"
+    fi
   fi
 
   if [ $DryRun -eq 1 ]; then
