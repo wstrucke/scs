@@ -3424,11 +3424,13 @@ function hypervisor_exists {
 #
 # optional:
 #   --location <string>     limit to the specified location
+#   --enabled               limit to enabled hypervisors (this also checks disk/memory minimums)
 #   --environment <string>  limit to the specified environment
 #   --network <string>      limit to the specified network (may be specified up to two times)
 #   --backing <string>      limit to hypervisors containing the specified backing image
 #
 function hypervisor_list {
+ local NUM A S LIST N NL HypervisorIP VMPath MinDisk MinMem
  NUM=$( wc -l ${CONF}/hypervisor |awk '{print $1}' )
   if [ $# -eq 0 ]; then
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -3444,27 +3446,33 @@ function hypervisor_list {
         for N in $LIST; do
           # [FORMAT:hypervisor]
           grep -qE '^'$N',[^,]*,'$2',' ${CONF}/hypervisor && NL="$NL $N"
-        done
-        LIST="$NL"
-        shift
+        done; LIST="$NL"; shift
+        ;;
+      --enabled)
+        NL=""
+        for N in $LIST; do
+          # [FORMAT:hypervisor]
+          grep -qE '^'$N',([^,]*,){5}y' ${CONF}/hypervisor
+          if [ $? -eq 0 ]; then
+            [ $( hypervisor_poll $N --disk 2>/dev/null ) -eq 0 ] && continue
+            [ $( hypervisor_poll $N --mem 2>/dev/null ) -eq 0 ] && continue
+            NL="$NL $N"
+          fi
+        done; LIST="$NL"; shift
         ;;
       --environment)
         NL=""
         for N in $LIST; do
           # [FORMAT:hv-environment]
           grep -qE '^'$2','$N'$' ${CONF}/hv-environment && NL="$NL $N"
-        done
-        LIST="$NL"
-        shift
+        done; LIST="$NL"; shift
         ;;
       --network)
         NL=""
         for N in $LIST; do
           # [FORMAT:hv-network]
           grep -qE '^'$2','$N',' ${CONF}/hv-network && NL="$NL $N"
-        done
-        LIST="$NL"
-        shift
+        done; LIST="$NL"; shift
         ;;
       --backing)
         system_exists $2 || err "Invalid system"
@@ -3474,9 +3482,7 @@ function hypervisor_list {
           read -r HypervisorIP VMPath <<< "$( grep -E "^$N," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
           nc -z -w 2 $HypervisorIP 22 >/dev/null 2>&1 || continue
           ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" >/dev/null 2>&1 && NL="$NL $N"
-        done
-        LIST="$NL"
-        shift
+        done; LIST="$NL"; shift
         ;;
       *) err "Invalid argument";;
     esac; shift; done
@@ -3592,6 +3598,7 @@ function hypervisor_locate_system {
 #
 function hypervisor_poll {
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
+  local NAME IP LOC VMPATH MINDISK MINMEM ENABLED FREEMEM MEMPCT N M ONE FIVE FIFTEEN
   # load the host
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
@@ -4062,7 +4069,7 @@ function system_convert {
       done
 
       # redistribute vm (as needed)
-      if [ $Distribute -eq 1 ]; then for HV in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN | tr '\n' ' ' ); do
+      if [ $Distribute -eq 1 ]; then for HV in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN --enabled | tr '\n' ' ' ); do
         
         if [ "$HV" == "$Hypervisor" ]; then continue; fi
         if [ $DryRun -ne 0 ]; then echo "redistribute enabled to $HV"; continue; fi
@@ -4463,7 +4470,7 @@ function system_provision {
   
     if [ -z "$Hypervisor" ]; then
       #  - locate available HVs
-      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
     
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
@@ -4485,15 +4492,15 @@ function system_provision {
     if [ -z "$Hypervisor" ]; then
       # list hypervisors capable of hosting this system
       # -- if none, build it ? 
-      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY | tr '\n' ' ' )
+      LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY --enabled | tr '\n' ' ' )
   
       if [ -z "$LIST" ]; then
         # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
         #   does not exist than just ignore and continue since the entire chain can be built later
-        LIST=$( hypervisor_list --backing $OVERLAY | tr '\n' ' ' )
+        LIST=$( hypervisor_list --backing $OVERLAY --enabled | tr '\n' ' ' )
         test ! -z "$LIST" && err "There are no configured hypervisors capable of building this system"
   
-        LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN | tr '\n' ' ' )
+        LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
         test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
       fi
     
