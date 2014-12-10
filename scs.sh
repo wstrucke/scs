@@ -2443,7 +2443,7 @@ function network_byname {
 function network_by_ip {
   case $1 in
     --locate) network_ip_locate ${@:2};;
-    *) echo "Usage: scs network ip --locate a.b.c.d";;
+    *) echo "Usage: $0 network ip --locate a.b.c.d";;
   esac
 }
 
@@ -2630,7 +2630,7 @@ function network_ip {
     --assign) network_ip_assign ${@:3};;
     --check) network_ip_check $3;;
     --unassign) network_ip_unassign ${@:3};;
-    --list) echo "Not implemented: $@";;
+    --list) network_ip_list $1 ${@:3};;
     --list-available) network_ip_list_available $1 ${@:3};;
     --list-assigned) echo "Not implemented";;
     --scan) network_ip_scan $1;;
@@ -2643,42 +2643,63 @@ function network_ip {
 # required:
 #   $1  IP
 #   $2  hostname
-#   --force to assign the address and ignore checks
+#   --force	assign the address and ignore checks
+#   --comment	prompt for a comment (unfortantly there is no easy way to pass in a string)
 #
 # net/a.b.c.0
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
 #
 function network_ip_assign {
-  start_modify
-  test $# -ge 2 || err "An IP and hostname are required."
-  valid_ip $1 || err "Invalid IP."
-  local RET FILENAME=$( get_network $1 24 ) FORCE=0 ASSN
-  if [[ $# -ge 3 && "$3" == "--force" ]]; then FORCE=1; fi
+  if [ $# -lt 2 ]; then network_ip_assign_help >&2; return 1; fi
+
+  local RET FILENAME=$( get_network $1 24 ) FORCE=0 ASSN IP Hostname Comment
+
+  IP="$1"
+  Hostname="$2"
+  shift 2
+
+  valid_ip $IP || err "Invalid IP."
+
+  while [ $# -gt 0 ]; do case $1 in
+    --comment) get_input Comment "Comment" --nc;;
+    --force) FORCE=1;;
+    *) echo $@; network_ip_assign_help >&2; return 1;;
+  esac; shift; done
+
   # validate address
-  grep -q "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
-  [[ "$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" && $FORCE -eq 0 ]] && err "The requested IP is reserved."
-  ASSN="$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )"
-  if [[ "$ASSN" != "" && "$ASSN" != "$2" && $FORCE -eq 0 ]]; then err "The requested IP is already assigned."; fi
+  grep -q "^$( ip2dec $IP )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
+  [[ "$( grep "^$( ip2dec $IP )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $3}' )" == "y" && $FORCE -eq 0 ]] && err "The requested IP is reserved."
+  ASSN="$( grep "^$( ip2dec $IP )," ${CONF}/net/${FILENAME} |awk 'BEGIN{FS=","}{print $5}' )"
+  if [[ "$ASSN" != "" && "$ASSN" != "$Hostname" && $FORCE -eq 0 ]]; then err "The requested IP is already assigned."; fi
+
+  start_modify
+
   # load the ip data
-  # [FORMAT:net/network]
-  IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
+  # [FORMAT:net/network]: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+  IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $IP )," ${CONF}/net/${FILENAME} )"
+
   # check if the ip is in use (last ditch effort)
-  if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $1 ) -ne 0 ]]; then
+  if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $IP ) -ne 0 ]]; then
     # mark the address as reserved
     # [FORMAT:net/network]
-    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+    sed -i "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
     RET=1
   else
     # assign
     # [FORMAT:net/network]
-    sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,$2,,,,/" ${CONF}/net/${FILENAME}
+    sed -i s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' ${CONF}/net/${FILENAME}
     RET=0
   fi
+
   # commit changes
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
   return $RET
+}
+function network_ip_assign_help { cat <<_EOF
+Usage: $0 network <name> ip --assign <a.b.c.d> <hostname> [--force] [--comment <string>]
+_EOF
 }
 
 # try to determine whether or not an IP is in use
@@ -2708,6 +2729,85 @@ function network_ip_check {
     grep -qE '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts && return 1
   fi
   return 0
+}
+
+# output network ip addresses and assignments
+#
+# optional:
+#   --start   start output at IP
+#
+function network_ip_list {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
+  local Location Zone Alias Net NetMask CIDR Gateway DNS Vlan Description i File DPad EPad Broadcast \
+        Octal IP Reserved DHCP Hostname HostInterface Comment IntComment Owner Title TitleLength \
+        Length Add Start=0
+
+  # [FORMAT:network]: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
+  read -r Location Zone Alias Net NetMask CIDR Gateway DNS Vlan Description <<< "$( grep -E "^${1//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $1,$2,$3,$4,$5,$6,$7,$9,$10,$11}' )"
+  shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --start) valid_ip $2 || err "Invalid IP address"; Start=$( ip2dec $2 ); shift;;
+    *) network_ip_list_help >&2; return 1;;
+  esac; shift; done
+
+  Title="$( printf -- "%s - %s - %s - VLAN %s\n" "${Location}-${Zone}-${Alias}" "${Net}/${CIDR}" "$Description" "${Vlan}" )"
+
+  # compute the broadcast address
+  Broadcast=$( dec2ip $(( $( ip2dec $Net ) + $( cdr2size $CIDR ) - 1 )) )
+
+  # networks are stored as /24s so adjust the netmask if it's smaller than that
+  test $CIDR -gt 24 && CIDR=24
+
+  # formatting
+  if [ $((${#Title}%2)) -eq 1 ]; then Add=1; else Add=0; fi
+  Length=135	# 16 + 36 + 60 + 15 + 8
+  DPad=$( printf '%0.1s' "-"{1..135} )
+  EPad=$( printf '%0.1s' "="{1..137} )
+  TitleLength=$(( ((${#Title}+$Length)/2) - 1 ))
+
+  printf '%s\n' "$EPad"
+  printf "|%*s%*s|\n" $TitleLength "$Title" $(((($Length-${#Title})/2)+$Add))
+  printf '%s\n' "$EPad"
+  printf '| %-16s | %-36s | %-60s | %-12s |\n' 'IP Address' 'Hostname' 'Comment' 'User'
+  printf '|%s|\n' "$DPad"
+
+  # look at each /24 in the network
+  for ((i=0;i<$(( 2**(24 - $CIDR) ));i++)); do
+
+    File=$( get_network $( dec2ip $(( $( ip2dec $Net ) + ( $i * 256 ) )) ) 24 )
+
+    # skip this address if the entire subnet is not configured
+    test -f ${CONF}/net/${File} || continue
+
+    # [FORMAT:net/network]: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+    while IFS=',' read -r Octal IP Reserved DHCP Hostname HostInterface Comment IntComment Owner; do
+
+      if [ $Octal -lt $Start ]; then continue; fi
+
+      if [ "$IP" == "$Gateway" ]; then
+        Hostname="***GATEWAY***"
+      elif [ "$IP" == "$Net" ]; then
+        Hostname="***NETWORK***"; Comment="Network Address Reserved"
+      elif [ "$IP" == "$Broadcast" ]; then
+        Hostname="***BROADCAST***"; Comment="Broadcast Address Reserved"
+      elif [ "$Reserved" == "y" ]; then
+        Hostname="***RESERVED*** $Hostname"
+      fi
+
+      printf '| %-16s | %-36s | %-60s | %-12s |\n' "$IP" "$Hostname" "$Comment" "$Owner"
+
+    done <<< "$( cat ${CONF}/net/${File} )"
+
+  done
+
+  printf '%s\n' "$EPad"
+
+  return 0
+}
+function network_ip_list_help { cat <<_EOF
+Usage: $0 network <name> ip --list [--start <a.b.c.d>]
+_EOF
 }
 
 # list unassigned and unreserved ip addresses in a network
@@ -5094,11 +5194,11 @@ function system_release {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
-  mkdir -p $TMP $RELEASEDIR
-  AUDITSCRIPT="$TMP/scs-audit.sh"
+  mkdir -p $TMP/release $RELEASEDIR
+  AUDITSCRIPT="$TMP/release/scs-audit.sh"
   RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
-  RELEASESCRIPT="$TMP/scs-install.sh"
-  STATFILE="$TMP/scs-stat"
+  RELEASESCRIPT="$TMP/release/scs-install.sh"
+  STATFILE="$TMP/release/scs-stat"
   FILES=()
   # create the audit script
   printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
@@ -5122,8 +5222,8 @@ function system_release {
   # check for static routes for this system
   ROUTES=$( network_routes_by_ip $IP )
   if [ -s "$ROUTES" ]; then
-    mkdir -p $TMP/etc/sysconfig/
-    cat $ROUTES >$TMP/etc/sysconfig/static-routes
+    mkdir -p $TMP/release/etc/sysconfig/
+    cat $ROUTES >$TMP/release/etc/sysconfig/static-routes
     rm -f $ROUTES
     # audit
     FPTH=etc/sysconfig/static-routes
@@ -5148,25 +5248,25 @@ function system_release {
       # skip if path is null (implies an error occurred)
       test -z "$FPTH" && continue
       # ensure the relative path (directory) exists
-      mkdir -p $TMP/`dirname $FPTH`
+      mkdir -p $TMP/release/`dirname $FPTH`
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/$FPTH || err "Error generating $EN file for ${FILES[i]}"
+        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
       elif [ "$FTYPE" == "directory" ]; then
-        mkdir -p $TMP/$FPTH
+        mkdir -p $TMP/release/$FPTH
       elif [ "$FTYPE" == "symlink" ]; then
         # tar will preserve the symlink so go ahead and create it
-        ln -s $FTARGET $TMP/$FPTH
+        ln -s $FTARGET $TMP/release/$FPTH
         # special case -- symlinks always stat as 0777
         FOCT=777
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
         test -f $CONF/binary/$EN/$FNAME || err "Error - binary file '$FNAME' does not exist for $EN."
-        cat $CONF/binary/$EN/$FNAME >$TMP/$FPTH
+        cat $CONF/binary/$EN/$FNAME >$TMP/release/$FPTH
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
-        scp $FTARGET $TMP/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
+        scp $FTARGET $TMP/release/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
       elif [ "$FTYPE" == "download" ]; then
         # add download to command script
         printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
@@ -5204,13 +5304,13 @@ function system_release {
     printf -- "\nlogger -t scs \"installation complete\"\n" >>$RELEASESCRIPT
     chmod +x $RELEASESCRIPT
     # generate the release
-    pushd $TMP >/dev/null 2>&1
+    pushd $TMP/release >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE *
     popd >/dev/null 2>&1
     printf -- "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE\n"
   else
     # some operations (such as system_provision) require the release file, even if it's empty
-    pushd $TMP >/dev/null 2>&1
+    pushd $TMP/release >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE --files-from /dev/null
     popd >/dev/null 2>&1
     printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
@@ -5292,7 +5392,7 @@ function system_show {
 #   $3	role
 #
 function system_start_remote_build {
-  if [[ $# -eq 0 || -z "$1" ]]; then err "Usage: scs system <name> --start-remote-build current-ip [role]"; fi
+  if [[ $# -eq 0 || -z "$1" ]]; then err "Usage: $0 system <name> --start-remote-build current-ip [role]"; fi
 
   system_exists $1 || err "Unknown or missing system name"
   valid_ip $2      || err "An invalid IP was provided"
@@ -5682,7 +5782,7 @@ SCS_Background_Log=/var/log/scs_bg.log
 SCS_Error_Log=/var/log/scs_error.log
 #
 # path to the temp file for patching configuration files
-TMP=/tmp/generate-patch.$$
+TMP=/tmp/scs.$$
 #
 # path to a large local folder for temporary file transfers
 TMPLarge=/bkup1
@@ -5701,6 +5801,9 @@ APP=""
 ENV=""
 FILE=""
 USERNAME=""
+
+# precaution
+if [[ -z "$TMP" || "$TMP" == "/" ]]; then echo "Invalid temporary directory. Please use a variation of '/tmp/scs.\$\$'." >&2; exit 1; fi
 
 trap cleanup_and_exit EXIT INT
 
