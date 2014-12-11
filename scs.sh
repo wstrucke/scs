@@ -2652,19 +2652,21 @@ function network_ip {
 function network_ip_assign {
   if [ $# -lt 2 ]; then network_ip_assign_help >&2; return 1; fi
 
-  local RET FILENAME=$( get_network $1 24 ) FORCE=0 ASSN IP Hostname Comment
-
-  IP="$1"
-  Hostname="$2"
-  shift 2
-
-  valid_ip $IP || err "Invalid IP."
+  local RET FILENAME FORCE=0 ASSN IP Hostname Comment
 
   while [ $# -gt 0 ]; do case $1 in
     --comment) get_input Comment "Comment" --nc;;
     --force) FORCE=1;;
-    *) echo $@; network_ip_assign_help >&2; return 1;;
+    *)
+      if [ -z "$IP" ]; then IP="$1";
+      elif [ -z "$Hostname" ]; then Hostname="$1";
+      else network_ip_assign_help >&2; return 1
+      fi
+      ;;
   esac; shift; done
+
+  valid_ip $IP || err "Invalid IP."
+  FILENAME=$( get_network $IP 24 )
 
   # validate address
   grep -q "^$( ip2dec $IP )," ${CONF}/net/${FILENAME} 2>/dev/null || err "The requested IP is not available."
