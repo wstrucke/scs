@@ -46,6 +46,8 @@
 #.....template/cluster/<environment>/                      directory containing template patches for an environment w/clustering (proposed)
 #     template/patch/<environment>/                        directory containing template patches for the environment
 #     value/                                               directory containing constant definitions
+#     value/by-app/                                        directory
+#     value/by-app/<application>                           file (global application)
 #     value/constant                                       file (global)
 #     value/<environment>/                                 directory
 #     value/<environment>/constant                         file (environment)
@@ -232,6 +234,12 @@
 #   --search: [FORMAT:value/constant]
 #   --storage:
 #
+#   value/by-app/<application>
+#   --description: application scoped values for constants
+#   --format: constant,value\n
+#   --search: [FORMAT:value/by-app/constant]
+#   --storage:
+#
 #   value/<environment>/constant
 #   --description: environment scoped values for constants
 #   --format: constant,value\n
@@ -270,6 +278,9 @@
 #     - need to be able to remove a partially built backing system
 #     - remove ssh host key mismatch debug message
 #     - correct host name when creating overlays
+#     - lock/contention issue updating hosts during simultaneous builds
+#     - deleting a constant does not unset the previosly set values for the constant
+#     - global constant values are not implemented (FORMAT:value/constant)
 #   - clean up:
 #     - deleting an application should also unassign resources and undefine constants
 #     - simplify IP management functions by reducing code duplication
@@ -677,7 +688,7 @@ function help {
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch $CONF/{binary,net,value}
+  mkdir -p $CONF/template/patch $CONF/{binary,net,value/by-app}
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
@@ -834,6 +845,7 @@ HINT - Follow any command with '?' for more detailed usage information.
 
 Component:
   application
+    constant [--define|--undefine|--list] [<application>] [<constant>]
     file [--add|--remove|--list]
   build
     lineage <name> [--reverse]
@@ -1098,6 +1110,64 @@ function stop_modify {
  ####### #       #       #        #  #       #######    #     #  #     # #   # # 
  #     # #       #       #        #  #     # #     #    #     #  #     # #    ## 
  #     # #       #       ####### ###  #####  #     #    #    ### ####### #     #
+
+# manage global application constants
+#
+# constant [--define|--undefine|--list]
+function application_constant {
+  case "$1" in
+    --define) application_constant_define ${@:2};;
+    --undefine) application_constant_undefine ${@:2};;
+    *) application_constant_list ${@:2};;
+  esac
+}
+
+# define a constant for an application
+#
+function application_constant_define {
+  start_modify
+  local APP C VAL
+  generic_choose application "$1" APP && shift
+  generic_choose constant "$1" C && shift
+  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
+  test -f ${CONF}/value/by-app/$APP || touch ${CONF}/value/by-app/$APP
+  # check if constant is already defined
+  # [FORMAT:value/by-app/constant]
+  grep -qE "^$C," ${CONF}/value/by-app/$APP
+  if [ $? -eq 0 ]; then
+    # already defined, update value
+    # [FORMAT:value/by-app/constant]
+    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/by-app/$APP
+  else
+    # not defined, add
+    # [FORMAT:value/by-app/constant]
+    printf -- "$C,$VAL\n" >>${CONF}/value/by-app/$APP
+  fi
+  commit_file ${CONF}/value/by-app/$APP
+}
+
+# undefine a constant for an environment
+#
+function application_constant_undefine {
+  local APP C
+  generic_choose application "$1" APP && shift
+  generic_choose constant "$1" C
+  test -f ${CONF}/value/by-app/$APP || return 0
+  start_modify
+  sed -i '/^'"$C"',.*/d' ${CONF}/value/by-app/$APP
+  commit_file ${CONF}/value/by-app/$APP
+}
+
+function application_constant_list {
+  local APP NUM A S
+  generic_choose application "$1" APP && shift
+  NUM=$( wc -l ${CONF}/value/by-app/$APP 2>/dev/null |awk '{print $1}' )
+  test -z "$NUM" && NUM=0
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined constant${S} for $APP."
+  test $NUM -eq 0 && return
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/by-app/$APP |fold_list |sed 's/^/   /'
+}
 
 function application_create {
   start_modify
@@ -1523,7 +1593,7 @@ function constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S}."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |fold_list |sed 's/^/   /'
 }
 
 # combine two sets of variables and values, only including the first instance of duplicates
@@ -1790,7 +1860,7 @@ function environment_constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $ENV."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/$ENV/constant |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/$ENV/constant |fold_list |sed 's/^/   /'
 }
 
 function environment_create {
@@ -4041,17 +4111,27 @@ function system_check {
 # output a list of constants and values assigned to a system
 #
 function system_constant_list {
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate C APP
   generic_choose system "$1" C && shift
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
+  # 1. applications @ environment
   for APP in $( build_application_list "$BUILD" ); do
     constant_list_dedupe $TMP/clist $CONF/value/$EN/$APP >$TMP/clist.1
     cat $TMP/clist.1 >$TMP/clist
   done
+  # 2. environments @ location
   constant_list_dedupe $TMP/clist $CONF/value/$LOC/$EN >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  # 3. environments (global)
   constant_list_dedupe $TMP/clist $CONF/value/$EN/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  # 4. applications (global)
+  for APP in $( build_application_list "$BUILD" ); do
+    constant_list_dedupe $TMP/clist $CONF/value/by-app/$APP >$TMP/clist.1
+    cat $TMP/clist.1 >$TMP/clist
+  done
+  # 5. global
   constant_list_dedupe $TMP/clist $CONF/value/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
   cat $TMP/clist
   rm -f $TMP/clist{,.1}
@@ -5867,7 +5947,7 @@ fi
 [[ "$VERB" == "cat" && "$SUBJ" != "file" ]] && usage
 [[ "$VERB" == "file" && "$SUBJ" != "application" ]] && usage
 [[ "$VERB" == "application" && "$SUBJ" != "environment" ]] && usage
-[[ "$VERB" == "constant" && "$SUBJ" != "environment" ]] && usage
+[[ "$VERB" == "constant" && (( "$SUBJ" != "environment" && "$SUBJ" != "application" )) ]] && usage
 [[ "$VERB" == "environment" && "$SUBJ" != "location" ]] && usage
 
 # call function with remaining arguments
