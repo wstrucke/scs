@@ -1588,12 +1588,24 @@ function constant_exists {
   grep -qE "^$1," $CONF/constant || return 1
 }
 
+# show all constants
+#
+# optional:
+#   --no-format
 function constant_list {
-  NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
-  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-  echo "There ${A} ${NUM} defined constant${S}."
+  local NUM A S Formatting=1
+  if [ "$1" == "--no-format" ]; then Formatting=0; fi
+  if [ $Formatting -eq 1 ]; then
+    NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo "There ${A} ${NUM} defined constant${S}."
+  fi
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |fold_list |sed 's/^/   /'
+  if [ $Formatting -eq 1 ]; then
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |fold_list |sed 's/^/   /'
+  else
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort
+  fi
 }
 
 # combine two sets of variables and values, only including the first instance of duplicates
