@@ -304,8 +304,8 @@
 #     - lock/contention issue updating hosts during simultaneous builds
 #     - deleting a constant does not unset the previosly set values for the constant
 #     - global constant values are not implemented (FORMAT:value/constant)
+#     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #   - clean up:
-#     - deleting an application should also unassign resources and undefine constants
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
@@ -4173,7 +4173,7 @@ function system_check {
     # retrieve application related data
     for APP in $( build_application_list "$BUILD" ); do
       # get the file list per application
-      FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
+      FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
   if [ ${#FILES[*]} -gt 0 ]; then
@@ -5398,7 +5398,7 @@ function system_release {
     # retrieve application related data
     for APP in $( build_application_list "$BUILD" ); do
       # get the file list per application
-      FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
+      FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
   # check for static routes for this system
@@ -5538,7 +5538,7 @@ function system_show {
       # [FORMAT:application]
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
         # get the file list per application
-        FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
+        FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
       done
     fi
   fi
