@@ -119,9 +119,16 @@
 #
 #   file-map
 #   --description: map of files to applications
-#   --format: filename,application\n
+#   --format: filename,application,environment_flags\n
 #   --search: [FORMAT:file-map]
 #   --storage:
+#   ----filename           the name of the file
+#   ----application        the name of the application
+#   ----environment_flags  optional set of flags indicating which environments this file should appear in
+#                            can be 'all' or 'none' with modifiers '+' (to add to none) or '-' (to
+#                            subtract from all).
+#                            e.g.: 'none+test+production' or 'all-beta'
+#                            the '+' flag is not valid with all and '-' is not valid with none
 #
 #   hv-environment
 #   --description: hypervisor/environment map
@@ -215,6 +222,18 @@
 #   --format: type,value,assign_type,assign_to,name,description\n
 #   --search: [FORMAT:resource]
 #   --storage:
+#   ----type            one of 'ip', 'cluster_ip', or 'ha_ip': the type of resource. this should be extensible.
+#   ----value           the resource value. since all types are IP addresses at this time, this is the IP address.
+#   ----assign_type     type of assignment, either 'application' or 'host'. this determines what is in the next field.
+#   ----assign_to       'not assigned' or the assignment string, based on the assign_type (host or application)
+#                         for 'assign_type' of application, a string identifying the application with the components
+#                           'location:environment:application'. e.g.: 'location1:beta:my_sweet_app'
+#                         for 'assign_type' of host this is the name of the host
+#   ----name            an optional alias or name for this resource. when a resource is linked to an application it is referenced
+#                         by the type (e.g. system.cluster_ip) *EXCEPT* when a name is provided.  this is very useful when a
+#                         system or application has multiple resources of the same type making the assignment otherwise
+#                         ambiguous.
+#   ----description     a comment or description about this resource for reference
 #
 #   system
 #   --description: servers
@@ -1203,13 +1222,20 @@ _EOF
 }
 
 function application_delete {
-  generic_delete application $1 || return
+  local APP="$1" C TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC
+  generic_delete application $APP || return
   # delete from file-map as well
   # [FORMAT:file-map]
-  sed -i "/^[^,]*,$APP\$/d" $CONF/file-map
-  commit_file file-map
-# !!FIXME!! should also unassign resources
-# !!FIXME!! should also undefine constants
+  sed -i "/^[^,]*,$APP,.*\$/d" $CONF/file-map
+  # [FORMAT:resource]
+  for C in $( grep -E '^([^,]*,){2}application,([^,:]*:){2}'$APP',.*' resource |awk 'BEGIN{FS=","}{print $2}' ); do
+    # [FORMAT:resource]
+    IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$C," ${CONF}/resource )"
+    # [FORMAT:resource]
+    sed -i 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+  done
+  if [ -f "$CONF/by-app/$APP" ]; then delete_file by-app/$APP; fi
+  commit_file file-map resource
 }
 function application_delete_help { cat <<_EOF
 Delete an application and its references from SCS.
@@ -1259,9 +1285,9 @@ function application_file_add {
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
   # [FORMAT:file-map]
-  grep -qE "^$F,$APP\$" $CONF/file-map && return
+  grep -qE "^$F,$APP," $CONF/file-map && return
   # [FORMAT:file-map]
-  echo "$F,$APP" >>$CONF/file-map
+  echo "$F,$APP," >>$CONF/file-map
   commit_file file-map
 }
 function application_file_add_help { cat <<_EOF
@@ -1272,19 +1298,27 @@ Usage: $0 application [<application_name>] file --add [<file_name>]
 _EOF
 }
 
+# list files associated with an application
+#
+# this function is called both internally and externally
+#
+# optional:
+#   --no-format   output the list without formatting
+#
 function application_file_list {
   test -z "$1" && shift
-  generic_choose application "$1" APP
-  # [FORMAT:file-map]
-  NUM=$( grep -E ",$APP\$" $CONF/file-map |wc -l |awk '{print $1}' )
+  if [ "$1" == "--no-format" ]; then shift; application_file_list_unformatted $@; return; fi
+  local APP="$1" A S NUM F EN
+  application_exists $APP || err "Unknown application"
+  NUM=$( application_file_list_unformatted $APP |wc -l 2>/dev/null |awk '{print $1}' )
+  test -z "$NUM" && NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} file${S} linked to $APP."
   test $NUM -eq 0 && return
-  # [FORMAT:file-map]
-  ( for F in $( grep -E ",$APP\$" $CONF/file-map |awk 'BEGIN{FS=","}{print $1}' ); do
+  ( for F in $( application_file_list_unformatted $APP ); do
     # [FORMAT:file]
     grep -E "^$F," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-  done ) |sort |column -t |sed 's/^/   /'
+  done ) |column -t |sed 's/^/   /'
 }
 function application_file_list_help { cat <<_EOF
 List all files linked to an application
@@ -1292,6 +1326,54 @@ List all files linked to an application
 Usage: $0 application [<application_name>] file --list
 
 _EOF
+}
+
+# retrieve the list of files associated with an application
+#
+# optional:
+#   --environment <string>	limit to files included in an environment
+#
+function application_file_list_unformatted {
+  local App="$1" List NewList E EN File Limit Include; shift
+  application_exists $App || err "Unknown application"
+
+  while [ $# -gt 0 ]; do case $1 in
+    --environment) EN="$2"; shift;;
+  esac; shift; done
+
+  # [FORMAT:file-map]
+  List=$( grep -E "^[^,]*,$App," $CONF/file-map |awk 'BEGIN{FS=","}{print $1}' )
+
+  if ! [ -z "$EN" ]; then
+    NewList=""
+    for File in $List; do
+      # [FORMAT:file-map]
+      Limit=$( grep -E "^$File,$App," $CONF/file-map |awk 'BEGIN{FS=","}{print $3}' )
+      if [ -z "$Limit" ]; then NewList="$NewList $File"; continue; fi
+      # translate the environment inclusion/exclusion syntax:
+      # ''	(nothing) is the same as 'all'
+      # 'all'	all environments match
+      # 'none'	no environments match
+      # '+name'	include environment
+      # '-name'	exclude environment
+      Include=0
+      if [ "$Limit" == "" ]; then
+        Include=1
+      elif [ "${Limit:0:3}" == "all" ]; then
+        Include=1
+        for E in $( echo $Limit |tr '-' ' ' ); do if [ "$EN" == "$E" ]; then Include=0; fi; done
+      elif [ "${Limit:0:4}" == "none" ]; then
+        Include=0
+        for E in $( echo $Limit |tr '+' ' ' ); do if [ "$EN" == "$E" ]; then Include=1; fi; done
+      else
+        err "Unhandled or invalid value in file::application map environment limit: '$Limit'"
+      fi
+      if [ $Include -eq 1 ]; then NewList="$NewList $File"; fi
+    done
+    List="$NewList"
+  fi
+
+  echo $List |tr ' ' '\n' |sort
 }
 
 function application_file_remove {
@@ -1305,9 +1387,9 @@ function application_file_remove {
   if [ "$RL" != "y" ]; then return; fi
   # remove the mapping if it exists
   # [FORMAT:file-map]
-  grep -qE "^$F,$APP\$" $CONF/file-map || err "Error - requested file is not associated with $APP."
+  grep -qE "^$F,$APP," $CONF/file-map || err "Error - requested file is not associated with $APP."
   # [FORMAT:file-map]
-  sed -i "/^$F,$APP/d" $CONF/file-map
+  sed -i "/^$F,$APP,/d" $CONF/file-map
   commit_file file-map
 }
 function application_file_remove_help { cat <<_EOF
@@ -1335,8 +1417,7 @@ function application_show {
   printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
   test $BRIEF -eq 1 && return
   # retrieve file list
-  # [FORMAT:file-map]
-  FILES=( `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+  FILES=( $( application_file_list_unformatted $APP ) )
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
@@ -1749,16 +1830,16 @@ function environment_application_byname_assign {
   generic_choose resource "$1" RES "^(cluster|ha)_ip,.*,not assigned," && shift
   # verify the resource is available for this purpose
   # [FORMAT:resource]
-  grep -E ",${RES//,/}," $CONF/resource |grep -qE '^(cluster|ha)_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
+  grep -E "^[^,]*,${RES//,/}," $CONF/resource |grep -qE '^(cluster|ha)_ip,.*,not assigned,' || err "Error - invalid or unavailable resource."
   # get the requested location or abort
   generic_choose location "$1" LOC && shift
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   grep -qE "^$APP$" ${CONF}/${LOC}/${ENV} || err "Error - please add $APP to $LOC $ENV before managing it."
   # assign resource, update index
   # [FORMAT:resource]
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$DESC"'/' ${CONF}/resource
+  sed -i 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -1775,15 +1856,15 @@ function environment_application_byname_unassign {
   generic_choose resource "$1" RES ",application,$LOC:$ENV:$APP," && shift
   # verify the resource is available for this purpose
   # [FORMAT:resource]
-  grep -E ",${RES//,/}," $CONF/resource |grep -qE ",application,$LOC:$ENV:$APP," || err "Error - the provided resource is not assigned to this application."
+  grep -E "^[^,]*,${RES//,/}," $CONF/resource |grep -qE ",application,$LOC:$ENV:$APP," || err "Error - the provided resource is not assigned to this application."
   # confirm
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return; fi
   # assign resource, update index
   # [FORMAT:resource]
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO DESC <<< "$( grep -E ",$RES," ${CONF}/resource )"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i 's/.*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$DESC"'/' ${CONF}/resource
+  sed -i 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -2099,7 +2180,9 @@ function file_delete {
   printf -- "WARNING: This will remove any templates and stored configurations in all environments for this file!\n"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
+    # [FORMAT:file]
     sed -i '/^'$C',/d' ${CONF}/file
+    # [FORMAT:file-map]
     sed -i '/^'$C',/d' ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
@@ -3403,7 +3486,7 @@ function resource_byval_unassign {
 }
 
 # resource field format:
-#   type,value,assignment_type(application,host),assigned_to,description
+#   type,value,assignment_type(application,host),assigned_to,name,description\n
 #
 function resource_create {
   start_modify
@@ -3414,7 +3497,7 @@ function resource_create {
   get_input DESC "Description" --nc --null
   # validate unique value
   # [FORMAT:resource]
-  grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
+  grep -qE "^[^,]*,${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
   # [FORMAT:resource]
   printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>$CONF/resource
@@ -3427,7 +3510,7 @@ function resource_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:resource]
-    sed -i '/,'${C}',/d' ${CONF}/resource
+    sed -i '/^[^,]*,'${C}',/d' ${CONF}/resource
   fi
   commit_file resource
 }
@@ -3483,9 +3566,9 @@ function resource_list_unformatted {
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
   # [FORMAT:resource]
-  grep -qE ",$1," ${CONF}/resource || err "Unknown resource" 
+  grep -qE "^[^,]*,$1," ${CONF}/resource || err "Unknown resource" 
   # [FORMAT:resource]
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$1," ${CONF}/resource )"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$1," ${CONF}/resource )"
   printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO\n"
 }
 
@@ -3493,18 +3576,18 @@ function resource_update {
   start_modify
   generic_choose resource "$1" C && shift
   # [FORMAT:resource]
-  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E ",$C," ${CONF}/resource )"
+  IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$C," ${CONF}/resource )"
   get_input NAME "Name" --default "$NAME" --null
   get_input TYPE "Type" --options ip,cluster_ip,ha_ip --default "$TYPE"
   get_input VAL "Value" --nc --default "$VAL"
   # validate unique value
   if [ "$VAL" != "$C" ]; then
     # [FORMAT:resource]
-    grep -qE ",${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
+    grep -qE "^[^,]*,${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
-  sed -i 's/.*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+  sed -i 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4090,7 +4173,7 @@ function system_check {
     # retrieve application related data
     for APP in $( build_application_list "$BUILD" ); do
       # get the file list per application
-      FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+      FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
   if [ ${#FILES[*]} -gt 0 ]; then
@@ -5315,8 +5398,7 @@ function system_release {
     # retrieve application related data
     for APP in $( build_application_list "$BUILD" ); do
       # get the file list per application
-      # [FORMAT:file-map]
-      FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+      FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
   # check for static routes for this system
@@ -5456,8 +5538,7 @@ function system_show {
       # [FORMAT:application]
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
         # get the file list per application
-        # [FORMAT:file-map]
-        FILES=( ${FILES[@]} `grep -E ",${APP}\$" ${CONF}/file-map |awk 'BEGIN{FS=","}{print $1}'` )
+        FILES=( $( application_file_list_unformatted $APP --environment $EN ) )
       done
     fi
   fi
