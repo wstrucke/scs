@@ -63,7 +63,8 @@
 # A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
 # A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
 #
-# A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an application in an environment.
+# A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an
+# application in an environment.
 #
 # Use constants and resources in configuration files -- this is the whole point of scs, mind you -- with this syntax:
 #  {% resource.name %}
@@ -172,7 +173,8 @@
 #
 #   network
 #   --description: network registry
-#   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
+#   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,
+#             repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
 #   --search: [FORMAT:network]
 #   --storage:
 #   ----location        location code for the network (primary key part 1/3)
@@ -187,7 +189,8 @@
 #   ----vlan            network vlan tag/number (numeric)
 #   ----description     description of the network
 #   ----repo_address    ip address or hostname of the repository/mirror for installing an OS or related packages for the network
-#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in (no trailing slash), e.g. /var/web/building/scs
+#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in 
+#                         (no trailing slash), e.g. /var/web/building/scs
 #   ----repo_path_url   absolute path from the client web browser to the repo_fs_path, no leading or trailing slash, e.g. 'building/scs'
 #   ----build           'y' or 'n', yes if this network has DHCP with PXE to boot into a network install image
 #   ----default-build   'y' or 'n', yes if this network is the *default* build network at the location
@@ -225,7 +228,8 @@
 #   ----environment     environment name
 #   ----virtual         'y' or 'n', yes if this is a virtual machine
 #   ----backing_image   'y' or 'n', yes if this is a VM and is unregistered, always SHUT OFF, and read-only as a backing image for overlays
-#   ----overlay         'null', 'auto', or '<name>'. null=>full system (a.k.a. single), auto=>auto-select base system/image during provisioning, or the name of the base system
+#   ----overlay         'null', 'auto', or '<name>'. null=>full system (a.k.a. single), auto=>auto-select base system/image during
+#                         provisioning, or the name of the base system
 #   ----build_date      unix timestamp of the last time this system was built (by scs of course)
 #
 #   value/constant
@@ -1075,7 +1079,9 @@ function stop_modify {
   # return if there are no modifications and we are on the master branch
   if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
   # error if master was modified
-  if [[ $L -ne 0 && $M -eq 1 ]]; then err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."; fi
+  if [[ $L -ne 0 && $M -eq 1 ]]; then
+    err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."
+  fi
   if [ $L -gt 0 ]; then
     # there are modifictions on a branch
     get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
