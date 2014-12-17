@@ -4118,12 +4118,12 @@ function system_audit {
   test -s "$FILE" || err "Error generating release"
   # extract release to local directory
   echo "Extracting..."
-  mkdir -p $TMP/{REFERENCE,ACTUAL}
-  tar xzf $FILE -C $TMP/REFERENCE/ || err "Error extracting release to local directory"
+  mkdir -p $TMP/release/{REFERENCE,ACTUAL}
+  tar xzf $FILE -C $TMP/release/REFERENCE/ || err "Error extracting release to local directory"
   # clean up temporary release archive
   rm -f $FILE
   # switch to the release root
-  pushd $TMP/REFERENCE >/dev/null 2>&1
+  pushd $TMP/release/REFERENCE >/dev/null 2>&1
   # move the stat file out of the way
   mv scs-stat ../
   # remove scs deployment scripts for audit
@@ -4131,22 +4131,22 @@ function system_audit {
   # pull down the files to audit
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
-    mkdir -p $TMP/ACTUAL/`dirname $F`
-    scp -p $1:/$F $TMP/ACTUAL/$F >/dev/null 2>&1
+    mkdir -p $TMP/release/ACTUAL/`dirname $F`
+    scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/scs-actual
+  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
-    if [ -f $TMP/ACTUAL/$F ]; then
-      if [ `md5sum $TMP/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
+    if [ -f $TMP/release/ACTUAL/$F ]; then
+      if [ `md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
         get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
-        test "$DF" == "y" && vimdiff $TMP/{REFERENCE,ACTUAL}/$F
-        test "$DF" == "d" && diff -c $TMP/{REFERENCE,ACTUAL}/$F
+        test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
+        test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
       fi
-    elif [ `stat -c%s $TMP/REFERENCE/$F` -eq 0 ]; then
+    elif [ `stat -c%s $TMP/release/REFERENCE/$F` -eq 0 ]; then
       echo "Ignoring empty file $F"
     else
       echo "WARNING: Remote system is missing file: $F"
@@ -4154,7 +4154,7 @@ function system_audit {
     fi
   done
   echo "Analyzing permissions..."
-  diff $TMP/scs-stat $TMP/scs-actual
+  diff $TMP/release/scs-stat $TMP/release/scs-actual
   if [ $? -ne 0 ]; then VALID=1; fi
   test $VALID -eq 0 && echo -e "\nSystem audit PASSED" || echo -e "\nSystem audit FAILED"
   exit $VALID
@@ -4188,11 +4188,11 @@ function system_check {
       # skip if path is null (implies an error occurred)
       if [ -z "$FPTH" ]; then printf -- "Error: '$FNAME' has no path (index $i). Critical error.\n" >&2; VALID=1; continue; fi
       # ensure the relative path (directory) exists
-      mkdir -p $TMP/`dirname $FPTH`
+      mkdir -p $TMP/release/`dirname $FPTH`
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/$FPTH
+        file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
@@ -4200,7 +4200,7 @@ function system_check {
         if [ $? -ne 0 ]; then printf -- "Error: $FNAME does not exist for $EN.\n" >&2; VALID=1; fi
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
-        scp $FTARGET $TMP/ >/dev/null 2>&1
+        scp $FTARGET $TMP/release/ >/dev/null 2>&1
         if [ $? -ne 0 ]; then printf -- "Error: $FNAME is not available at '$FTARGET'\n" >&2; VALID=1; fi
       fi
     done
