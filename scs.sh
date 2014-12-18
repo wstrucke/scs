@@ -1542,7 +1542,11 @@ function build_list {
     shift
     build_list_format_tree $@
   else
-    build_list_unformatted $@ |fold_list
+    if [ $# -gt 0 ]; then
+      build_list_unformatted $@ |column -s',' -t
+    else
+      build_list_unformatted $@ |fold_list
+    fi
   fi |sed 's/^/   /'
 }
 
