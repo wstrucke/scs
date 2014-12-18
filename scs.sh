@@ -1405,7 +1405,7 @@ function application_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort |fold_list |sed 's/^/   /'
 }
 
 function application_show {
@@ -1542,7 +1542,7 @@ function build_list {
     shift
     build_list_format_tree $@
   else
-    build_list_unformatted $@ |column -s',' -t
+    build_list_unformatted $@ |fold_list
   fi |sed 's/^/   /'
 }
 
