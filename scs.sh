@@ -4742,6 +4742,7 @@ function system_provision {
   else
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
+  scslog "build network: $BUILDNET"
   
   if [ -z "$OVERLAY" ]; then
     # this is a single or backing system build (not overlay)
@@ -4756,6 +4757,7 @@ function system_provision {
     if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
   
     if [ -z "$Hypervisor" ]; then
+      scslog "locating hypervisor"
       #  - locate available HVs
       LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
@@ -4764,6 +4766,7 @@ function system_provision {
       Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
+    scslog "selected $Hypervisor"
   
   else
 
@@ -4809,7 +4812,9 @@ function system_provision {
   read -r VMPath <<< "$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $4}' )"
 
   # verify configuration
+  scslog "generating system release"
   system_release $NAME >/dev/null 2>&1 || err "Error generating release, please correct missing variables or configuration files required for deployment"
+  scslog "release generated successfully"
 #  FILE=$( system_release $NAME |tail -n1 )
 #  test -s "$FILE" || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
@@ -4835,6 +4840,7 @@ function system_provision {
   fi
 
   #  - load the architecture and operating system for the build
+  scslog "reading system architecture and build information"
   # [FORMAT:build]
   IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
   ROOT=$( build_root $BUILD )
@@ -5528,6 +5534,8 @@ function system_show {
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  # if overlay is null then there is no overlay
+  test -z "$OVERLAY" && OVERLAY="N/A"
   # output the status/summary
   printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\nLast Build: $( date +'%c' -d @${SystemBuildDate} 2>/dev/null )\n"
   test $BRIEF -eq 1 && return
