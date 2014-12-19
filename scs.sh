@@ -1204,7 +1204,7 @@ function application_create {
   get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
   get_yn CLUSTER "LVS Support (y/n)" --auto "$4"
   # [FORMAT:application]
-  [ "$ACK" == "y" ] && printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
+  printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
   commit_file application
 }
 function application_create_help { cat <<_EOF
@@ -4095,7 +4095,7 @@ function system_byname {
     --audit)               system_audit $1;;
     --check)               system_check $1;;
     --convert)             system_convert $1 ${@:3};;
-    --deploy)              system_deploy $1;;
+    --deploy)              system_deploy $1 ${@:3};;
     --deprovision)         system_deprovision $1 ${@:3};;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
@@ -4576,20 +4576,42 @@ function system_delete {
 
 # deploy release to system
 #
+# optional:
+#   --install	automatically install on remote system after deployment
+#
 function system_deploy {
-  system_exists "$1" || err "Unknown or missing system name"
-  nc -z -w 2 $1 22 >/dev/null 2>&1
-  if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$1'\n"; exit 1; fi
+  local FILE Install=0 System="$1"; shift
+  system_exists "$System" || err "Unknown or missing system name"
+  while [ $# -gt 0 ]; do case $1 in
+    --install) Install=1;;
+    *) system_deploy_help >&2; exit 1;;
+  esac; shift; done
+  nc -z -w 2 $System 22 >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$System'\n"; exit 1; fi
   printf -- "Generating release...\n"
-  FILE=$( system_release $1 2>/dev/null |tail -n1 )
-  if [ -z "$FILE" ]; then printf -- "Error generating release for '$1'\n"; exit 1; fi
+  FILE=$( system_release $System 2>/dev/null |tail -n1 )
+  if [ -z "$FILE" ]; then printf -- "Error generating release for '$System'\n"; exit 1; fi
   if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
   printf -- "Copying release to remote system...\n"
-  scp $FILE $1: >/dev/null 2>&1
-  if [ $? -ne 0 ]; then printf -- "Error copying release to '$1'\n"; exit 1; fi
+  scp $FILE $System: >/dev/null 2>&1
+  if [ $? -ne 0 ]; then printf -- "Error copying release to '$System'\n"; exit 1; fi
   printf -- "Cleaning up...\n"
   rm -f $FILE
-  printf -- "\nInstall like this:\n  ssh $1 \"tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh\"\n\n"
+  if [ $Install -eq 0 ]; then
+    printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh\"\n\n"
+  else
+    printf -- "Installing on remote server... "
+    ssh $System "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh"
+    if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
+  fi
+}
+function system_deploy_help { cat <<_EOF
+Generate the complete configuration for a system, package it, and push to /root/ on the remote server.
+
+Usage: $0 system <name> --deploy [--install]
+
+If --install is also provided then the configuration will be applied to the remote system immediately.
+_EOF
 }
 
 # destroy and permantantly delete a system
@@ -5771,10 +5793,12 @@ function system_vars {
     fi
   done
   # pull constants
+  OIFS=$IFS; IFS=$'\n'
   for CNST in $( system_constant_list $NAME ); do
     IFS="," read -r CN VAL <<< "$CNST"
     echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
   done
+  IFS=$OIF
 }
 
 # create and attach a new disk to an existing virtual machine
