@@ -462,7 +462,7 @@ function expand_subject_alias {
     n|ne|net) printf -- 'network';;
     r|re|res) printf -- 'resource';;
     st|sta|stat) printf -- 'status';;
-    sy|sys|syst) printf -- 'system';;
+    sy|sys|syst|sytem) printf -- 'system';;
     *) printf -- "$1";;
   esac
 }
@@ -897,7 +897,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
