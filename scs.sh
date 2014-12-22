@@ -5798,7 +5798,7 @@ function system_vars {
     IFS="," read -r CN VAL <<< "$CNST"
     echo "constant.$( printf -- "$CN" |tr 'A-Z' 'a-z' ) $VAL"
   done
-  IFS=$OIF
+  IFS=$OIFS
 }
 
 # create and attach a new disk to an existing virtual machine
