@@ -5321,7 +5321,7 @@ function system_provision_phase2 {
 
   fi
 
-  scslog "system build complete for $NAME"
+  scslog "**** system build complete for $NAME ****"
 }
 
 # deploy the current system build scripts to a remote server
