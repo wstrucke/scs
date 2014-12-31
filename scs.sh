@@ -354,7 +354,13 @@
 function scslog {
   test $# -eq 0 && return
   get_user --no-prompt
-  printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+  if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
+    shift
+    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+    printf -- '%s\n' "$@"
+  else
+    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+  fi
   return 0
 }
 
@@ -897,7 +903,7 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -3410,7 +3416,7 @@ function parse_template {
     if [ $? -ne 0 ]; then
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
       if [ $VERBOSE -eq 1 ]; then
-        printf -- "  Missing Variable: '$NAME'\n"
+        printf -- "  Missing Variable: '$NAME'\n" >&2
         sed -i s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
         RETVAL=1
         continue
@@ -4093,10 +4099,11 @@ function system_byname {
   # function
   case "$2" in
     --audit)               system_audit $1;;
-    --check)               system_check $1;;
+    --check)               system_check $1 ${@:3};;
     --convert)             system_convert $1 ${@:3};;
     --deploy)              system_deploy $1 ${@:3};;
     --deprovision)         system_deprovision $1 ${@:3};;
+    --distribute)          system_distribute $1 ${@:3};;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
     --release)             system_release $1;;
@@ -4168,10 +4175,15 @@ function system_audit {
 #
 function system_check {
   system_exists "$1" || err "Unknown or missing system name"
-  VALID=0
+  local System=$1 VALID=0 VERBOSE=0; shift
+
+  while [ $# -gt 0 ]; do case "$1" in
+    -v|--verbose) VERBOSE=1;;
+  esac; shift; done
+
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -4196,7 +4208,11 @@ function system_check {
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
+        if [ $VERBOSE -eq 1 ]; then
+          file_cat ${FILES[i]} --environment $EN --vars $NAME --verbose >$TMP/release/$FPTH
+        else
+          file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
+        fi
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
@@ -4336,7 +4352,7 @@ function system_convert {
           scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
           ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}" >/dev/null 2>&1
         else
-          echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}"
+          echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         fi
       done
       if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
@@ -4356,27 +4372,7 @@ function system_convert {
       done
 
       # redistribute vm (as needed)
-      if [ $Distribute -eq 1 ]; then for HV in $( hypervisor_list --network $NETNAME --location $LOC --environment $EN --enabled | tr '\n' ' ' ); do
-        
-        if [ "$HV" == "$Hypervisor" ]; then continue; fi
-        if [ $DryRun -ne 0 ]; then echo "redistribute enabled to $HV"; continue; fi
-
-        # load hypervisor configuration
-        # [FORMAT:hypervisor]
-        read -r HVIP HVPATH <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
-
-        # test connection
-        nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
-
-        ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
-
-        for File in $List; do
-          ssh -o "StrictHostKeyChecking no" $HVIP "test -f $File" && continue
-          srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPATH}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1 
-        done
-
-      done; fi
-
+      if [[ $Distribute -eq 1 && $DryRun -eq 0 ]]; then system_distribute $NAME; fi
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
 
       ;;
@@ -4401,9 +4397,9 @@ function system_convert {
       # move images out of backing folder
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${File} ${VMPath}/"
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         else
-          echo ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv ${File} ${VMPath}/"
+          echo ssh -o "StrictHostKeyChecking no" $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         fi
       done
       List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
@@ -4679,6 +4675,118 @@ function system_deprovision {
   return 0
 }
 
+# ensure a backing image is distributed to all available hypervisors
+#
+# optional:
+#   --hypervisor <name>	distribute to a specific hypervisor, ignoring other checks
+#   --location <name>	limit distribution to environments at a specific location
+#
+function system_distribute {
+  system_exists "$1" || err "Unknown or missing system name"
+
+  # load the system
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate \
+        Network HVList HV HVIP Hypervisor HypervisorIP VMPath HVPath \
+        File FileList DryRun=0 Location
+
+  # [FORMAT:system]
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --dry-run) DryRun=1;;
+    --hypervisor) HVList="$2"; shift;;
+    --location) Location="$2"; shift;;
+    *) system_distribute_help; return 1;;
+  esac; shift; done
+
+  # verify virtual machine
+  test "$VIRTUAL" == "y" || err "This is not a virtual machine"
+  test "$BASE_IMAGE" == "y" || err "This is not a backing image"
+
+  if ! [ -z "$HVList" ]; then hypervisor_exists $HVList || err "Invalid hypervisor"; fi
+
+  # get the network by the system IP
+  if [ "$IP" != "dhcp" ]; then
+    Network=$( network_list --match $IP )
+    if [ -z "$Network" ]; then err "Unable to identify a registered network for the system"; fi
+  fi
+
+  # identify the current location of the system
+  Hypervisor=$( hypervisor_locate_system $NAME --quick )
+  test -z "$Hypervisor" && err "Unable to locate the current host of this system"
+
+  if [ $DryRun -ne 0 ]; then printf -- "DRY-RUN: No files or systems will be modified\n" >&2; fi
+
+  # load hypervisor configuration
+  # [FORMAT:hypervisor]
+  read -r HypervisorIP VMPath <<< "$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+  if [[ "$HypervisorIP" == "" || "$VMPath" == "" ]]; then err "Error loading hypervisor configuration"; fi
+
+  # enumerate disk images
+  List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath}/${BACKING_FOLDER} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+  if [ $DryRun -ne 0 ]; then printf -- "Located system files:\n%s\n" $List; fi
+
+  # list hypervisors
+  if [ -z "$HVList" ]; then
+    if [[ -z "$Network" && -z "$Location" ]]; then
+      HVList=$( hypervisor_list --environment $EN --enabled | tr '\n' ' ' )
+    elif [ -z "$Location" ]; then
+      HVList=$( hypervisor_list --network $Network --environment $EN --enabled | tr '\n' ' ' )
+    elif [ -z "$Network" ]; then
+      HVList=$( hypervisor_list --location $Location --environment $EN --enabled | tr '\n' ' ' )
+    else
+      HVList=$( hypervisor_list --network $Network --location $Location --environment $EN --enabled | tr '\n' ' ' )
+    fi
+  fi
+  if [ $DryRun -ne 0 ]; then printf -- "Located hypervisor: %s\n" $HVList; else scslog -v "redistributing system $NAME to $( echo $HVList |tr ' ' ',' )"; fi
+
+  # copy image
+  for HV in $HVList; do
+
+    if [ "$HV" == "$Hypervisor" ]; then continue; fi
+
+    # load hypervisor configuration
+    # [FORMAT:hypervisor]
+    read -r HVIP HVPath <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
+
+    # test connection
+    nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
+
+    if [ $DryRun -ne 0 ]; then
+      ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}" >/dev/null 2>&1
+    fi
+
+    for File in $List; do
+      ssh -o "StrictHostKeyChecking no" $HVIP "test -f ${HVPath}/${BACKING_FOLDER}$( basename $File )"
+      if [ $? -eq 0 ]; then
+        scslog -v "system already exists on $HV"
+        continue
+      fi
+      if [ $DryRun -ne 0 ]; then
+        echo "redistributing $File from $Hypervisor to $HV..."
+        echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        echo "  ssh -o \"StrictHostKeyChecking no\" $HVIP \"chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )\""
+      else
+        scslog -v "transferring to ${HV}..."
+        srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
+      fi
+    done
+
+  done
+
+  # update location
+  if [ $DryRun -eq 0 ]; then
+    scslog -v "redistribution completed"
+    hypervisor_locate_system $NAME --all
+  fi
+}
+function system_distribute_help { cat <<_EOF
+Distribute a backing image to all enabled and available hypervisors in the same environment.
+
+Usage: $0 system <name> --distribute [--location <name>] [--dry-run]
+_EOF
+}
+
 # checks if a system is defined
 #
 function system_exists {
@@ -4810,7 +4918,7 @@ function system_provision {
         # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
         #   does not exist than just ignore and continue since the entire chain can be built later
         LIST=$( hypervisor_list --backing $OVERLAY --enabled | tr '\n' ' ' )
-        test ! -z "$LIST" && err "There are no configured hypervisors capable of building this system"
+        test ! -z "$LIST" && err "The selected backing image '$OVERLAY' is built and deployed to set of hypervisors that does not intersect with those otherwise capable of building this server.  Please copy the overlay or select a different backing image."
   
         LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
         test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
@@ -5274,7 +5382,7 @@ function system_resolve_autooverlay {
 }
 
 function system_list {
-  if [ "$1" == "--no-format" ]; then shift; system_list_unformatted $@; return; fi
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; system_list_unformatted $@; return; fi
   local LIST NUM
   LIST="$( system_list_unformatted $@ |tr '\n' ' ' )"
   NUM=$( printf -- "$LIST" |wc -w )
@@ -5323,7 +5431,7 @@ function system_list_unformatted {
 
       --build)
         NL=""
-        BuildList="$( build_lineage_unformatted $( build_parent $2 ) --reverse |awk '{print $NL}' )"
+        BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' )"
         for N in $LIST; do
           # [FORMAT:system]
           grep -qE '^'$N','$2',.*$' ${CONF}/system
