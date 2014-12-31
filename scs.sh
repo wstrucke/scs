@@ -4350,7 +4350,7 @@ function system_convert {
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
           scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}" >/dev/null 2>&1
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File" >/dev/null 2>&1
         else
           echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         fi
