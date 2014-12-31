@@ -4687,7 +4687,7 @@ function system_distribute {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate \
         Network HVList HV HVIP Hypervisor HypervisorIP VMPath HVPath \
-        File FileList DryRun=0 Location
+        File FileList DryRun=0 Location LocalTransfer=1
 
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
@@ -4752,6 +4752,9 @@ function system_distribute {
     # test connection
     nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
 
+    # test if a remote to remote transfer is possible
+    ssh -o "StrictHostKeyChecking no" $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
+
     if [ $DryRun -ne 0 ]; then
       ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}" >/dev/null 2>&1
     fi
@@ -4764,11 +4767,20 @@ function system_distribute {
       fi
       if [ $DryRun -ne 0 ]; then
         echo "redistributing $File from $Hypervisor to $HV..."
-        echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        if [ $LocalTransfer -eq 0 ]; then
+          echo "  ssh -o \"StrictHostKeyChecking no\" $HypervisorIP \"scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )\""
+        else
+          echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        fi
         echo "  ssh -o \"StrictHostKeyChecking no\" $HVIP \"chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )\""
       else
         scslog -v "transferring to ${HV}..."
-        srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
+        if [ $LocalTransfer -eq 0 ]; then
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )" >/dev/null 2>&1
+        else
+          srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
+        fi
+        ssh -o "StrictHostKeyChecking no" $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       fi
     done
 
