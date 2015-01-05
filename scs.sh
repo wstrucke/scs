@@ -1407,11 +1407,17 @@ _EOF
 }
 
 function application_list {
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; application_list_unformatted $@; return; fi
   NUM=$( wc -l $CONF/application |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort |fold_list |sed 's/^/   /'
+  application_list_unformatted $@ |fold_list |sed 's/^/   /'
+}
+
+function application_list_unformatted {
+  # [FORMAT:application]
+  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort
 }
 
 function application_show {
