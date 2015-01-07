@@ -4626,20 +4626,23 @@ function system_deprovision {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
   # check for dry-run flag
-  [ "$1" == "--dry-run" ] && DRY_RUN=1
+  if [ "$1" == "--dry-run" ]; then DRY_RUN=1; fi
+  if [ "$1" == "--yes-i-am-sure" ]; then SURE=1; else SURE=0; fi
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
   # confirm
-  if [ $DRY_RUN -ne 1 ]; then
-    printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
-  else
-    printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
-  fi
-  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)?" || return
-  # confirm for overlay
-  if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
-    printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
-    get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
+  if [ $SURE -ne 1 ]; then
+    if [ $DRY_RUN -ne 1 ]; then
+      printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
+    else
+      printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
+    fi
+    get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)?" || return
+    # confirm for overlay
+    if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
+      printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
+      get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
+    fi
   fi
   # locate
   HV=$( hypervisor_locate_system $NAME )
