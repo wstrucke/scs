@@ -1090,9 +1090,12 @@ function start_modify {
 # merge changes back into master and remove the branch
 #
 # optional:
+#  --no-prompt
 #  -m   commit message
 #
 function stop_modify {
+  local SkipPrompt=0
+  if [ "$1" == "--no-prompt" ]; then SkipPrompt=1; shift; fi
   # optional commit message
   if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
   if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed 's/^..//g' ); shift; fi
@@ -1113,16 +1116,20 @@ function stop_modify {
   fi
   if [ $L -gt 0 ]; then
     # there are modifictions on a branch
-    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
-    test "$DF" == "y" && git diff
-    get_yn DF "Do you want to commit the changes (y/n)?"
-    if [ "$DF" != "y" ]; then return 0; fi
+    if [ $SkipPrompt -ne 1 ]; then
+      get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
+      test "$DF" == "y" && git diff
+      get_yn DF "Do you want to commit the changes (y/n)?"
+      if [ "$DF" != "y" ]; then return 0; fi
+    fi
     git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
   else
-    get_yn DF "Do you want to review the changes from master (y/n)?"
-    test "$DF" == "y" && git diff master
-    get_yn DF "Do you want to commit the changes (y/n)?"
-    if [ "$DF" != "y" ]; then return 0; fi
+    if [ $SkipPrompt -ne 1 ]; then
+      get_yn DF "Do you want to review the changes from master (y/n)?"
+      test "$DF" == "y" && git diff master
+      get_yn DF "Do you want to commit the changes (y/n)?"
+      if [ "$DF" != "y" ]; then return 0; fi
+    fi
   fi
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
     git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
