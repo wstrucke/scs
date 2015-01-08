@@ -1051,6 +1051,8 @@ function git_log {
 # output the status (modified, added, deleted files list)
 #
 function git_status {
+  local Exit=0 Status=0
+  [ "$1" == "--exit" ] && Exit=1
   pushd $CONF >/dev/null 2>&1
   local BRANCH=$( git branch |grep -E '^\*' |awk '{print $2}' )
   local N=`git diff --name-status master |wc -l 2>/dev/null`
@@ -1059,9 +1061,11 @@ function git_status {
     if [ $N -gt 0 ]; then git status; fi
   else
     printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****" >&2
+    Status=1
     if [ $N -gt 0 ]; then git status; fi
   fi
   popd >/dev/null 2>&1
+  [ $Exit -eq 1 ] && exit $Status
 }
 
 # manage changes and locking with branches
@@ -6183,7 +6187,7 @@ SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [[ "$SUBJ" == "cancel" || "$SUBJ" == "unlock" ]]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
-if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
+if [ "$SUBJ" == "status" ]; then git_status --exit; fi
 if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
