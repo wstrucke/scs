@@ -1051,6 +1051,8 @@ function git_log {
 # output the status (modified, added, deleted files list)
 #
 function git_status {
+  local Exit=0 Status=0
+  [ "$1" == "--exit" ] && Exit=1
   pushd $CONF >/dev/null 2>&1
   local BRANCH=$( git branch |grep -E '^\*' |awk '{print $2}' )
   local N=`git diff --name-status master |wc -l 2>/dev/null`
@@ -1059,9 +1061,11 @@ function git_status {
     if [ $N -gt 0 ]; then git status; fi
   else
     printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****" >&2
+    Status=1
     if [ $N -gt 0 ]; then git status; fi
   fi
   popd >/dev/null 2>&1
+  [ $Exit -eq 1 ] && exit $Status
 }
 
 # manage changes and locking with branches
@@ -1086,9 +1090,12 @@ function start_modify {
 # merge changes back into master and remove the branch
 #
 # optional:
+#  --no-prompt
 #  -m   commit message
 #
 function stop_modify {
+  local SkipPrompt=0
+  if [ "$1" == "--no-prompt" ]; then SkipPrompt=1; shift; fi
   # optional commit message
   if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
   if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed 's/^..//g' ); shift; fi
@@ -1109,16 +1116,20 @@ function stop_modify {
   fi
   if [ $L -gt 0 ]; then
     # there are modifictions on a branch
-    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
-    test "$DF" == "y" && git diff
-    get_yn DF "Do you want to commit the changes (y/n)?"
-    if [ "$DF" != "y" ]; then return 0; fi
+    if [ $SkipPrompt -ne 1 ]; then
+      get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
+      test "$DF" == "y" && git diff
+      get_yn DF "Do you want to commit the changes (y/n)?"
+      if [ "$DF" != "y" ]; then return 0; fi
+    fi
     git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
   else
-    get_yn DF "Do you want to review the changes from master (y/n)?"
-    test "$DF" == "y" && git diff master
-    get_yn DF "Do you want to commit the changes (y/n)?"
-    if [ "$DF" != "y" ]; then return 0; fi
+    if [ $SkipPrompt -ne 1 ]; then
+      get_yn DF "Do you want to review the changes from master (y/n)?"
+      test "$DF" == "y" && git diff master
+      get_yn DF "Do you want to commit the changes (y/n)?"
+      if [ "$DF" != "y" ]; then return 0; fi
+    fi
   fi
   if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
     git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
@@ -1407,11 +1418,17 @@ _EOF
 }
 
 function application_list {
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; application_list_unformatted $@; return; fi
   NUM=$( wc -l $CONF/application |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort |fold_list |sed 's/^/   /'
+  application_list_unformatted $@ |fold_list |sed 's/^/   /'
+}
+
+function application_list_unformatted {
+  # [FORMAT:application]
+  awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort
 }
 
 function application_show {
@@ -4620,20 +4637,23 @@ function system_deprovision {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
   # check for dry-run flag
-  [ "$1" == "--dry-run" ] && DRY_RUN=1
+  if [ "$1" == "--dry-run" ]; then DRY_RUN=1; fi
+  if [ "$1" == "--yes-i-am-sure" ]; then SURE=1; else SURE=0; fi
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
   # confirm
-  if [ $DRY_RUN -ne 1 ]; then
-    printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
-  else
-    printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
-  fi
-  get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)?" || return
-  # confirm for overlay
-  if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
-    printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
-    get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
+  if [ $SURE -ne 1 ]; then
+    if [ $DRY_RUN -ne 1 ]; then
+      printf -- '%s\nWARNING: This action WILL CAUSE DATA LOSS!\n%s\n\n' '******************************************' '******************************************'
+    else
+      printf -- '*** DRY-RUN *** DRY-RUN *** DRY-RUN ***\n\n'
+    fi
+    get_yn RL "Are you sure you want to shut off, destroy, and permanently delete the system '$NAME' (y/n)?" || return
+    # confirm for overlay
+    if [[ "$BASE_IMAGE" == "y" && $DRY_RUN -ne 1 ]]; then
+      printf -- '\nWARNING: THIS SYSTEM IS A BASE_IMAGE FOR OTHER SERVERS - THIS ACTION IS IRREVERSABLE AND *WILL* DESTROY ALL OVERLAY SYSTEMS!!!\n\n'
+      get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
+    fi
   fi
   # locate
   HV=$( hypervisor_locate_system $NAME )
@@ -4687,7 +4707,7 @@ function system_distribute {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate \
         Network HVList HV HVIP Hypervisor HypervisorIP VMPath HVPath \
-        File FileList DryRun=0 Location
+        File FileList DryRun=0 Location LocalTransfer=1
 
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
@@ -4752,6 +4772,9 @@ function system_distribute {
     # test connection
     nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
 
+    # test if a remote to remote transfer is possible
+    ssh -o "StrictHostKeyChecking no" $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
+
     if [ $DryRun -ne 0 ]; then
       ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}" >/dev/null 2>&1
     fi
@@ -4764,11 +4787,20 @@ function system_distribute {
       fi
       if [ $DryRun -ne 0 ]; then
         echo "redistributing $File from $Hypervisor to $HV..."
-        echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        if [ $LocalTransfer -eq 0 ]; then
+          echo "  ssh -o \"StrictHostKeyChecking no\" $HypervisorIP \"scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )\""
+        else
+          echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        fi
         echo "  ssh -o \"StrictHostKeyChecking no\" $HVIP \"chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )\""
       else
         scslog -v "transferring to ${HV}..."
-        srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
+        if [ $LocalTransfer -eq 0 ]; then
+          ssh -o "StrictHostKeyChecking no" $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )" >/dev/null 2>&1
+        else
+          srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
+        fi
+        ssh -o "StrictHostKeyChecking no" $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       fi
     done
 
@@ -5309,7 +5341,7 @@ function system_provision_phase2 {
 
   fi
 
-  scslog "system build complete for $NAME"
+  scslog "**** system build complete for $NAME ****"
 }
 
 # deploy the current system build scripts to a remote server
@@ -6162,7 +6194,7 @@ SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [[ "$SUBJ" == "cancel" || "$SUBJ" == "unlock" ]]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
-if [ "$SUBJ" == "status" ]; then git_status; exit 0; fi
+if [ "$SUBJ" == "status" ]; then git_status --exit; fi
 if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
