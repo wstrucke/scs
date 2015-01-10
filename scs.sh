@@ -331,6 +331,7 @@
 #     - deprecate external kvm-install and kvm-uuid scripts and remove dependencies on external servers
 #     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
 #     - send a deployment report when automatic provisioning and system creation occurs
+#     - showing a variable should also show exactly where it is defined, or not defined at all
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
