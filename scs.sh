@@ -701,24 +701,6 @@ function get_yn {
   if [ "$YNRL" == "y" ]; then return 0; elif [ "$YNRL" == "$EXTRA" ]; then return 2; else return 1; fi
 }
 
-# help wrapper
-#
-function help {
-  local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
-  local VERB=""
-  if [ $# -gt 0 ]; then
-    VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
-  fi
-  test -z "$VERB" && local HELPER="${SUBJ}_help" || local HELPER="${SUBJ}_${VERB}_help"
-  {
-    eval ${HELPER} $@ 2>/dev/null
-  } || {
-    echo "Help section not available for '$SUBJ'."; echo
-    usage
-  }
-  exit 0
-}
-
 # first run function to init the configuration store
 #
 function initialize_configuration {
@@ -865,65 +847,6 @@ function scs_abort {
   scslog "abort enabled"
 }
 
-function usage {
-  echo "Simple Configuration [Management] System
-Manage application/server configurations and base templates across all environments.
-
-Usage $0 (options) component (sub-component|verb) [--option1] [--option2] [...]
-              $0 commit [-m 'commit message']
-              $0 cancel [--force]
-              $0 abort | diff | lock | log | status | unlock
-
-Run commit when complete to finalize changes.
-
-HINT - Follow any command with '?' for more detailed usage information.
-
-Component:
-  application
-    constant [--define|--undefine|--list] [<application>] [<constant>]
-    file [--add|--remove|--list]
-  build
-    lineage <name> [--reverse]
-    list [--tree] [--detail]
-  constant
-  environment
-    application [<environment>] [--list] [<location>]
-    application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
-    application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
-    constant [--define|--undefine|--list] [<environment>] [<constant>]
-  file
-    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
-    edit [<name>] [--environment <name>]
-  help
-  hypervisor
-    --locate-system <system_name> [--quick] | --system-audit
-    <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
-  location
-    [<name>] [--assign|--unassign|--list]
-    [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
-  network
-    ip [--locate a.b.c.d]
-    <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
-    <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
-  resource
-    <value> [--assign] [<system>]
-    <value> [--unassign|--list]
-  system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
-
-Verbs - all top level components:
-  create
-  delete [<name>]
-  list
-  show [<name>] [--brief]
-  update [<name>]
-
-Options:
-  --config <string>   Specify an alternative configuration directory
-" >&2
-  exit 1
-}
-
 # Test an IP address for validity:
 # Usage:
 #      valid_ip IP_ADDRESS
@@ -974,6 +897,356 @@ function valid_mask() {
   printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i3 " || return 1
   printf -- " 0 128 192 224 240 248 252 254 255 " |grep -q " $i4 " || return 1
   return 0
+}
+
+
+ #     # ####### #       ######  
+ #     # #       #       #     # 
+ #     # #       #       #     # 
+ ####### #####   #       ######  
+ #     # #       #       #       
+ #     # #       #       #       
+ #     # ####### ####### # 
+
+# help wrapper
+#
+function help {
+  local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+  if [ -z "$SUBJ" ]; then scs_help |less -c; exit 0; fi
+  local VERB=""
+  if [ $# -gt 0 ]; then
+    VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+  fi
+  test -z "$VERB" && local HELPER="${SUBJ}_help" || local HELPER="${SUBJ}_${VERB}_help"
+  ( {
+    eval ${HELPER} $@ 2>/dev/null
+  } || {
+    echo "Help section not available for '$SUBJ'."; echo
+    usage --no-exit
+  } ) |less -c
+  exit 0
+}
+
+# locking
+#
+function lock_help { cat <<_EOF
+NAME
+	SCS Locking and Version Control
+
+SYNOPSIS
+	scs abort
+	scs commit
+	scs diff
+	scs lock
+	scs log
+	scs status
+	scs unlock|cancel
+
+DESCRIPTION
+	Locking (effectively automatic git branching) ensures changes to SCS are never unintentionally committed to the master
+	configuration.  Essentially any function that modifies the configuration will automatically 'lock' (or branch) the
+	repository and force the user to either commit or cancel the changes.
+
+	Cumulative changes from master can be reviewed at any time with 'scs diff' (essentially 'git diff master') and either
+	committed (and released) with 'scs commit' or discarded with 'scs cancel'.
+
+	Since locks are tied to the active user (using the SUDO_USER environment variable) multiple concurrent users can not
+	modify a single configuration repository at the same time.  This behavior is intentional to significantly reduce the
+	risk of merge conflicts from branches, rollup changes into one commit, and abstract the version control to a simple
+	update -> commit / discard concept for end users.
+
+	Any user can masquerade as another user by setting the SUDO_USER environment variable.  E.g.:
+		SUDO_USER=bbuckeye $0 lock
+	... will lock scs as the user 'bbuckeye'.
+
+OPTIONS
+	abort [--disable|--cancel]
+		Sets global abort flag to stop any running background processes.  Use with caution.  All processes that
+		run in the background periodically check for the abort flag and stop cleanly when it is set.  While
+		abort is enabled scs is effectively locked out until abort mode is disabled.
+
+		'abort --disable' or 'abort --cancel' turns off abort mode.
+
+		Warning: some remote operations are currently unable to check the abort status and will never stop on
+		their own. This is a bug.
+
+	cancel
+		Unlocks a locked repository and permanently discards and deletes any changes from master.
+
+	commit [--no-prompt] [-m'message']
+		Commit all outstanding changes to master and unlock the configuration.  A commit message is strongly encouraged.
+
+		The '--no-prompt' option must come before the optional commit message and skips the normal request to
+		review changes and confirm closing of the branch.
+
+	diff
+		Show all changes from master using 'git diff master'.
+
+	lock
+		Creates and switches to a git branch without otherwise modifying the configuration.  Useful for preventing other
+		users on a multi-user system from locking the repository while preparing for changes.
+
+	log
+		Shows the git change log for all time. This shows why commit messages are important.
+
+	status
+		Check whether or not scs is currently locked.  Returns 0 if unlocked and 1 if locked. This is useful for scripting
+		scs commands.
+
+	unlock
+		Alias for 'cancel'.
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+function abort_help { lock_help; }
+function cancel_help { lock_help; }
+function commit_help { lock_help; }
+function diff_help { lock_help; }
+function log_help { lock_help; }
+function status_help { lock_help; }
+function unlock_help { lock_help; }
+
+# general scs help (man scs equiv)
+#
+function scs_help { cat <<_EOF
+NAME
+	Simple Configuration [Management] System
+
+SYNOPSIS
+	$0 [options] component [sub-component|verb] [--option1] [--option2] [...]
+
+	commit [-m 'commit message']
+	cancel [--force]
+	help | commands
+	abort | diff | lock | log | status | unlock
+
+	<component> create
+	<component> delete [<name>]
+	<component> list
+	<component> show [<name>] [--brief]
+	<component> update [<name>]
+
+COMPONENTS
+	application
+		An application is a collection of set variables and files linked to a system via a build.
+
+	build
+		A build is an operating system (OS), memory, disk, processor (CPU), zero or more applications,
+		and installed packages (via a system-build 'role') assigned to a system.
+
+	constant
+		A constant is a variable that can be set in one of five scopes and used to replace text in
+		managed configuration files.
+
+		Scopes include, in order of precedence:
+			1. Application in an Environment
+			2. Environment at a Location
+			3. Environment (Global)
+			4. Application (Global)
+			5. Global
+
+		Global is rarely used since it can represent a static value and often means a variable is unnecessary.
+		A use case could be as a fall-back value for a constant, i.e. setting a global setting for all
+		environments but having a different value in one or other (such as production).
+
+		There is currently no way to set global variables in the scs ui (with my apologies). This is a bug.
+
+	environment
+		An environment is a set of applications, constants (variables), and optionally patches to files.
+
+		Environments are linked to a location, after which systems can be assigned to them.
+
+	file
+		Managed configuration files come in one of seven types and are assembled any time a system
+		audit or configuration deployment is requested.
+
+		Files can optionally contain constants or resources and can optionally have a 'patch' for any environment,
+		allowing tremendous flexibility in construction and deployment between a multitude of environments.
+
+		File types include:
+
+			file          a regular text file
+			symlink       a symbolic link
+			binary        a non-text file
+			copy          a regular file that is not stored here. it will be copied by this application from
+			                another location when it is deployed.  when auditing a remote system files of type
+			                'copy' will only be audited for permissions and existence.
+			delete        ensure a file or directory DOES NOT EXIST on the target system.
+			download      a regular file that is not stored here. it will be retrieved by the remote system
+			                when it is deployed.  when auditing a remote system files of type 'download' will
+			                only be audited for permissions and existence.
+			directory     a directory (useful for enforcing permissions)
+
+		When a file is processed scs looks for a standard template notation for constants and resource references,
+		using a bracket, percent sign, and space before and after the variable.
+
+		A variable is notated with the variable type as a prefix followed by the unique name.  There are
+		currently three types:
+			resource
+				See \`$0 help resource\`
+			constant
+				These are normal variables, scoped as indicated above.
+			system
+				See \`$0 help system\`
+
+		Example notation:
+			{% resource.name %}
+			{% constant.name %}
+			{% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
+
+	hypervisor
+		A hypervisor is a Linux host with libvirt/qemu used for running virtual machines.  It is associated with
+		one or more networks, a single location, and one or more environments which allow systems to be built
+		and deployed to it.
+
+	location
+		A location is assigned to networks, systems, and environments for the purpose of segregating settings
+		that are specific to a deployment scenario.
+
+	network
+		A network is essentially an IPv4 address and subnet mask with one to 4,294,967,296 addresses.
+
+		Networks have optional properties that are useful for applying system settings, such as a DNS server,
+		gateway, NTP server, Syslog server, etc...  Networks can be defined as a 'build' network where new
+		servers can be built.  Build networks have special properties.  See \`$0 help network\` for more information.
+
+	resource
+		A resource is a "physical" thing assigned to either a system or an application in an environment at a
+		location.  Currently these are all IP addresses.  See \`$0 help resource\` for more information.
+
+		Future updates may add network interfaces, disks, or other resource types.
+
+	system
+		A system is associated directly or indirectly with all other resource types.  It is the 'thing' an
+		assembled configuration is deployed or installed to; it is built or managed and must be accessible
+		from the management server with a root ssh key.
+
+DESCRIPTION
+	Manage application/server configurations and base templates across all environments.
+
+	Run commit when complete to finalize changes.
+
+	HINT - Follow any command with '?' for more detailed usage information.
+
+	\`$0 commands\` will output the legacy style usage.
+
+OPTIONS
+	--config <string>
+		Specify an alternate configuration directory (default location is '$CONF')
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help <component>
+	$0 help lock
+_EOF
+}
+
+function usage { cat <<_EOF
+Simple Configuration [Management] System
+Manage application/server configurations and base templates across all environments.
+
+Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
+		$0 commit [-m 'commit message']
+		$0 cancel [--force]
+		$0 abort | commands | diff | lock | log | status | unlock
+
+Run commit when complete to finalize changes.
+
+Components include:
+	application, build, constant, environment, file, hypervisor, location, network, resource, system
+
+All components have the following commands available:
+	create
+	delete [<name>]
+	list
+	show [<name>] [--brief]
+	update [<name>]
+
+Run \`$0 help\` for more information.
+
+_EOF
+  if [ "$1" != "--no-exit" ]; then exit 1; fi
+}
+
+function scs_commands { cat <<_EOF
+Simple Configuration [Management] System
+Manage application/server configurations and base templates across all environments.
+
+Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
+		$0 commit [-m 'commit message']
+		$0 cancel [--force]
+		$0 abort | commands | diff | lock | log | status | unlock
+
+Run commit when complete to finalize changes.
+
+HINT - Follow any command with '?' for more detailed usage information.
+
+Component:
+  application
+    constant [--define|--undefine|--list] [<application>] [<constant>]
+    file [--add|--remove|--list]
+  build
+    lineage <name> [--reverse]
+    list [--tree] [--detail]
+  constant
+  environment
+    application [<environment>] [--list] [<location>]
+    application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+    application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+    constant [--define|--undefine|--list] [<environment>] [<constant>]
+  file
+    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+    edit [<name>] [--environment <name>]
+  help
+  hypervisor
+    --locate-system <system_name> [--quick] | --system-audit
+    <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+  location
+    [<name>] [--assign|--unassign|--list]
+    [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+  network
+    ip [--locate a.b.c.d]
+    <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
+    <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+  resource
+    <value> [--assign] [<system>]
+    <value> [--unassign|--list]
+  system
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+
+Verbs - all top level components:
+  create
+  delete [<name>]
+  list
+  show [<name>] [--brief]
+  update [<name>]
+
+_EOF
 }
 
 
@@ -1270,6 +1543,137 @@ If the name of the application is not provided as an argument you will be prompt
 _EOF
 }
 
+# general application help
+#
+function application_help { cat <<_EOF
+NAME
+	SCS Applications
+
+SYNOPSIS
+	scs application [create|delete|list|show|update] [<name>]
+	scs application constant [--define|--undefine|--list] [<application>] [<constant>]
+	scs application file [--add|--remove|--list]
+	scs environment application [<environment>] [--list] [<location>]
+	scs environment application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+	scs environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+
+DESCRIPTION
+	An application is a collection of files and settings that are deployed to a system (an instance of a build).
+
+	Applications are assigned to a single build and one or more environments.
+
+	Generally if you do not provide a required argument you will prompted for it, e.g.:
+		$0 application show
+	... will output a list of applications and ask you to select one to show.
+
+	Pressing ctrl+c at any time will abort and return you to your shell.
+
+	Any command that alters the running configuration automatically locks scs.  Run \`$0 help lock\` for more information.
+
+	To list defined applications, run:
+		$0 application list
+
+	To show the details of an application, run:
+		$0 application show <name>
+
+	To update a defined application:
+		$0 application edit <name>
+
+OPTIONS
+	application create
+		create (or define) a new application and tie to a build
+
+	application delete [<name>]
+		delete an application and purge all related data
+
+	application list
+		list defined applications
+
+	application show [<name>] [--brief]
+		show details for an application (--brief hides related data that is normally displayed)
+
+	application update [<name>]
+		update application settings or rename an application
+
+	application constant --define [<application>] [<constant>]
+		define a constant in the global application scope (priority 4)
+
+	application constant --undefine [<application>] [<constant>]
+		undefine (or clear) a defined constant in the global application scope (priority 4)
+
+	application constant --list [<application>] [<constant>]
+		show defined constants in the global application scope (priority 4)
+
+	application file --add
+		link a file to an application
+
+	application file --remove
+		unlink a file from an application
+
+	application file --list
+		show linked files
+
+	environment application [<environment>] [--list] [<location>]
+		show applications 'installed' or linked to an environment at a location
+		applications can not be linked to a global environment and must tie to a location.
+		
+	environment application [<environment>] [--name <app_name>] --add [<location>]
+		link (or install) an application in an environment at a location
+
+	environment application [<environment>] [--name <app_name>] --remove [<location>]
+		unlock (remove) an application from an environment at a location
+
+	environment application [<environment>] [--name <app_name>] --assign-resource [<location>]
+		assign a resource to an application in an environment at a location
+		this will usually be used to assign cluster IPs (load balanced real IPs or 'cluster_ip') or
+		heartbeat (high-availiability cluster) IP addressess or 'ha_ip' to an application in an
+	  	environment.
+
+		a typical example is X application is installed on Y real servers behind a load balancer.
+		a resource is defined as a 'cluster_ip', which is the address on the load balancer and the
+		loopback on each application server.  in order to make the cluster_ip resource available to
+		scs when building configuration files it must be linked to the application in the environment
+		and location using this command.
+
+	environment application [<environment>] [--name <app_name>] --unassign-resource [<location>]
+		unassign a resource from an application in an environment at a location.
+
+		this releases the resource so it can be assigned to another application (or removed).
+
+	environment application [<environment>] [--name <app_name>] --list-resource [<location>]
+		show resources assigned to an application in an environment at a location.
+		
+	environment application [<environment>] [--name <app_name>] --define [<application>]
+		define a constant for an application in the scope of an environment (priority 1)
+
+		when constants are enumerated for replacement in file templates, those in this scope have
+		priority over all other defined constants.
+
+	environment application [<environment>] [--name <app_name>] --undefine [<application>]
+		undefine (or clear) a defined constant in scope of an application in an environment (priority 1)
+
+	environment application [<environment>] [--name <app_name>] --list-constant [<application>]
+		show defined constants in scope of the application in an environment (priority 1)
+
+EXAMPLES
+	Create a new application:
+		$0 application create
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 # checks if an application is defined
 #
 # optional:
@@ -1520,6 +1924,36 @@ function build_delete {
   generic_delete build $1
 }
 
+# general build help
+#
+function build_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	build lineage <name> [--reverse]
+	build list [--tree] [--detail]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 # checks if a build is defined
 #
 function build_exists {
@@ -1698,6 +2132,35 @@ function constant_create {
 
 function constant_delete {
   generic_delete constant $1
+}
+
+# general constant help
+#
+function constant_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	constant [--define|--undefine|--list] [<environment>] [<constant>]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
 }
 
 # checks if a constant exists
@@ -2086,6 +2549,37 @@ function environment_exists {
   grep -qE "^$1," $CONF/environment || return 1
 }
 
+# general environment help
+#
+function environment_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	environment application [<environment>] [--list] [<location>]
+	environment application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+	environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 function environment_list {
   if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; environment_list_unformatted $@; return; fi
   NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
@@ -2405,6 +2899,36 @@ function file_exists {
   grep -qE "^$1," $CONF/file || return 1
 }
 
+# general file help
+#
+function file_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	file edit [<name>] [--environment <name>]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 function file_list {
   NUM=$( wc -l ${CONF}/file |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
@@ -2634,6 +3158,36 @@ function location_exists {
   test $# -eq 1 || return 1
   # [FORMAT:location]
   grep -qE "^$1," $CONF/location || return 1
+}
+
+# general location help
+#
+function location_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	location [<name>] [--assign|--unassign|--list]
+	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
 }
 
 function location_list {
@@ -2881,6 +3435,37 @@ function network_exists {
   test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || return 1
   # [FORMAT:network]
   grep -qE "^${1//-/,}," $CONF/network || return 1
+}
+
+# general network help
+#
+function network_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	network ip [--locate a.b.c.d]
+	network <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
+	network <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
 }
 
 # <name> ip [--assign|--unassign|--list|--list-available|--list-assigned]
@@ -3605,6 +4190,36 @@ function resource_delete {
   commit_file resource
 }
 
+# general resource help
+#
+function resource_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	resource <value> [--assign] [<system>]
+	resource <value> [--unassign|--list]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 # show available resources
 #
 # optional:
@@ -3781,6 +4396,36 @@ function hypervisor_exists {
   test $# -eq 1 || return 1
   # [FORMAT:hypervisor]
   grep -qE "^$1," $CONF/hypervisor || return 1
+}
+
+# general hypervisor help
+#
+function hypervisor_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	hypervisor --locate-system <system_name> [--quick] | --system-audit
+	hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
 }
 
 # show the configured hypervisors
@@ -4888,6 +5533,35 @@ function system_exists {
   test $# -eq 1 || return 1
   # [FORMAT:system]
   grep -qE "^$1," $CONF/system || return 1
+}
+
+# general system help
+#
+function system_help { cat <<_EOF
+NAME
+
+SYNOPSIS
+	system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
 }
 
 # get the parent of a system
@@ -6262,6 +6936,7 @@ if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
 if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
 if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
 if [ "$SUBJ" == "abort" ]; then scs_abort $@; exit 0; fi
+if [ "$SUBJ" == "commands" ]; then scs_commands; exit 0; fi
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
