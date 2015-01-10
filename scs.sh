@@ -1775,7 +1775,7 @@ function constant_show {
     done
   done
 
-  printf -- '\n  3. Environment\n'
+  printf -- '\n  3. Environment:\n'
 
   # 3. environments (global)
   for i in $EnList; do
