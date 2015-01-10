@@ -269,6 +269,12 @@
 #   --search: [FORMAT:value/env/constant]
 #   --storage:
 #
+#   value/<environment>/<application>
+#   --description: application in environment scoped values for constants
+#   --format: constant,value\n
+#   --search: [FORMAT:value/env/app]
+#   --storage:
+#
 #   value/<location>/<environment>
 #   --description: enironment at a specific site scoped values for constants
 #   --format: constant,value\n
@@ -303,7 +309,7 @@
 #     - correct host name when creating overlays
 #     - lock/contention issue updating hosts during simultaneous builds
 #     - deleting a constant does not unset the previosly set values for the constant
-#     - global constant values are not implemented (FORMAT:value/constant)
+#     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
@@ -331,7 +337,6 @@
 #     - deprecate external kvm-install and kvm-uuid scripts and remove dependencies on external servers
 #     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
 #     - send a deployment report when automatic provisioning and system creation occurs
-#     - showing a variable should also show exactly where it is defined, or not defined at all
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -1708,19 +1713,18 @@ function constant_exists {
 # optional:
 #   --no-format
 function constant_list {
-  local NUM A S Formatting=1
-  if [ "$1" == "--no-format" ]; then Formatting=0; fi
-  if [ $Formatting -eq 1 ]; then
-    NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
-    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
-    echo "There ${A} ${NUM} defined constant${S}."
-  fi
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; constant_list_unformatted $@; return; fi
+  local NUM A S
+  NUM=$( wc -l ${CONF}/constant |awk '{print $1}' )
+  if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+  echo "There ${A} ${NUM} defined constant${S}."
   test $NUM -eq 0 && return
-  if [ $Formatting -eq 1 ]; then
-    awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort |fold_list |sed 's/^/   /'
-  else
-    awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort
-  fi
+  constant_list_unformatted |fold_list |sed 's/^/   /'
+}
+
+function constant_list_unformatted {
+  # [FORMAT:constant]
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/constant |sort
 }
 
 # combine two sets of variables and values, only including the first instance of duplicates
@@ -1735,11 +1739,67 @@ function constant_list_dedupe {
 }
 
 function constant_show {
+  local C NAME DESC EnList AppList LocList i j
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
   constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  printf -- "Name: $NAME\nDescription: $DESC\n"
+  printf -- "Name: $NAME\nDescription: $DESC\nDefined (priority 1..5):\n"
+
+  # list environments and applications
+  EnList=$( environment_list --no-format )
+  AppList=$( application_list --no-format )
+  LocList=$( location_list --no-format )
+
+  printf -- '  1. Application @ Environment:\n'
+
+  # 1. applications @ environment
+  for i in $EnList; do
+    for j in $AppList; do
+      # [FORMAT:value/env/app]
+      if [ -f "${CONF}/value/$i/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/value/$i/$j" && printf -- '      %s::%s\n' $j $i
+      fi
+    done
+  done
+
+  printf -- '\n  2. Environment @ Location:\n'
+
+  # 2. environments @ location
+  for i in $LocList; do
+    for j in $EnList; do
+      # [FORMAT:value/loc/constant]
+      if [ -f "${CONF}/value/$i/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/value/$i/$j" && printf -- '      %s::%s\n' $j $i
+      fi
+    done
+  done
+
+  printf -- '\n  3. Environment\n'
+
+  # 3. environments (global)
+  for i in $EnList; do
+    # [FORMAT:value/env/constant]
+    if [ -f "${CONF}/value/$i/constant" ]; then
+      grep -qE "^$NAME," "${CONF}/value/$i/constant" && printf -- '      %s\n' $i
+    fi
+  done
+
+  printf -- '\n  4. Application:\n'
+
+  # 4. applications (global)
+  for i in $AppList; do
+    # [FORMAT:value/by-app/constant]
+    if [ -f "${CONF}/value/by-app/$i" ]; then
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s\n' $i
+    fi
+  done
+
+  printf -- '\n  5. Global: '
+
+  # 5. global
+  # [FORMAT:value/constant]
+  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined" || echo "Not Defined"
 }
 
 function constant_update {
@@ -2027,6 +2087,7 @@ function environment_exists {
 }
 
 function environment_list {
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; environment_list_unformatted $@; return; fi
   NUM=$( wc -l ${CONF}/environment |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S}."
@@ -2576,6 +2637,7 @@ function location_exists {
 }
 
 function location_list {
+  if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; location_list_unformatted $@; return; fi
   NUM=$( wc -l ${CONF}/location |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined location${S}."
