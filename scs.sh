@@ -311,6 +311,7 @@
 #     - deleting a constant does not unset the previosly set values for the constant
 #     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
+#     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -465,6 +466,7 @@ function expand_subject_alias {
     ca|can) printf -- 'cancel';;
     con|cons|const) printf -- 'constant';;
     com) printf -- 'commit';;
+    command) printf -- 'commands';;
     d|di|dif) printf -- 'diff';;
     e|en|env) printf -- 'environment';;
     f) printf -- 'file';;
@@ -1097,11 +1099,11 @@ COMPONENTS
 		A variable is notated with the variable type as a prefix followed by the unique name.  There are
 		currently three types:
 			resource
-				See \`$0 help resource\`
+				See \`$0 help resource\` for more information.
 			constant
 				These are normal variables, scoped as indicated above.
 			system
-				See \`$0 help system\`
+				See \`$0 help system\` for more information.
 
 		Example notation:
 			{% resource.name %}
@@ -1138,11 +1140,19 @@ COMPONENTS
 DESCRIPTION
 	Manage application/server configurations and base templates across all environments.
 
+	Generally if you do not provide a required argument you will prompted for it, e.g.:
+		$0 application show
+	... will output a list of applications and ask you to select one to show.
+
+	Pressing ctrl+c at any time will abort and return you to your shell.
+
+	Any command that alters the running configuration automatically locks scs.  Run \`$0 help lock\` for more information.
+
 	Run commit when complete to finalize changes.
 
 	HINT - Follow any command with '?' for more detailed usage information.
 
-	\`$0 commands\` will output the legacy style usage.
+	\`$0 commands\` will output the legacy usage and command summary.
 
 OPTIONS
 	--config <string>
@@ -1203,6 +1213,7 @@ Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
 		$0 abort | commands | diff | lock | log | status | unlock
 
 Run commit when complete to finalize changes.
+
 
 HINT - Follow any command with '?' for more detailed usage information.
 
@@ -1586,8 +1597,10 @@ OPTIONS
 	application delete [<name>]
 		delete an application and purge all related data
 
-	application list
+	application list [--no-format|-1]
 		list defined applications
+
+		The '--no-format' or '-1' argument outputs the list without any summary information.
 
 	application show [<name>] [--brief]
 		show details for an application (--brief hides related data that is normally displayed)
@@ -1605,7 +1618,7 @@ OPTIONS
 		show defined constants in the global application scope (priority 4)
 
 	application file --add
-		link a file to an application
+		link a file to an application.  The same file can be linked to many applications.
 
 	application file --remove
 		unlink a file from an application
@@ -1928,16 +1941,53 @@ function build_delete {
 #
 function build_help { cat <<_EOF
 NAME
+	Builds
 
 SYNOPSIS
+	build [create|delete|list|show|update] [<name>]
 	build lineage <name> [--reverse]
 	build list [--tree] [--detail]
 
 DESCRIPTION
+	Builds serve two purposes in scs -- they link applications to servers and assign the system to a role in the
+	system build process.
+
+	Roles represent a set of packages and system settings designed to prepare a system for the application server
+	and applications assigned to it.  A future scs release may replace the role with the actual package list,
+	negating the need for the system build scripts entirely.
+
+	Builds can optionally have a single parent build.  If utilized, this must directly tie to the inheritence
+	structure in the system build process (the 'role').  This feature allows virtual systems to be built as a series of
+	overlays, which can boost performance and reduce memory and disk utilization on the hypervisor.
 
 OPTIONS
 
 EXAMPLES
+	build create
+		Define a new build and configure it.
+
+	build delete
+		Permanently delete and remove a build.  Use caution deleting builds as they could be assigned to defined
+		systems.
+
+	build lineage [<name>] [--reverse]
+		Display the inheritence path for a build.  This is only useful for builds with a defined parent.
+
+		The '--reverse' option outputs the inheritence in reverse.
+
+	build list [--tree] [--detail]
+		List the defined builds.
+
+		The '--tree' option outputs the inheritence path for each build in a visual tree structure.
+
+		The '--detail' option includes the build description in a second column.
+
+	build show
+		Show a defined build, settings, and any linked applications.
+
+	build update
+		Update the settings for an existing build.
+
 
 RETURN CODE
 	scs returns 0 on success and non-zero on error.
@@ -2138,13 +2188,85 @@ function constant_delete {
 #
 function constant_help { cat <<_EOF
 NAME
+	Constants (Variables)
 
 SYNOPSIS
-	constant [--define|--undefine|--list] [<environment>] [<constant>]
+	application constant [--define|--undefine|--list] [<application>] [<constant>]
+	constant [create|delete|list|show|update] [<name>]
+	environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+	environment constant [--define|--undefine|--list] [<environment>] [<constant>]
+	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
 
 DESCRIPTION
+	Constants allow arbitrary values to be substituted in configuration files and can be conditionally defined based
+	on a system's environment, location, and/or application.
+
+	When multiple values are defined for a constant they are sorted by order of preference, then the highest ranked
+	value is applied to the configuration.  This functionality allows for global variables, which are generally useful
+	as a fallback or reserve value for a constant when no other definition is in scope.
+
+	Scopes include, in order of precedence:
+		1. Application in an Environment
+		2. Environment at a Location
+		3. Environment (Global)
+		4. Application (Global)
+		5. Global
+
+	There is currently no way to define a constant in the global scope (priority 5) using the scs UI.
 
 OPTIONS
+	application constant --define [<application>] [<constant>]
+		Define a constant in the global application scope (priority 4).
+
+	application constant --list [<application>] [<constant>]
+		List constants defined in the global application scope (priority 4) for an application.
+
+	application constant --undefine [<application>] [<constant>]
+		Remove the definition for a constant in the global application scope (priority 4).
+
+	constant create
+		Create a constant that can be defined and referenced in configuration files.
+
+	constant delete
+		Delete a constant and remove all configured values.
+
+	constant list [--no-format|-1]
+		List defined constants.
+
+		The '--no-format' or '-1' argument outputs the constant list without any summary information.
+
+	constant show
+		Show constant details and where it is currently defined.
+
+	constant update
+		Update the constant name (rename) or description.
+
+	environment application [<environment>] [--name <app_name>] --define [<application>]
+		Define a constant in the application::environment scope (priority 1).
+
+	environment application [<environment>] [--name <app_name>] --undefine [<application>]
+		Remove the definition for a constant in the application::environment scope (priority 1).
+
+	environment application [<environment>] [--name <app_name>] --list-constant [<application>]
+		List defined constants in the application::environment scope (priority 1).
+
+	environment constant --define [<environment>] [<constant>]
+		Define a constant in the global environment scope (priority 3).
+
+	environment constant --undefine [<environment>] [<constant>]
+		Remove the definition for a constant in the global environment scope (priority 3).
+
+	environment constant --list [<environment>] [<constant>]
+		List defined constants in the global environment scope (priority 3).
+
+	location [<name>] constant --define [<environment>] [<constant>]
+		Define a constant in the environment::location scope (priority 2).
+
+	location [<name>] constant --undefine [<environment>] [<constant>]
+		Remove the definition for a constant in the environment::location scope (priority 2).
+
+	location [<name>] constant --list [<environment>] [<constant>]
+		List defined constants in the environment::location scope (priority 2).
 
 EXAMPLES
 
@@ -2553,15 +2675,116 @@ function environment_exists {
 #
 function environment_help { cat <<_EOF
 NAME
+	Environments
 
 SYNOPSIS
+	environment [create|delete|list|show|update] [<name>]
 	environment application [<environment>] [--list] [<location>]
 	environment application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
 	environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+	environment constant [--define|--undefine|--list] [<environment>] [<constant>]
+	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	file edit [<name>] [--environment <name>]
+	hypervisor <name> [--add-environment|--remove-environment]
+	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
 
 DESCRIPTION
+	Environments are a distinct collection of applications and related configurations.  They will usually share the same
+	resources, such as databases or internal/external network connections.
+
+	Environments are assigned to locations, after which applications can be assigned to the environment::location pair.
+
+	Each defined file can have a single defined patch for each environment.
 
 OPTIONS
+	environment application [<environment>] --list [<location>]
+		List applications assigned to an environment and location.
+
+	environment application [<environment>] [--name <app_name>] --add [<location>]
+		Assign an application to an environment at a location.
+
+	environment application [<environment>] [--name <app_name>] --remove [<location>]
+		Unassign an application from an environment at a location.
+
+	environment application [<environment>] [--name <app_name>] --assign-resource [<location>]
+		Assign a resource to an application in an environment at a location.
+
+	environment application [<environment>] [--name <app_name>] --unassign-resource [<location>]
+		Unassign a resource from an application in an environment at a location.
+
+	environment application [<environment>] [--name <app_name>] --list-resource [<location>]
+		List resources assigned to an application in an environment at a a location.
+
+	environment application [<environment>] [--name <app_name>] --define [<application>]
+		Define a constant for an application in an environment (priority 1).
+
+	environment application [<environment>] [--name <app_name>] --undefine [<application>]
+		Undefine a constant for an application in an environment (priority 1).
+
+	environment application [<environment>] [--name <app_name>] --list-constant [<application>]
+		List defined constants for an application in an environment (priority 1).
+
+	environment constant --define [<environment>] [<constant>]
+		Define a global environment constant (priority 3).
+
+	environment constant --undefine [<environment>] [<constant>]
+		Undefine a global environment constant (priority 3).
+
+	environment constant --list [<environment>] [<constant>]
+		List defined global environment constants (priority 3).
+
+	environment create
+		Create a new environment.
+
+	environment delete
+		Delete an existing environment and remove all defined constants, application links,
+		and file diffs.  This action should not be performed without due consideration.
+
+	environment list [--no-format|-1]
+		List environments.
+
+		The '--no-format' or '-1' argument outputs the list without any summary information.
+
+	environment show
+		Show environment details and linked locations.
+
+	environment update
+		Update or rename an environment.
+
+	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+		Process and output a configuration file.  If an environment is provided, scs will
+		assemble the variable values for that environment and replace them in the file.
+
+		If a system is provided (with --vars) the variables for the system in the assigned
+		environment will be substituted.
+
+	file edit [<name>] [--environment <name>]
+		Open the configuration file (or template) in vim.  Variables can be added or removed.
+		See \`$0 help constant\` for more information on variable assignment and formatting.
+
+		If an environment is provided the base file will be combined with any existing patch
+		for the environment and the resultant file will be opened in vim where it can be edited
+		normally.  When the editor is closed any changes will be compared to the original base
+		template and a new patch will be generated for the environment.
+
+	hypervisor <name> --add-environment
+		Link an environment to a hypervisor.  Systems are assigned to exactly one environment
+		and can only be deployed to hypervisors that are linked to the environment the system
+		is in (unless forcibly overridden).
+
+	hypervisor <name> --remove-environment
+		Unlink an environment from a hypervisor.  This will not affect systems in the
+		environment that are already deployed to the hypervisor, but will prevent new systems
+		in the environment from being built on the hypervisor.
+
+	location [<name>] constant --define [<environment>] [<constant>]
+		Define a constant in the environment::location scope (priority 2).
+
+	location [<name>] constant --undefine [<environment>] [<constant>]
+		Remove the definition for a constant in the environment::location scope (priority 2).
+
+	location [<name>] constant --list [<environment>] [<constant>]
+		List defined constants in the environment::location scope (priority 2).
 
 EXAMPLES
 
@@ -2903,14 +3126,98 @@ function file_exists {
 #
 function file_help { cat <<_EOF
 NAME
+	Files (templates or file system resources)
 
 SYNOPSIS
+	application file [--add|--remove|--list]
+	file [create|delete|list|show|update] [<name>]
 	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
 	file edit [<name>] [--environment <name>]
 
 DESCRIPTION
+	Managed configuration files come in one of seven types and are assembled any time a system
+	audit or configuration deployment is requested.
+
+	Files can optionally contain constants or resources and can optionally have a 'patch' for any environment,
+	allowing tremendous flexibility in construction and deployment between a multitude of environments.
+
+	File types include:
+
+		file          a regular text file
+		symlink       a symbolic link
+		binary        a non-text file
+		copy          a regular file that is not stored here. it will be copied by this application from
+		                another location when it is deployed.  when auditing a remote system files of type
+		                'copy' will only be audited for permissions and existence.
+		delete        ensure a file or directory DOES NOT EXIST on the target system.
+		download      a regular file that is not stored here. it will be retrieved by the remote system
+		                when it is deployed.  when auditing a remote system files of type 'download' will
+		                only be audited for permissions and existence.
+		directory     a directory (useful for enforcing permissions)
+
+	When a file is processed scs looks for a standard template notation for constants and resource references,
+	using a bracket, percent sign, and space before and after the variable.
+
+	A variable is notated with the variable type as a prefix followed by the unique name.  There are
+	currently three types:
+		resource
+			See \`$0 help resource\` for more information.
+		constant
+			These are normal variables.  See \`$) help constant\` for more information.
+		system
+			See \`$0 help system\` for more information.
+
+	Example notation:
+		{% resource.name %}
+		{% constant.name %}
+		{% system.name %}, {% system.ip %}, {% system.location %}, {% system.environment %}
 
 OPTIONS
+	application file --add
+		Link a file to an application.  The same file can be linked to many applications.
+
+	application file --remove
+		Unlink a file from an application.  This does not otherwise alter the file.
+
+	application file --list
+		List files linked to an application.
+
+	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+		Process and output the contents of a file.
+
+		If an environment is provided any patch for that environment will be applied.
+
+		If a system is provided, variables will be compiled for that system and replaced in the
+		file where they appear, as they would be done when the system was deployed.
+
+		Silent mode will hide errors (the file will still be displayed).
+
+		Verbose mode causes every undefined variable to be explicitely output.
+
+	file create
+		Create a file definition.
+
+	file delete
+		Remove a file, it's contents, and all environment patches.
+
+	file edit [<name>] [--environment <name>]
+		Open the configuration file (or template) in vim.  Variables can be added or removed.
+		See \`$0 help constant\` for more information on variable assignment and formatting.
+
+		If an environment is provided the base file will be combined with any existing patch
+		for the environment and the resultant file will be opened in vim where it can be edited
+		normally.  When the editor is closed any changes will be compared to the original base
+		template and a new patch will be generated for the environment.
+
+	file list
+		List defined files and their deployment path.
+
+	file show
+		Output configuration summary for the file.
+
+	file update
+		Update or rename the file.  A rename operation will properly rename patches and update
+		references to the file throughout scs.
 
 EXAMPLES
 
@@ -6943,6 +7250,9 @@ VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # if no verb is provided default to list, since it is available for all subjects
 if [ -z "$VERB" ]; then VERB="list"; fi
+
+# help
+if [ "$VERB" == "help" ]; then help $SUBJ; exit 0; fi
 
 # warn if lock file exists
 test -f $ABORTFILE && printf -- '\E[31;47m%s\E[0m\n' "***** WARNING: ABORT ENABLED *****"
