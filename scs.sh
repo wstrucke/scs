@@ -1944,9 +1944,9 @@ NAME
 	Builds
 
 SYNOPSIS
-	build [create|delete|list|show|update] [<name>]
-	build lineage <name> [--reverse]
-	build list [--tree] [--detail]
+	scs build [create|delete|list|show|update] [<name>]
+	scs build lineage <name> [--reverse]
+	scs build list [--tree] [--detail]
 
 DESCRIPTION
 	Builds serve two purposes in scs -- they link applications to servers and assign the system to a role in the
@@ -2191,11 +2191,11 @@ NAME
 	Constants (Variables)
 
 SYNOPSIS
-	application constant [--define|--undefine|--list] [<application>] [<constant>]
-	constant [create|delete|list|show|update] [<name>]
-	environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
-	environment constant [--define|--undefine|--list] [<environment>] [<constant>]
-	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+	scs application constant [--define|--undefine|--list] [<application>] [<constant>]
+	scs constant [create|delete|list|show|update] [<name>]
+	scs environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+	scs environment constant [--define|--undefine|--list] [<environment>] [<constant>]
+	scs location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
 
 DESCRIPTION
 	Constants allow arbitrary values to be substituted in configuration files and can be conditionally defined based
@@ -2678,15 +2678,15 @@ NAME
 	Environments
 
 SYNOPSIS
-	environment [create|delete|list|show|update] [<name>]
-	environment application [<environment>] [--list] [<location>]
-	environment application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
-	environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
-	environment constant [--define|--undefine|--list] [<environment>] [<constant>]
-	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
-	file edit [<name>] [--environment <name>]
-	hypervisor <name> [--add-environment|--remove-environment]
-	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+	scs environment [create|delete|list|show|update] [<name>]
+	scs environment application [<environment>] [--list] [<location>]
+	scs environment application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
+	scs environment application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
+	scs environment constant [--define|--undefine|--list] [<environment>] [<constant>]
+	scs file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	scs file edit [<name>] [--environment <name>]
+	scs hypervisor <name> [--add-environment|--remove-environment]
+	scs location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
 
 DESCRIPTION
 	Environments are a distinct collection of applications and related configurations.  They will usually share the same
@@ -3129,10 +3129,10 @@ NAME
 	Files (templates or file system resources)
 
 SYNOPSIS
-	application file [--add|--remove|--list]
-	file [create|delete|list|show|update] [<name>]
-	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
-	file edit [<name>] [--environment <name>]
+	scs application file [--add|--remove|--list]
+	scs file [create|delete|list|show|update] [<name>]
+	scs file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	scs file edit [<name>] [--environment <name>]
 
 DESCRIPTION
 	Managed configuration files come in one of seven types and are assembled any time a system
@@ -3473,8 +3473,8 @@ function location_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	location [<name>] [--assign|--unassign|--list]
-	location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
+	scs location [<name>] [--assign|--unassign|--list]
+	scs location [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
 
 DESCRIPTION
 
@@ -3750,9 +3750,9 @@ function network_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	network ip [--locate a.b.c.d]
-	network <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
-	network <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
+	scs network ip [--locate a.b.c.d]
+	scs network <name> ip [--assign|--check|--unassign|--list|--list-available|--list-assigned|--scan]
+	scs network <name> ipam [--add-range|--remove-range|--reserve-range|--free-range]
 
 DESCRIPTION
 
@@ -4503,8 +4503,8 @@ function resource_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	resource <value> [--assign] [<system>]
-	resource <value> [--unassign|--list]
+	scs resource <value> [--assign] [<system>]
+	scs resource <value> [--unassign|--list]
 
 DESCRIPTION
 
@@ -4709,14 +4709,80 @@ function hypervisor_exists {
 #
 function hypervisor_help { cat <<_EOF
 NAME
+	Hypervisors
 
 SYNOPSIS
-	hypervisor --locate-system <system_name> [--quick] | --system-audit
-	hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+	scs hypervisor --locate-system <system_name> [--quick] | --system-audit
+	scs hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
 
 DESCRIPTION
+	Hypervisors are libvirt/qemu CentOS Linux servers that are used for deployment and/or management of systems.
+
+	Networks must be linked to hypervisors in order to build or deploy systems to them.  Environments must be
+	linked in order for automatic system builds to function properly.  Each hypervisor can be linked to multiple
+	and overlapping environments and networks.  They do not have to have identical network configurations though
+	it is strongly recommended to configure them identically, where possible.
+
+	Hypervisors should have the following scripts installed:
+		/usr/local/utils/kvm
+		/usr/local/utils/kvm-install.sh
+
+	Additionally kvm-uuid should be in the path for scs and configured to use all scs configured hypervisors.
+
+	A future release should eliminate these external dependencies.
 
 OPTIONS
+	hypervisor create
+		Define a hypervisor.
+
+	hypervisor delete [<name>]
+		Remove a hypervisor.  This will prevent scs from being able to locate systems on the removed host.
+
+	hypervisor list [--location <string>] [--enabled] [--environment <string>] [--network <string>] [--backing <string>]
+		List registered hypervisors.
+
+		--location <string>	limit to the specified location
+		--enabled		limit to enabled hypervisors (this also checks disk/memory minimums)
+		--environment <string>	limit to the specified environment
+		--network <string>	limit to the specified network (may be specified up to two times)
+		--backing <string>	limit to hypervisors containing the specified backing image
+
+	hypervisor show [<name>]
+		Show hypervisor details, including configured network interfaces and linked environments.
+
+	hypervisor update [<name>]
+		Update hypervisor details, including enabling or disabling use of the host.
+
+	hypervisor --locate-system <system_name> [--quick]
+		Locate all hypervisors a system is registered on.  This function causes scs to lock due to the
+		way it is implemented.
+
+		The '--quick' flag will cause the function to simply output the last known configuration for a
+		system, provided a location is known.  If the system has never been found a full search will
+		be performed, which is the same behavior as if '--quick' was not specified.
+
+	hypervisor --system-audit
+		System audit runs \`hypervisor --locate-system\` for every registered system.
+
+	hypervisor <name> --add-network
+		Link a registered network to a hypervisor on an interface.
+
+	hypervisor <name> --remove-network
+		Unlink a network from a hypervisor.
+
+	hypervisor <name> --add-environment
+		Link an environment to a hypervisor.
+
+	hypervisor <name> --remove-environment
+		Unlink an environment from a hypervisor.
+
+	hypervisor <name> --poll
+		Connect to the hypervisor and report back memory and disk utilization, and their respective values
+		as a percentage of the configured minimums for the host.
+
+	hypervisor <name> --search <string>
+		Search a hypervisor for virtual machines matching the provided string.  The string will be passed to
+		grep so partial matches are valid.
 
 EXAMPLES
 
@@ -5848,7 +5914,7 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
 
