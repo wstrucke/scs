@@ -24,11 +24,16 @@
 # Configuration Storage:
 #   ./app-config/
 #     application                                          file
-#     binary                                               directory
-#     binary/<environment>/                                environment binary files
 #     build                                                file
 #     constant                                             constant index
 #     environment                                          file
+#     env                                                  directory
+#     env/<environment>/binary                             directory
+#     env/<environment>/constant                           file
+#     env/<environment>/by-app                             directory
+#     env/<environment>/by-app/<application>               file
+#     env/<environment>/by-loc                             directory
+#     env/<environment>/by-loc/<location>                  file
 #     file                                                 file
 #     file-map                                             application to file map
 #     hv-environment                                       file
@@ -49,11 +54,6 @@
 #     value/by-app/                                        directory
 #     value/by-app/<application>                           file (global application)
 #     value/constant                                       file (global)
-#     value/<environment>/                                 directory
-#     value/<environment>/constant                         file (environment)
-#     value/<environment>/<application>                    file (environment application)
-#     value/<location>/                                    directory
-#     value/<location>/<environment>                       file (location environment)
 #     <location>/                                          directory
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
@@ -100,6 +100,24 @@
 #   --description: 'stacks' or groups of instances of all or a subset of applications
 #   --format: name,alias,description\n
 #   --search: [FORMAT:environment]
+#   --storage:
+#
+#   env/<environment>/constant
+#   --description: environment scoped values for constants
+#   --format: constant,value\n
+#   --search: [FORMAT:value/env/constant]
+#   --storage:
+#
+#   env/<environment>/by-app/<application>
+#   --description: application in environment scoped values for constants
+#   --format: constant,value\n
+#   --search: [FORMAT:value/env/app]
+#   --storage:
+#
+#   env/<environment>/by-loc/<location>
+#   --description: enironment at a specific site scoped values for constants
+#   --format: constant,value\n
+#   --search: [FORMAT:value/loc/constant]
 #   --storage:
 #
 #   file
@@ -261,24 +279,6 @@
 #   --description: application scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/by-app/constant]
-#   --storage:
-#
-#   value/<environment>/constant
-#   --description: environment scoped values for constants
-#   --format: constant,value\n
-#   --search: [FORMAT:value/env/constant]
-#   --storage:
-#
-#   value/<environment>/<application>
-#   --description: application in environment scoped values for constants
-#   --format: constant,value\n
-#   --search: [FORMAT:value/env/app]
-#   --storage:
-#
-#   value/<location>/<environment>
-#   --description: enironment at a specific site scoped values for constants
-#   --format: constant,value\n
-#   --search: [FORMAT:value/loc/constant]
 #   --storage:
 #
 #   <location>/network
@@ -707,11 +707,11 @@ function get_yn {
 #
 function initialize_configuration {
   test -d $CONF && exit 2
-  mkdir -p $CONF/template/patch $CONF/{binary,net,value/by-app}
+  mkdir -p $CONF/template/patch $CONF/{env,net,value/by-app}
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
-  printf -- "*\\.swp\nbinary\n" >.gitignore
+  printf -- "*\\.swp\n" >.gitignore
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -2342,8 +2342,8 @@ function constant_show {
   for i in $EnList; do
     for j in $AppList; do
       # [FORMAT:value/env/app]
-      if [ -f "${CONF}/value/$i/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/value/$i/$j" && printf -- '      %s::%s\n' $j $i
+      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s\n' $j $i
       fi
     done
   done
@@ -2354,8 +2354,8 @@ function constant_show {
   for i in $LocList; do
     for j in $EnList; do
       # [FORMAT:value/loc/constant]
-      if [ -f "${CONF}/value/$i/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/value/$i/$j" && printf -- '      %s::%s\n' $j $i
+      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s\n' $j $i
       fi
     done
   done
@@ -2365,8 +2365,8 @@ function constant_show {
   # 3. environments (global)
   for i in $EnList; do
     # [FORMAT:value/env/constant]
-    if [ -f "${CONF}/value/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/value/$i/constant" && printf -- '      %s\n' $i
+    if [ -f "${CONF}/env/$i/constant" ]; then
+      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s\n' $i
     fi
   done
 
@@ -2445,8 +2445,9 @@ function environment_application_add {
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   # assign the application
   echo "$APP" >>${CONF}/${LOC}/${ENV}
-  touch $CONF/value/$ENV/$APP
-  commit_file "${LOC}/${ENV}" $CONF/value/$ENV/$APP
+  # [FORMAT:value/env/app]
+  touch $CONF/env/$ENV/by-app/$APP
+  commit_file "${LOC}/${ENV}" $CONF/env/$ENV/by-app/$APP
 }
 
 function environment_application_define_constant {
@@ -2458,18 +2459,18 @@ function environment_application_define_constant {
   # get the value
   if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
   # check if constant is already defined
-  # [FORMAT:value/env/constant]
-  grep -qE "^$C," ${CONF}/value/$ENV/$APP 2>/dev/null
+  # [FORMAT:value/env/app]
+  grep -qE "^$C," ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
   if [ $? -eq 0 ]; then
     # already define, update value
-    # [FORMAT:value/env/constant]
-    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/value/$ENV/$APP
+    # [FORMAT:value/env/app]
+    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/env/$ENV/by-app/$APP
   else
     # not defined, add
-    # [FORMAT:value/env/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/$APP
+    # [FORMAT:value/env/app]
+    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/by-app/$APP
   fi
-  commit_file ${CONF}/value/$ENV/$APP
+  commit_file ${CONF}/env/$ENV/by-app/$APP
 }
 
 function environment_application_undefine_constant {
@@ -2478,20 +2479,21 @@ function environment_application_undefine_constant {
   # get the requested application or abort
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
-  # [FORMAT:value/env/constant]
-  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/$APP 2>/dev/null
-  commit_file ${CONF}/value/$ENV/$APP
+  # [FORMAT:value/env/app]
+  sed -i '/^'"$C"',.*/d' ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
+  commit_file ${CONF}/env/$ENV/by-app/$APP
 }
 
 function environment_application_list_constant {
   ENV=$1; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
-  test -f $CONF/value/$ENV/$APP && NUM=$( wc -l $CONF/value/$ENV/$APP |awk '{print $1}' ) || NUM=0
+  # [FORMAT:value/env/app]
+  test -f $CONF/env/$ENV/by-app/$APP && NUM=$( wc -l $CONF/env/$ENV/by-app/$APP |awk '{print $1}' ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There $A $NUM defined constant$S for $ENV $APP."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/value/$ENV/$APP |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-app/$APP |sort |sed 's/^/   /'
 }
 
 function environment_application_byname_assign {
@@ -2603,17 +2605,17 @@ function environment_constant_define {
   generic_choose constant "$1" C && shift
   if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
   # check if constant is already defined
-  grep -qE "^$C," ${CONF}/value/$ENV/constant
+  grep -qE "^$C," ${CONF}/env/$ENV/constant
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/$ENV/constant
+    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/value/$ENV/constant
+    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/constant
   fi
-  commit_file ${CONF}/value/$ENV/constant
+  commit_file ${CONF}/env/$ENV/constant
 }
 
 # undefine a constant for an environment
@@ -2622,17 +2624,19 @@ function environment_constant_undefine {
   start_modify
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C
-  sed -i '/^'"$C"',.*/d' ${CONF}/value/$ENV/constant
-  commit_file ${CONF}/value/$ENV/constant
+  # [FORMAT:value/env/constant]
+  sed -i '/^'"$C"',.*/d' ${CONF}/env/$ENV/constant
+  commit_file ${CONF}/env/$ENV/constant
 }
 
 function environment_constant_list {
   generic_choose environment "$1" ENV && shift
-  NUM=$( wc -l ${CONF}/value/$ENV/constant |awk '{print $1}' )
+  # [FORMAT:value/env/constant]
+  NUM=$( wc -l ${CONF}/env/$ENV/constant |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $ENV."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/$ENV/constant |fold_list |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/env/$ENV/constant |fold_list |sed 's/^/   /'
 }
 
 function environment_create {
@@ -2647,18 +2651,18 @@ function environment_create {
   grep -qE "^$NAME," ${CONF}/environment && err "Environment already defined."
   grep -qE ",$ALIAS," ${CONF}/environment && err "Environment alias already in use."
   # add
-  mkdir -p $CONF/template/patch/${NAME} $CONF/{binary,value}/${NAME} >/dev/null 2>&1
+  mkdir -p $CONF/template/patch/${NAME} $CONF/env/${NAME} >/dev/null 2>&1
   # [FORMAT:environment]
   printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
-  touch $CONF/value/${NAME}/constant
-  commit_file environment
+  # [FORMAT:value/env/constant]
+  touch $CONF/env/${NAME}/constant
+  commit_file environment env/${NAME}/constant
 }
 
 function environment_delete {
   generic_delete environment $1 || return
   cd $CONF >/dev/null 2>&1 || return
-  test -d binary/$1 && git rm -r binary/$1
-  test -d value/$1 && git rm -r value/$1
+  test -d env/$1 && git rm -r env/$1
   sed -i "/^$1,/d" $CONF/hv-environment
   commit_file hv-environment
 }
@@ -2825,11 +2829,11 @@ function environment_show {
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC\n"
   test $BRIEF -eq 1 && return
   # also show installed locations
-  NUM=$( find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |wc -l )
+  NUM=$( find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
-    find $CONF -name $NAME -type f |grep -vE '(binary|template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
+    find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
   fi
   printf -- '\n'
 }
@@ -2850,7 +2854,8 @@ function environment_update {
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
     test -d template/patch/$C && git mv template/patch/$C template/patch/$NAME >/dev/null 2>&1
-    test -d value/$C && git mv value/$C value/$NAME >/dev/null 2>&1
+    test -d env/$C && git mv env/$C env/$NAME >/dev/null 2>&1
+    # [FORMAT:location]
     for L in $( awk 'BEGIN{FS=","}{print $1}' ${CONF}/location ); do
       test -d $L/$C && git mv $L/$C $L/$NAME >/dev/null 2>&1
     done
@@ -2974,7 +2979,8 @@ function file_create {
     git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
     popd >/dev/null 2>&1
   elif [ "$TYPE" == "binary" ]; then
-    printf -- "\nPlease copy the binary file to: $CONF/binary/<environment>/$NAME\n"
+    printf -- "\nPlease copy the binary file to: $CONF/env/<environment>/binary/$NAME\n"
+    printf -- "\nAfter the copy is complete, add to git manually in our repo ($CONF)\n"
   else
     commit_file file
   fi
@@ -2994,7 +3000,7 @@ function file_delete {
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
     git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
-    find binary/ -type f -name $C -exec rm -f {} \; >/dev/null 2>&1
+    find env/ -type f -name $C -exec rm -f {} \; >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
 }
@@ -3265,7 +3271,7 @@ function file_show {
   else
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
     [ "$TYPE" == "file" ] && printf -- "\nSize: `stat -c%s $CONF/template/$NAME` bytes"
-#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/binary/$NAME` bytes"
+#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/env/.../binary/$NAME` bytes"
   fi
   printf -- '\n'
 }
@@ -3305,8 +3311,8 @@ function file_update {
         git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
       done
     elif [ "$TYPE" == "binary" ]; then
-      for DIR in `find binary/ -type f -name $C -exec dirname {} \\;`; do
-        mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
+      for DIR in `find env/ -type f -name $C -exec dirname {} \\;`; do
+        git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
       done
     fi
     popd >/dev/null 2>&1
@@ -3399,37 +3405,39 @@ function location_environment_constant {
 function location_environment_constant_define {
   LOC="$1"; ENV="$2"; shift 2
   start_modify
-  if ! [ -f $CONF/value/$LOC/$ENV ]; then mkdir -p $CONF/value/$LOC; touch $CONF/value/$LOC/$ENV; fi
+  if ! [ -f $CONF/env/$ENV/by-loc/$LOC ]; then mkdir -p $CONF/env/$ENV/by-loc; touch $CONF/env/$ENV/by-loc/$LOC; fi
   generic_choose constant "$1" C && shift
   if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
   # check if constant is already defined
-  grep -qE "^$C," $CONF/value/$LOC/$ENV
+  grep -qE "^$C," $CONF/env/$ENV/by-loc/$LOC
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/value/$LOC/$ENV
+    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
-    printf -- "$C,$VAL\n" >>$CONF/value/$LOC/$ENV
+    printf -- "$C,$VAL\n" >>$CONF/env/$ENV/by-loc/$LOC
   fi
-  commit_file $CONF/value/$LOC/$ENV
+  commit_file $CONF/env/$ENV/by-loc/$LOC
 }
 
 function location_environment_constant_undefine {
   start_modify
   generic_choose constant "$1" C
-  sed -i '/^'"$C"',.*/d' $CONF/value/$1/$2
-  commit_file $CONF/value/$1/$2
+  # [FORMAT:value/loc/constant]
+  sed -i '/^'"$C"',.*/d' $CONF/env/$2/by-loc/$1
+  commit_file $CONF/env/$2/by-loc/$1
 }
 
 function location_environment_constant_list {
   LOC="$1"; ENV="$2"; shift 2
-  test -f $CONF/value/$LOC/$ENV && NUM=$( wc -l $CONF/value/$LOC/$ENV |awk '{print $1}' ) || NUM=0
+  # [FORMAT:value/loc/constant]
+  test -f $CONF/env/$ENV/by-loc/$LOC && NUM=$( wc -l $CONF/env/$ENV/by-loc/$LOC |awk '{print $1}' ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $LOC $ENV."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/value/$LOC/$ENV |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-loc/$LOC |sort |sed 's/^/   /'
 }
 
 # list environments at a location
@@ -5314,7 +5322,7 @@ function system_check {
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
-        test -f $CONF/binary/$EN/$FNAME
+        test -f $CONF/env/$EN/binary/$FNAME
         if [ $? -ne 0 ]; then printf -- "Error: $FNAME does not exist for $EN.\n" >&2; VALID=1; fi
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
@@ -5338,13 +5346,16 @@ function system_constant_list {
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   # 1. applications @ environment
   for APP in $( build_application_list "$BUILD" ); do
-    constant_list_dedupe $TMP/clist $CONF/value/$EN/$APP >$TMP/clist.1
+    # [FORMAT:value/env/app]
+    constant_list_dedupe $TMP/clist $CONF/env/$EN/by-app/$APP >$TMP/clist.1
     cat $TMP/clist.1 >$TMP/clist
   done
   # 2. environments @ location
-  constant_list_dedupe $TMP/clist $CONF/value/$LOC/$EN >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  # [FORMAT:value/loc/constant]
+  constant_list_dedupe $TMP/clist $CONF/env/$EN/by-loc/$LOC >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
   # 3. environments (global)
-  constant_list_dedupe $TMP/clist $CONF/value/$EN/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
+  # [FORMAT:value/env/constant]
+  constant_list_dedupe $TMP/clist $CONF/env/$EN/constant >$TMP/clist.1; cat $TMP/clist.1 >$TMP/clist
   # 4. applications (global)
   for APP in $( build_application_list "$BUILD" ); do
     constant_list_dedupe $TMP/clist $CONF/value/by-app/$APP >$TMP/clist.1
@@ -6726,8 +6737,8 @@ function system_release {
         FOCT=777
       elif [ "$FTYPE" == "binary" ]; then
         # simply copy the file, if it exists
-        test -f $CONF/binary/$EN/$FNAME || err "Error - binary file '$FNAME' does not exist for $EN."
-        cat $CONF/binary/$EN/$FNAME >$TMP/release/$FPTH
+        test -f $CONF/env/$EN/binary/$FNAME || err "Error - binary file '$FNAME' does not exist for $EN."
+        cat $CONF/env/$EN/binary/$FNAME >$TMP/release/$FPTH
       elif [ "$FTYPE" == "copy" ]; then
         # copy the file using scp or fail
         scp $FTARGET $TMP/release/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
