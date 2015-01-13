@@ -2885,7 +2885,7 @@ function file_cat {
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
-    --vars) PARSE="$2"; shift;;
+    --vars|--system) PARSE="$2"; shift;;
     --silent) SILENT=1;;
     --verbose) VERBOSE=1;;
     *) usage;;
@@ -5251,7 +5251,7 @@ function system_audit {
     mkdir -p $TMP/release/ACTUAL/`dirname $F`
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed 's/regular file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed -r 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
@@ -6760,7 +6760,7 @@ function system_release {
         printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
         printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
         if [ "$FTYPE" == "symlink" ]; then
-          printf -- "# set permissions on '$FNAME'\nchown -h $FOWNER:$FGROUP /$FPTH\n" >>$RELEASESCRIPT
+          printf -- "# set permissions on '$FNAME'\nchown -h root:root /$FPTH\n" >>$RELEASESCRIPT
         else
           printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
         fi
