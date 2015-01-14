@@ -6719,7 +6719,7 @@ function system_list_unformatted {
 function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate AllFiles HasRoutes=0
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
@@ -6729,14 +6729,19 @@ function system_release {
   RELEASESCRIPT="$TMP/release/scs-install.sh"
   STATFILE="$TMP/release/scs-stat"
   FILES=()
+  AllFiles=()
+
   # create the audit script
   printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
   printf -- "# warn if not target host\ntest \"\`hostname\`\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
   printf -- "PASS=0\n" >>$AUDITSCRIPT
+
   # create the installation script
   printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
   printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
+  touch ${RELEASESCRIPT}.tail
+
   # create the stat file
   touch $STATFILE
   # look up the applications configured for the build assigned to this system
@@ -6747,19 +6752,21 @@ function system_release {
       FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
+
   # check for static routes for this system
   ROUTES=$( network_routes_by_ip $IP )
   if [ -s "$ROUTES" ]; then
     mkdir -p $TMP/release/etc/sysconfig/
     cat $ROUTES >$TMP/release/etc/sysconfig/static-routes
     rm -f $ROUTES
+    HasRoutes=1
     # audit
     FPTH=etc/sysconfig/static-routes
     printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
     printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"644 root:root\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '644 root:root' on $FPTH\"; fi\n" >>$AUDITSCRIPT
     printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
     # release
-    printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>$RELEASESCRIPT
+    printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>${RELEASESCRIPT}.tail
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
   fi
@@ -6769,6 +6776,8 @@ function system_release {
       # get the file path based on the unique name
       # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
+      # add to allfiles array
+      AllFiles[${#AllFiles[@]}]="$FPTH"
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
       # alternate octal representation
@@ -6797,12 +6806,12 @@ function system_release {
         scp $FTARGET $TMP/release/$FPTH >/dev/null 2>&1 || err "Error - an unknown error occurred copying source file '$FTARGET'."
       elif [ "$FTYPE" == "download" ]; then
         # add download to command script
-        printf -- "# download '$FNAME'\n" >>$RELEASESCRIPT
-        printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t scs \"error downloading '$FNAME'\"\n" >>$RELEASESCRIPT
+        printf -- "# download '$FNAME'\n" >>${RELEASESCRIPT}.tail
+        printf -- "curl -f -k -L --retry 1 --retry-delay 10 -s --url \"$FTARGET\" -o \"/$FPTH\" >/dev/null 2>&1 || logger -t scs \"error downloading '$FNAME'\"\n" >>${RELEASESCRIPT}.tail
       elif [ "$FTYPE" == "delete" ]; then
         # add delete to command script
-        printf -- "# delete '$FNAME' if it exists\n" >>$RELEASESCRIPT
-        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>$RELEASESCRIPT
+        printf -- "# delete '$FNAME' if it exists\n" >>${RELEASESCRIPT}.tail
+        printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
         # add audit check 
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
       fi
@@ -6813,9 +6822,9 @@ function system_release {
         printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
         printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
         if [ "$FTYPE" == "symlink" ]; then
-          printf -- "# set permissions on '$FNAME'\nchown -h root:root /$FPTH\n" >>$RELEASESCRIPT
+          printf -- "# set permissions on '$FNAME'\nchown -h root:root /$FPTH\n" >>${RELEASESCRIPT}.tail
         else
-          printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>$RELEASESCRIPT
+          printf -- "# set permissions on '$FNAME'\nchown $FOWNER:$FGROUP /$FPTH\nchmod $FOCTAL /$FPTH\n" >>${RELEASESCRIPT}.tail
         fi
         # stat
         if [ "$FTYPE" == "symlink" ]; then
@@ -6828,9 +6837,18 @@ function system_release {
     # finalize audit script
     printf -- "\nif [ \$PASS -eq 0 ]; then echo \"Audit PASSED\"; else echo \"Audit FAILED\"; fi\nexit \$PASS\n" >>$AUDITSCRIPT
     chmod +x $AUDITSCRIPT
+
+    # create backup
+    printf -- "# create backup\n#test -d /var/backups || mkdir -p /var/backups\n#tar czf /var/backups/\`hostname\`-scs-backup-\`date +%%y%%m%%d-%%H%%M\`.tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
+    [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
+    printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
+
     # finalize installation script
-    printf -- "\nlogger -t scs \"installation complete\"\n" >>$RELEASESCRIPT
+    printf -- "\nlogger -t scs \"installation complete\"\n" >>${RELEASESCRIPT}.tail
+    cat ${RELEASESCRIPT}.tail >>$RELEASESCRIPT
+    rm -f ${RELEASESCRIPT}.tail
     chmod +x $RELEASESCRIPT
+
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE *
