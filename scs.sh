@@ -446,7 +446,7 @@ function errlog {
   test ! -z "$1" && MSG="$@" || MSG="An error occurred"
   echo "$MSG" >&2
   printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$MSG" >>$SCS_Error_Log
-  exit 1
+  test x"${BASH_SOURCE[0]}" == x"$0" && exit 1 || return 1
 }
 
 # return the exit code from an arbitrary function as a string
@@ -802,11 +802,15 @@ function purge_known_hosts {
   scslog "purge_known_hosts: '$name' '$ipaddy'"
   test -z "${name}${ipaddy}" && return
 
+  (
+  flock -x -w 30 200
+  if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
   test -z "$name" || sed -i "/$( printf -- "$name" |sed 's/\./\\./g' )/d" $kh
   test -z "$ipaddy" || sed -i "/$( printf -- "$ipaddy" |sed 's/\./\\./g' )/d" $kh
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
+  ) 200>>$kh
 
   return 0
 }
@@ -3274,6 +3278,32 @@ function file_show {
 #    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/env/.../binary/$NAME` bytes"
   fi
   printf -- '\n'
+
+  if [ "$TYPE" == "binary" ]; then
+    printf -- "Local Path:\n"
+    for F in $( find $CONF/env -name "$NAME" -print ); do
+      printf -- '  %s (%s bytes)' "$F" "$( stat -c%s $F )"
+      if [[ "$( file -b $F )" == "ASCII text" && -n "$( head -n1 $F |grep -- "-----BEGIN CERTIFICATE-----" )" ]]; then
+        # this appears to be an ssl certificate
+        printf -- '\n    SSL Certificate Data: '
+        openssl x509 -noout -modulus -in $F |openssl md5 |cut -d' ' -f2 |tr '\n' ' '
+        openssl x509 -in $F -noout -fingerprint
+      elif [[ "$( file -b $F )" == "ASCII text" && -n "$( head -n1 $F |grep -- "-----BEGIN RSA PRIVATE KEY-----" )" ]]; then
+        # this appears to be a private key
+        printf -- '\n    SSL Certificate Data: '
+        openssl rsa -noout -modulus -in $F |openssl md5 |cut -d' ' -f2
+      else
+        printf -- '\n'
+      fi
+    done
+  fi
+  
+  printf -- 'Linked Applications:\n'
+  if [ "$( grep -c "^$1," ${CONF}/file-map )" -eq 0 ]; then
+    printf -- '  None\n'
+  else
+    grep "^$1," ${CONF}/file-map |cut -d, -f2 |sort |sed 's/^/  /'
+  fi
 }
 
 function file_update {
@@ -5223,7 +5253,7 @@ function system_byname {
 
 function system_audit {
   system_exists "$1" || err "Unknown or missing system name"
-  VALID=0
+  local VALID=0 SkipCheck
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
@@ -5252,11 +5282,31 @@ function system_audit {
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
   ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed -r 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
+
   # review differences
   echo "Analyzing configuration..."
   for F in $( find . -type f |sed 's%^\./%%' ); do
+    SkipCheck=0
+
     if [ -f $TMP/release/ACTUAL/$F ]; then
-      if [ `md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]; then
+
+      if [[ "$( file -b $TMP/release/REFERENCE/$F )" == "ASCII text" && -n "$( head -n1 $TMP/release/REFERENCE/$F |grep -- "-----BEGIN CERTIFICATE-----" )" ]]; then
+        # this appears to be a certificate
+        SkipCheck=1
+        if [[ "$( openssl x509 -noout -modulus -in $TMP/release/REFERENCE/$F |openssl md5 |cut -d' ' -f2 )" != "$( openssl x509 -noout -modulus -in $TMP/release/ACTUAL/$F |openssl md5 |cut -d' ' -f2 )" ]]; then
+          VALID=1
+          echo "Deployed certificate and reference do not match: $F"
+        fi
+      elif [[ "$( file -b $F )" == "ASCII text" && -n "$( head -n1 $F |grep -- "-----BEGIN RSA PRIVATE KEY-----" )" ]]; then
+        # this appears to be a private key
+        SkipCheck=1
+        if [[ "$( openssl rsa -noout -modulus -in $TMP/release/REFERENCE/$F |openssl md5 |cut -d' ' -f2 )" != "$( openssl rsa -noout -modulus -in $TMP/release/ACTUAL/$F |openssl md5 |cut -d' ' -f2 )" ]]; then
+          VALID=1
+          echo "Deployed private key and reference do not match: $F"
+        fi
+      fi
+
+      if [[ $SkipCheck -eq 0 && `md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
         get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
@@ -6303,7 +6353,10 @@ function system_provision_phase2 {
       while [ -z "$DHCPIP" ]; do
         check_abort
         sleep 5
-        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -i "$MAC" |awk '{print $2}' )"
+        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -v server-duid |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -i "$MAC" |awk '{print $2}' |tail -n1 )"
+	if [[ -n "$DHCPIP" && "$( exit_status valid_ip "$DHCPIP" )" -ne 0 ]]; then
+          errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
+        fi
       done
       
       if ! [ -z "$DHCPIP" ]; then
@@ -6987,29 +7040,43 @@ function system_update {
 #
 function system_update_push_hosts {
   test -z "$PUSH_HOSTS" && return
+  local ENTRY kh=/etc/hosts
+
   printf -- " $PUSH_HOSTS " |grep -q " `hostname` "
   if [ $? -ne 0 ]; then echo "This system is not authorized to update /etc/hosts" >&2; return 3; fi
+
   # hostname and IP should either both be unique, or both registered together
-  ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' /etc/hosts ); H=$?
+  ENTRY=$( grep -E '[ '$'\t'']'$1'[ '$'\t'']' $kh );        H=$?
   echo "$ENTRY" |grep -qE '^'${2//\./\\.}'[ '$'\t'']';      I=$?
-  grep -qE '^'${2//\./\\.}'[ '$'\t'']' /etc/hosts;          J=$?
+  grep -qE '^'${2//\./\\.}'[ '$'\t'']' $kh;                 J=$?
+
+  (
+  flock -x -w 120 201
+  if [ $? -ne 0 ]; then errlog "Unable to obtain lock on $kh"; return; fi
+
   if [ $(( $H + $I )) -eq 0 ]; then
     # found together; this is an existing host
     echo "Host entry exists."
   elif [ $(( $H + $J )) -eq 2 ]; then
     echo "Adding host entry..."
-    cat /etc/hosts >/etc/hosts.sysbuild
-    echo -e "$2\t$1\t\t$1.${DOMAIN_NAME}" >>/etc/hosts
-    diff /etc/hosts{.sysbuild,}; echo
+    cat $kh >$kh.sysbuild
+    echo -e "$2\t$1\t\t$1.${DOMAIN_NAME}" >>$kh
+    diff $kh{.sysbuild,}; echo
     # sync
     test -x /usr/local/etc/push-hosts.sh && /usr/local/etc/push-hosts.sh
   elif [ $H -eq 0 ]; then
-    echo "The host name you provided ($1) is already registered with a different IP address in /etc/hosts. Aborted." >&2
+    echo "The host name you provided ($1) is already registered with a different IP address in $kh. Aborted." >&2
     return 1
   elif [ $J -eq 0 ]; then
-    echo "The IP address you provided ($2) is already registered with a different host name in /etc/hosts. Aborted." >&2
+    echo "The IP address you provided ($2) is already registered with a different host name in $kh. Aborted." >&2
     return 1
   fi
+  ) 201>>$kh
+
+  (
+  flock -x -w 30 202
+  if [ $? -ne 0 ]; then errlog "Unable to obtain lock on /usr/local/etc/lpad/hosts/managed-hosts"; return; fi
+
   # add host to lpad as needed
   test -f /usr/local/etc/lpad/hosts/managed-hosts || return 0
   grep -qE '^'$1':' /usr/local/etc/lpad/hosts/managed-hosts
@@ -7017,6 +7084,8 @@ function system_update_push_hosts {
     echo "Adding lpad entry..."
     echo "$1:linux" >>/usr/local/etc/lpad/hosts/managed-hosts
   fi
+  ) 202>>/usr/local/etc/lpad/hosts/managed-hosts
+
   return 0
 }
 
