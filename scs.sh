@@ -356,6 +356,7 @@
  #     #    #     #  #        #     #       #    
   #####     #    ### ####### ###    #       #
 
+
 # write to the activity log
 #
 function scslog {
@@ -412,6 +413,7 @@ function cleanup_and_exit {
   local code=$?
   test -d $TMP && rm -rf $TMP
   test -f /tmp/app-config.$$ && rm -f /tmp/app-config.$$*
+  stty sane
   exit $code
 }
 
@@ -853,6 +855,90 @@ function scs_abort {
   scslog "abort enabled"
 }
 
+# interactive console
+#
+function scs_console {
+  if ! [ -t 0 ]; then err "An interactive terminal is required"; fi
+  local keypress='' done=0 loop=1 args=() prompt='scs' space=0
+  export str
+  trap - EXIT INT
+
+  while [ $done -eq 0 ]; do
+    str=''
+    echo -n "$prompt> "
+    stty -echo -icanon -icrnl time 0 min 0
+    while [[ $done -eq 0 && $loop -eq 1 ]]; do
+      keypress="`cat -v`"
+      case "$keypress" in
+        '^M') args[${#args[@]}]="$str"; loop=0;;
+        '^W'|'^U'|'^A'|'^K') echo -ne '\r\033[K'$prompt'> '; str='';;
+        '^C') printf -- '\n'; cleanup_and_exit;;
+        '^?')
+          # backspace
+          echo -ne '\r\033[K'$prompt'> '
+          if [ $space -eq 0 ]; then
+            str="${str%?}"
+            if [ -z "$str" ]; then if [ ${#args[@]} -gt 0 ]; then
+              str="$( awk '{print $NF}' <<<"${args[*]}" )"; space=1
+              args=( $( awk 'sub(FS $NF,x)' <<<"${args[*]}" ) )
+            fi; fi
+          else
+            space=0
+          fi
+          if [ ${#args[@]} -gt 0 ]; then printf -- '%s' "${args[*]} $str"; else printf -- '%s' "$str"; fi
+          if [ $space -eq 1 ]; then printf -- ' '; fi
+          ;;
+        '?')
+          # help on the current command
+          str="$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
+          help --no-exit "$str"
+          loop=0
+          ;;
+        ' ') args[${#args[@]}]="$str"; str=''; printf -- ' '; space=1;;
+        *) if [ -n "$keypress" ]; then str="$str$keypress"; printf -- '%s' "$keypress"; space=0; fi;;
+      esac
+    done
+    stty sane
+    loop=1
+    
+    case "${args[0]}" in
+      'quit'|'exit') printf -- '\n'; cleanup_and_exit;;
+      *) printf -- "\nYou entered '%s'\n" "${args[*]}";;
+    esac
+
+    args=()
+  done
+
+  exit 0
+}
+function console_help { cat <<_EOF
+NAME
+	SCS Interactive Console
+
+SYNOPSIS
+	scs console
+
+DESCRIPTION
+
+OPTIONS
+
+EXAMPLES
+
+RETURN CODE
+	scs returns 0 on success and non-zero on error.
+
+AUTHOR
+	William Strucke <wstrucke@gmail.com>
+
+COPYRIGHT
+	Copyright © 2014 William Strucke. License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.
+	This is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law.
+
+SEE ALSO
+	$0 help
+_EOF
+}
+
 # Test an IP address for validity:
 # Usage:
 #      valid_ip IP_ADDRESS
@@ -917,9 +1003,10 @@ function valid_mask() {
 # help wrapper
 #
 function help {
+  local VERB="" DoExit=1
+  if [ "$1" == "--no-exit" ]; then DoExit=0; shift; fi
   local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
   if [ -z "$SUBJ" ]; then scs_help |less -c; exit 0; fi
-  local VERB=""
   if [ $# -gt 0 ]; then
     VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
   fi
@@ -930,7 +1017,7 @@ function help {
     echo "Help section not available for '$SUBJ'."; echo
     usage --no-exit
   } ) |less -c
-  exit 0
+  if [ $DoExit -eq 1 ]; then exit 0; fi
 }
 
 # locking
@@ -1035,6 +1122,7 @@ NAME
 SYNOPSIS
 	$0 [options] component [sub-component|verb] [--option1] [--option2] [...]
 
+	console
 	commit [-m 'commit message']
 	cancel [--force]
 	help | commands
@@ -1187,7 +1275,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
 		$0 commit [-m 'commit message']
 		$0 cancel [--force]
-		$0 abort | commands | diff | lock | log | status | unlock
+		$0 abort | commands | console | diff | lock | log | status | unlock
 
 Run commit when complete to finalize changes.
 
@@ -1973,7 +2061,7 @@ function application_update {
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   # handle rename
   if [ "$NAME" != "$APP "]; then
-     echo "Rename not implemented" >&2
+     echo "Rename not implemented" >&2 
   fi
   commit_file application
 }
@@ -7545,6 +7633,7 @@ if [[ "${!#}" =~ \?$ ]]; then help $@; exit 0; fi
 SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # intercept non subject/verb commands
+if [ "$SUBJ" == "console" ]; then scs_console $@; exit 0; fi
 if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
 if [[ "$SUBJ" == "cancel" || "$SUBJ" == "unlock" ]]; then cancel_modify $@; exit 0; fi
 if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
