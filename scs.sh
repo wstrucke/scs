@@ -2088,10 +2088,6 @@ function application_update {
   get_yn CLUSTER "LVS Support (y/n)"
   # [FORMAT:application]
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
-  # handle rename
-  if [ "$NAME" != "$APP "]; then
-     echo "Rename not implemented" >&2 
-  fi
   commit_file application
 }
 
