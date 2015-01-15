@@ -6483,12 +6483,13 @@ function system_provision_phase2 {
 
       DHCPIP=""
       scslog "attempting to trace DHCP IP"
+      echo "ssh $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |sed ':a;N;\$!ba;s/\\n/ /g; s/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
  
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
         check_abort
         sleep 5
-        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -v server-duid |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -i "$MAC" |awk '{print $2}' |tail -n1 )"
+        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
 	if [[ -n "$DHCPIP" && "$( exit_status valid_ip "$DHCPIP" )" -ne 0 ]]; then
           errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
         fi
@@ -6772,7 +6773,7 @@ function system_list_unformatted {
 
       --build)
         NL=""
-        BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' )"
+        BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
         for N in $LIST; do
           # [FORMAT:system]
           grep -qE '^'$N','$2',.*$' ${CONF}/system
@@ -7121,6 +7122,13 @@ function system_update {
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
+  # automatic IP selection
+  if [ "$IP" == "auto" ]; then
+    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
+    shift
+    IP=$( network_ip_list_available $NETNAME --limit 1 )
+    valid_ip $IP || err "Automatic IP selection failed"
+  fi
   get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
   get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   # changing these settings can be non-trivial for a system that is already deployed...
@@ -7174,6 +7182,9 @@ function system_update {
     fi
 
   fi
+
+  # conditionally assign/reserve IP
+  if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
 
   # save changes
   # [FORMAT:system]
