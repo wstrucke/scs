@@ -7115,10 +7115,12 @@ function system_type {
 }
 
 function system_update {
+  local C NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate IP NETNAME ORIGNAME
   start_modify
   generic_choose system "$1" C && shift
   # [FORMAT:system]
   IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  ORIGNAME="$NAME"
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
@@ -7188,7 +7190,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+  sed -i 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -7215,7 +7217,7 @@ function system_update_push_hosts {
   grep -qE '^'${2//\./\\.}'[ '$'\t'']' $kh;                 J=$?
 
   (
-  flock -x -w 120 201
+  flock -x -w 600 201
   if [ $? -ne 0 ]; then errlog "Unable to obtain lock on $kh"; return; fi
 
   if [ $(( $H + $I )) -eq 0 ]; then
