@@ -5959,9 +5959,9 @@ function system_deprovision {
     for F in $LIST; do
       if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
       if [ $DRY_RUN -ne 1 ]; then
-        ssh -o "StrictHostKeyChecking no" -n $HVIP "test -f $F && rm -f $F"
+        ssh -o "StrictHostKeyChecking no" -n $HVIP "test -f $F && chattr -i $F && rm -f $F"
       else
-        echo ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && rm -f $F"
+        echo ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && chattr -i $F && rm -f $F"
       fi
     done
     HV=$( hypervisor_locate_system $NAME )
@@ -6286,10 +6286,13 @@ function system_provision {
 #  FILE=$( system_release $NAME |tail -n1 )
 #  test -s "$FILE" || err "Error generating release, please correct missing variables or configuration files required for deployment"
 
+  echo "obtaining write lock..." >>$SCS_Background_Log
   start_modify
+  echo "success" >>$SCS_Background_Log
 
   #  - assign a temporary IP as needed
   if [[ "$NETNAME" != "$BUILDNET" || "$IP" == "dhcp" ]]; then
+    echo "attempting to assign a build address" >>$SCS_Background_Log
 
     BUILDIP=""
     while [ -z "$BUILDIP" ]; do
@@ -6303,6 +6306,7 @@ function system_provision {
     # assign/reserve IP
     network_ip_assign $BUILDIP $NAME || err "Unable to assign IP address"
 
+    echo "assigned $BUILDIP to $NAME" >>$SCS_Background_Log
   else
     BUILDIP=$IP
   fi
