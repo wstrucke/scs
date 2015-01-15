@@ -1295,6 +1295,17 @@ function cancel_modify {
   # confirm
   if [[ $L -gt 0 || $N -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
   if [ "$DF" == "y" ]; then
+    # handle submodules
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+      if [ -d $F ]; then
+        pushd $F >/dev/null 2>&1
+        git clean -f >/dev/null 2>&1
+        git reset --hard >/dev/null 2>&1
+        git checkout master >/dev/null 2>&1
+        git branch -D $USERNAME >/dev/null 2>&1
+        popd >/dev/null 2>&1
+      fi
+    done; fi
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
     git checkout master >/dev/null 2>&1
@@ -1309,10 +1320,33 @@ function cancel_modify {
 #
 function commit_file {
   test -z "$1" && return
+  local match
   pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
-  while [ $# -gt 0 ]; do git add "$1" >/dev/null 2>&1; shift; done
+  while [ $# -gt 0 ]; do
+    match=0
+    # handle submodules
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+      printf -- "$1" |grep -qE "^$F/"
+      if [ $? -eq 0 ]; then
+        # submodule file
+        pushd $F >/dev/null 2>&1 || err "Unable to switch to submodule context $F"
+        git add "${1/${F//\//\\\/}\//}" >/dev/null 2>&1; shift
+        match=1
+        break;
+      fi
+    done; fi
+    if [ $match -eq 0 ]; then git add "$1" >/dev/null 2>&1; shift; fi
+  done
+  # handle submodules
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -d $F ]; then
+      pushd $F >/dev/null 2>&1
+      git commit -m"committing change" >/dev/null 2>&1
+      popd >/dev/null 2>&1
+    fi
+  done; fi
   if [ `git status -s |wc -l` -ne 0 ]; then
-    git commit -m"committing change" >/dev/null 2>&1 || err "Error committing file to repository"
+    git commit -m"committing change" >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
 }
@@ -1323,10 +1357,32 @@ function commit_file {
 # $2 = '0' or '1', where 1 = do not commit changes (default is 0)
 #
 function delete_file {
+  local match=0
   if [[ "${1:0:2}" == ".." || "${1:0:1}" == "/" || ! -f ${CONF}/$1 ]]; then return 1; fi
   pushd $CONF >/dev/null 2>&1
-  git rm $1 >/dev/null 2>&1
-  if [ "$2" != "1" ]; then git commit -m'removing file $1' >/dev/null 2>&1 || err "Error removing file $1 from repository"; fi
+  # handle submodules
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    printf -- "$1" |grep -qE "^$F/"
+    if [ $? -eq 0 ]; then
+      # submodule file
+      pushd $F >/dev/null 2>&1 || err "Unable to switch to submodule context $F"
+      git rm "${1/${F//\//\\\/}\//}" >/dev/null 2>&1
+      match=1
+      break;
+    fi
+  done; fi
+  if [ $match -eq 0 ]; then git rm "$1" >/dev/null 2>&1; fi
+  if [ "$2" != "1" ]; then
+    # handle submodules
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+      if [ -d $F ]; then
+        pushd $F >/dev/null 2>&1
+        git commit -m'removing file $1' >/dev/null 2>&1
+        popd >/dev/null 2>&1
+      fi
+    done; fi
+    git commit -m'removing file $1' >/dev/null 2>&1
+  fi
   popd >/dev/null 2>&1
 }
 
@@ -1372,6 +1428,15 @@ function start_modify {
   git branch |grep -E '^\*' |grep -q master
   if [ $? -eq 0 ]; then
     printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****" >&2
+    # handle submodules
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+      if [ -d $F ]; then
+        pushd $F >/dev/null 2>&1
+        git branch $USERNAME >/dev/null 2>&1
+        git checkout $USERNAME >/dev/null 2>&1
+        popd >/dev/null 2>&1
+      fi
+    done; fi
     git branch $USERNAME >/dev/null 2>&1
     git checkout $USERNAME >/dev/null 2>&1
     scslog "locked"
@@ -1397,11 +1462,24 @@ function stop_modify {
   get_user
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
-  # check for modifications
-  L=`git status -s |wc -l 2>/dev/null`
   # check if the current branch is master
   git branch |grep -E '^\*' |grep -q master
   test $? -eq 0 && M=1 || M=0
+  # handle submodules
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -d $F ]; then
+      pushd $F >/dev/null 2>&1
+      git checkout master >/dev/null 2>&1 || err "Error switching to master on submodule $F"
+      git merge --squash $USERNAME >/dev/null 2>&1
+      git commit -a -m"$MSG" >/dev/null 2>&1
+      git branch -D $USERNAME >/dev/null 2>&1
+      popd >/dev/null 2>&1
+      git add $F >/dev/null 2>&1
+      git commit -m'commited submodules changes' $F >/dev/null 2>&1
+    fi
+  done; fi
+  # check for modifications
+  L=`git status -s |wc -l 2>/dev/null`
   # return if there are no modifications and we are on the master branch
   if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
   # error if master was modified
@@ -1545,7 +1623,8 @@ function application_delete {
     # [FORMAT:resource]
     sed -i 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   done
-  if [ -f "$CONF/by-app/$APP" ]; then delete_file by-app/$APP; fi
+  if [ -f "$CONF/value/by-app/$APP" ]; then delete_file value/by-app/$APP; fi
+  for C in $( ls $CONF/env ); do if [ -f "$CONF/env/$C/by-app/$APP" ]; then delete_file env/$C/by-app/$APP; fi; done
   commit_file file-map resource
 }
 function application_delete_help { cat <<_EOF
@@ -1892,6 +1971,10 @@ function application_update {
   get_yn CLUSTER "LVS Support (y/n)"
   # [FORMAT:application]
   sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
+  # handle rename
+  if [ "$NAME" != "$APP "]; then
+     echo "Rename not implemented" >&2
+  fi
   commit_file application
 }
 
@@ -2185,7 +2268,59 @@ function constant_create {
 }
 
 function constant_delete {
-  generic_delete constant $1
+  local i j NAME="$1"
+  generic_delete constant $NAME
+  cd $CONF >/dev/null 2>&1 || return
+
+  # list environments and applications
+  EnList=$( environment_list --no-format )
+  AppList=$( application_list --no-format )
+  LocList=$( location_list --no-format )
+
+  # 1. applications @ environment
+  for i in $EnList; do
+    for j in $AppList; do
+      # [FORMAT:value/env/app]
+      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
+        if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+      fi
+    done
+  done
+
+  # 2. environments @ location
+  for i in $LocList; do
+    for j in $EnList; do
+      # [FORMAT:value/loc/constant]
+      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
+        if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+      fi
+    done
+  done
+
+  # 3. environments (global)
+  for i in $EnList; do
+    # [FORMAT:value/env/constant]
+    if [ -f "${CONF}/env/$i/constant" ]; then
+      grep -qE "^$NAME," "${CONF}/env/$i/constant"
+      if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+    fi
+  done
+
+  # 4. applications (global)
+  for i in $AppList; do
+    # [FORMAT:value/by-app/constant]
+    if [ -f "${CONF}/value/by-app/$i" ]; then
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i"
+      if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+    fi
+  done
+
+  # 5. global
+  # [FORMAT:value/constant]
+  grep -qE "^$NAME," ${CONF}/value/constant
+  if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
 }
 
 # general constant help
