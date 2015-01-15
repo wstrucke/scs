@@ -860,11 +860,7 @@ function scs_abort {
 #
 function scs_console {
   if ! [ -t 0 ]; then err "An interactive terminal is required"; fi
-<<<<<<< HEAD
   local keypress='' done=0 loop=1 args=() prompt='scs' space=0 last_command=''
-=======
-  local keypress='' done=0 loop=1 args=() prompt='scs' space=0
->>>>>>> implement console interface
   export str
   trap - EXIT INT
 
@@ -876,7 +872,6 @@ function scs_console {
       keypress="`cat -v`"
       case "$keypress" in
         '^M') args[${#args[@]}]="$str"; loop=0;;
-<<<<<<< HEAD
         '^W')
           # remove the word next to the cursor
           args=( $( awk 'sub(FS $NF,x)' <<<"${args[*]}" ) )
@@ -906,10 +901,6 @@ function scs_console {
             last_command=''
           fi
           ;;
-=======
-        '^W'|'^U'|'^A'|'^K') echo -ne '\r\033[K'$prompt'> '; str='';;
-        '^C') printf -- '\n'; cleanup_and_exit;;
->>>>>>> implement console interface
         '^?')
           # backspace
           echo -ne '\r\033[K'$prompt'> '
@@ -927,13 +918,7 @@ function scs_console {
           ;;
         '?')
           # help on the current command
-<<<<<<< HEAD
           help --no-exit "$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
-=======
-          str="$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
-          help --no-exit "$str"
-          loop=0
->>>>>>> implement console interface
           ;;
         ' ') args[${#args[@]}]="$str"; str=''; printf -- ' '; space=1;;
         *) if [ -n "$keypress" ]; then str="$str$keypress"; printf -- '%s' "$keypress"; space=0; fi;;
@@ -941,7 +926,6 @@ function scs_console {
     done
     stty sane
     loop=1
-<<<<<<< HEAD
 
     case "${args[0]}" in
       'quit'|'exit') printf -- '\n'; cleanup_and_exit;;
@@ -949,14 +933,6 @@ function scs_console {
     esac
 
     last_command="${args[*]}"
-=======
-    
-    case "${args[0]}" in
-      'quit'|'exit') printf -- '\n'; cleanup_and_exit;;
-      *) printf -- "\nYou entered '%s'\n" "${args[*]}";;
-    esac
-
->>>>>>> implement console interface
     args=()
   done
 
