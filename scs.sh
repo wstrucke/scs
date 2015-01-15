@@ -860,7 +860,7 @@ function scs_abort {
 #
 function scs_console {
   if ! [ -t 0 ]; then err "An interactive terminal is required"; fi
-  local keypress='' done=0 loop=1 args=() prompt='scs' space=0
+  local keypress='' done=0 loop=1 args=() prompt='scs' space=0 last_command=''
   export str
   trap - EXIT INT
 
@@ -872,8 +872,35 @@ function scs_console {
       keypress="`cat -v`"
       case "$keypress" in
         '^M') args[${#args[@]}]="$str"; loop=0;;
-        '^W'|'^U'|'^A'|'^K') echo -ne '\r\033[K'$prompt'> '; str='';;
+        '^W')
+          # remove the word next to the cursor
+          args=( $( awk 'sub(FS $NF,x)' <<<"${args[*]}" ) )
+          echo -ne '\r\033[K'$prompt'> '; printf -- '%s ' "${args[0]}"; space=1
+          ;;
+        '^U'|'^A'|'^K') echo -ne '\r\033[K'$prompt'> '; str='';;
         '^C') printf -- '\n'; cleanup_and_exit;;
+        $'\t')
+          # command completion
+          if [ ${#args[@]} -eq 0 ]; then
+            # expand subject
+            str="$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
+            echo -ne '\r\033[K'$prompt'> '; printf -- '%s' "$str"
+          elif [ ${#args[@]} -eq 1 ]; then
+            # expand verb
+            str="$( expand_verb_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
+            echo -ne '\r\033[K'$prompt'> '; printf -- '%s %s' "${args[0]}" "$str"
+          fi
+          ;;
+        '^[[B') echo -ne '\r\033[K'$prompt'> '; args=(); str='';;
+        '^[[D'|'^[[C') continue;;
+        '^[[A')
+          # up arrow - poor man's history
+          if [ -n "$last_command" ]; then
+            echo -ne '\r\033[K'$prompt'> '; printf -- '%s' "$last_command"; 
+            args=( $last_command )
+            last_command=''
+          fi
+          ;;
         '^?')
           # backspace
           echo -ne '\r\033[K'$prompt'> '
@@ -891,9 +918,7 @@ function scs_console {
           ;;
         '?')
           # help on the current command
-          str="$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
-          help --no-exit "$str"
-          loop=0
+          help --no-exit "$( expand_subject_alias "$( echo "$str" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"
           ;;
         ' ') args[${#args[@]}]="$str"; str=''; printf -- ' '; space=1;;
         *) if [ -n "$keypress" ]; then str="$str$keypress"; printf -- '%s' "$keypress"; space=0; fi;;
@@ -901,12 +926,13 @@ function scs_console {
     done
     stty sane
     loop=1
-    
+
     case "${args[0]}" in
       'quit'|'exit') printf -- '\n'; cleanup_and_exit;;
-      *) printf -- "\nYou entered '%s'\n" "${args[*]}";;
+      *) printf -- '\n'; if [[ ${#args[@]} -gt 0 && "${args[0]}" != "" ]]; then ( scs ${args[*]} ); fi;;
     esac
 
+    last_command="${args[*]}"
     args=()
   done
 
@@ -1007,7 +1033,7 @@ function help {
   local VERB="" DoExit=1
   if [ "$1" == "--no-exit" ]; then DoExit=0; shift; fi
   local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
-  if [ -z "$SUBJ" ]; then scs_help |less -c; exit 0; fi
+  if [ -z "$SUBJ" ]; then scs_help |less -c; if [ $DoExit -eq 1 ]; then exit 0; else return; fi; fi
   if [ $# -gt 0 ]; then
     VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
   fi
