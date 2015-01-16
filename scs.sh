@@ -5560,7 +5560,9 @@ function system_convert {
   # scope variables
   local NAME=$1 BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY curType newType \
         Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
-        VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0 Count; shift
+        VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0 Count HV_FINAL_INT \
+        HV_BUILD_INT SystemBuildDate BUILDNET OS ARCH DISK RAM PARENT RDISK RRAM RP \
+        UUID MAC; shift
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -6154,7 +6156,8 @@ function system_parent {
 function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME NETMASK \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
-        BuildParent BUILDNET VMPath Foreground=0 Hypervisor OS ARCH DISK RAM PARENT
+        BuildParent BUILDNET VMPath Foreground=0 Hypervisor OS ARCH DISK RAM PARENT \
+        HV_FINAL_INT HV_BUILD_INT
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -6619,6 +6622,8 @@ function system_provision_phase2 {
 
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
+    scslog "changing system network interface from '$HV_BUILD_INT' to '$HV_FINAL_INT'"
+    echo "ssh -n $HVIP \"sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
     ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
   fi
 
