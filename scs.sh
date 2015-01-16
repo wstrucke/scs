@@ -5893,7 +5893,7 @@ function system_deploy {
     printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh $System "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh"
+    ssh $System "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -6576,7 +6576,7 @@ function system_provision_phase2 {
   scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
   
   # !!FIXME!!
   #  * - ship over latest code release
