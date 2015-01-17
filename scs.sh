@@ -7545,7 +7545,6 @@ if [[ -z "$TMP" || "$TMP" == "/" ]]; then echo "Invalid temporary directory. Ple
 trap cleanup_and_exit EXIT INT
 
 # initialize
-test "`whoami`" == "root" || err "What madness is this? Ye art not auth'riz'd to doeth that."
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
 test -x $KVMUUID || err "kvm-uuid was not found at the expected path and is required for some operations"
 test $# -ge 1 || usage
