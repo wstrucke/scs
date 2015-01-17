@@ -404,6 +404,28 @@ function check_abort {
   if [ -f $ABORTFILE ]; then errlog "ERROR - abort file appeared, halting execution.$MSG"; fi
 }
 
+# check if a host is responding on the network
+#   use ssh port (tcp/22) since that is almost exclusively how we manage them
+#
+# requires:
+#   $1	host name or ip
+#
+# optional:
+#   $2	tcp port (default is 22)
+#   $3  timeout (default is 2 seconds)
+#
+function check_host_alive {
+  local Port Timeout
+  if [ $# -eq 0 ]; then return 1; fi
+  if [ $? -eq 2 ]; then Port=$2; else Port=22; fi
+  if [ $? -eq 3 ]; then Timeout=$3; else Timeout=2; fi
+  if [ "$HostOS" == "mac" ]; then
+    ( ( exec 3<>/dev/tcp/$1/$Port ) & sleep $Timeout; kill $! &>/dev/null ) || return 0 && return 1
+  else
+    nc -z -w $Timeout $1 $Port &>/dev/null && return 0 || return 1
+  fi
+}
+
 # exit function called from trap
 #
 function cleanup_and_exit {
@@ -1021,7 +1043,7 @@ function unlock_help { lock_help; }
 #
 function scs_help { cat <<_EOF
 NAME
-	Simple Configuration [Management] System
+	Simple Configuration [Management] System version ${SCS_Version} (${HostOS})
 
 SYNOPSIS
 	$0 [options] component [sub-component|verb] [--option1] [--option2] [...]
@@ -1181,7 +1203,7 @@ _EOF
 }
 
 function usage { cat <<_EOF
-Simple Configuration [Management] System
+Simple Configuration [Management] System version ${SCS_Version} (${HostOS})
 Manage application/server configurations and base templates across all environments.
 
 Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
@@ -1208,7 +1230,7 @@ _EOF
 }
 
 function scs_commands { cat <<_EOF
-Simple Configuration [Management] System
+Simple Configuration [Management] System version ${SCS_Version} (${HostOS})
 Manage application/server configurations and base templates across all environments.
 
 Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
@@ -4055,12 +4077,11 @@ _EOF
 #   $2	hostname to match against
 #
 function network_ip_check {
+  local P
   valid_ip "$1" || return 1
   # tcp port 22 (ssh), 80 (http), 443 (https), and 8080 (http-alt)
-  nc -z -w 2 $1 22 >/dev/null 2>&1 && return 1
-  nc -z -w 2 $1 80 >/dev/null 2>&1 && return 1
-  nc -z -w 2 $1 443 >/dev/null 2>&1 && return 1
-  nc -z -w 2 $1 8080 >/dev/null 2>&1 && return 1
+  check_host_alive $1 && return 1
+  for P in 80 443 8080 8443; do check_host_alive $1 $P 1 && return 1; done
   # icmp/ping
   if [ $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then return 1; fi
   # optional /etc/hosts matching
@@ -5051,7 +5072,7 @@ function hypervisor_list {
         for N in $LIST; do
           # [FORMAT:hypervisor]
           read -r HypervisorIP VMPath <<< "$( grep -E "^$N," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
-          nc -z -w 2 $HypervisorIP 22 >/dev/null 2>&1 || continue
+          check_host_alive $HypervisorIP || continue
           ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" >/dev/null 2>&1 && NL="$NL $N"
         done; LIST="$NL"; shift
         ;;
@@ -5128,7 +5149,7 @@ function hypervisor_locate_system {
     read HIP VMPATH ENABLED <<<"$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4,$7}' )"
     test "$ENABLED" == "y" || continue
     # test the connection
-    nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
+    check_host_alive $HIP || continue
     # search
     if [ "$BASE_IMAGE" == "y" ]; then
       VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |sed -e 's/\.img//'" )
@@ -5174,7 +5195,7 @@ function hypervisor_poll {
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # test the connection
-  nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
+  check_host_alive $IP || err "Hypervisor is not accessible at this time"
   # collect memory usage
   FREEMEM=$( ssh -o "StrictHostKeyChecking no" $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
   MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed -e 's/\..*//' )
@@ -5238,12 +5259,8 @@ function hypervisor_qemu_uuid {
   
   # validate all HVs are online and accessible
   for H in $ALL_HV; do
-    if [ $VERBOSE -eq 1 ]; then
-      echo -n "Verifying hypervisor is online... " >&2
-      nc -z -w 2 $H 22 >&2
-    else
-      nc -z -w 2 $H 22 >/dev/null 2>&1
-    fi
+    if [ $VERBOSE -eq 1 ]; then echo -n "Verifying hypervisor is online... " >&2; fi
+    check_host_alive $H
     if [ $? -ne 0 ]; then
       test $VERBOSE -eq 1 && echo "error connecting to $H!" >&2
     else
@@ -5390,7 +5407,7 @@ function hypervisor_search {
   # [FORMAT:hypervisor]
   IFS="," read -r NAME IP LOC VMPATH MINDISK MINMEM ENABLED <<< "$( grep -E "^$1," ${CONF}/hypervisor )"
   # test the connection
-  nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
+  check_host_alive $IP || err "Hypervisor is not accessible at this time"
   # validate search string
   test -z "$2" && err "Missing search operand"
   # search
@@ -5502,7 +5519,7 @@ function system_audit {
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # test connectivity
-  nc -z -w 2 $1 22 >/dev/null 2>&1 || err "System $1 is not accessible at this time"
+  check_host_alive $1 || err "System $1 is not accessible at this time"
   # generate the release
   echo "Generating release..."
   FILE=$( system_release $1 |tail -n1 )
@@ -5987,7 +6004,7 @@ function system_deploy {
     --install) Install=1;;
     *) system_deploy_help >&2; exit 1;;
   esac; shift; done
-  nc -z -w 2 $System 22 >/dev/null 2>&1
+  check_host_alive $System
   if [ $? -ne 0 ]; then printf -- "Unable to connect to remote system '$System'\n"; exit 1; fi
   printf -- "Generating release...\n"
   FILE=$( system_release $System 2>/dev/null |tail -n1 )
@@ -6051,7 +6068,7 @@ function system_deprovision {
     # [FORMAT:hypervisor]
     read -r HVIP VMPATH <<< "$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $1,$4}' )"
     # test connection
-    nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
+    check_host_alive $HVIP || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
     # get disks
     if [ "$BASE_IMAGE" == "y" ]; then
       LIST="$( ssh -o "StrictHostKeyChecking no" $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
@@ -6158,7 +6175,7 @@ function system_distribute {
     read -r HVIP HVPath <<< "$( grep -E "^$HV," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
 
     # test connection
-    nc -z -w 2 $HVIP 22 >/dev/null 2>&1 || continue
+    check_host_alive $HVIP || continue
 
     # test if a remote to remote transfer is possible
     ssh -o "StrictHostKeyChecking no" $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
@@ -6617,7 +6634,7 @@ function system_provision_phase2 {
         # [FORMAT:network]
         read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
-        while [ "$( exit_status nc -z -w 2 $DHCPIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+        while [ "$( exit_status check_host_alive $DHCPIP )" -ne 0 ]; do sleep 5; check_abort; done
         while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
         ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1
         scslog "successfully moved system to assigned build address"
@@ -6638,7 +6655,7 @@ function system_provision_phase2 {
   #  - wait for vm to come up
   sleep 15
   scslog "waiting for $NAME at $BUILDIP"
-  while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
@@ -6657,7 +6674,7 @@ function system_provision_phase2 {
 
   if [ -z "$OVERLAY" ]; then
     #  - clean up kickstart file
-    nc -z -w 2 $REPO_ADDR 22 >/dev/null 2>&1
+    check_host_alive $REPO_ADDR
     [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
   fi
 
@@ -6670,7 +6687,7 @@ function system_provision_phase2 {
 
   #  - wait for vm to come up
   sleep 15
-  while [ "$( exit_status nc -z -w 2 $BUILDIP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
   purge_known_hosts --ip $BUILDIP
   while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
@@ -6749,7 +6766,7 @@ function system_provision_phase2 {
   
       #  - wait for vm to come up
       sleep 15
-      while [ "$( exit_status nc -z -w 2 $IP 22 )" -ne 0 ]; do sleep 5; check_abort; done
+      while [ "$( exit_status check_host_alive $IP )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "ssh connection succeeded to $NAME"
       while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "$NAME verified UP"
@@ -6785,11 +6802,11 @@ function system_push_build_scripts {
     SRCDIR=$BUILDSRC
   fi
   test -d "$SRCDIR" || return 4
-  nc -z -w2 $1 22
+  check_host_alive $1
   if [ $? -ne 0 ]; then
     echo "Remote host did not respond to initial request; attempting to force network discovery..." >&2
     ping -c 2 -q $1 >/dev/null 2>&1
-    nc -z -w2 $1 22 || return 5
+    check_host_alive $1 || return 5
   fi
   cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
   sed -ei "/$( printf -- "$1" |sed -e 's/\./\\./g' )/d" /root/.ssh/known_hosts
@@ -7199,7 +7216,7 @@ function system_start_remote_build {
   valid_ip $2      || err "An invalid IP was provided"
 
   # confirm availabilty
-  nc -z -w2 $2 22 >/dev/null 2>&1 || errlog "Host is down. Aborted."
+  check_host_alive $2 || errlog "Host is down. Aborted."
 
   # remove any stored keys for the current and target IPs since this is a new build
   purge_known_hosts --name $1 --ip $2
@@ -7280,7 +7297,7 @@ function system_update {
   fi
 
   # handle single or overlay -> backing image
-  if [[ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" && "$BASE_IMAGE" == "y" && $( exit_status valid_ip $IP ) -eq 0 && $( exit_status nc -z -w 2 $IP 22 ) -eq 0 ]]; then
+  if [[ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" && "$BASE_IMAGE" == "y" && $( exit_status valid_ip $IP ) -eq 0 && $( exit_status check_host_alive $IP ) -eq 0 ]]; then
 
     if [ "$( ssh -o "StrictHostKeyChecking no" $IP "hostname" )" != "$NAME" ]; then
       scslog "refusing to change system type since the system at the registered IP does not match the host name"
@@ -7535,7 +7552,7 @@ function system_vm_disks {
   # [FORMAT:hypervisor]
   local IP=$( grep -E '^'$HV',' ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2}' )
   # verify connectivity
-  nc -z -w 2 $IP 22 >/dev/null 2>&1 || return
+  check_host_alive $IP || return
   # get the disk configuration from the hypervisor
   local PARENT="/" XMLPATH
   while read_dom; do
@@ -7613,6 +7630,9 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
+# application version
+SCS_Version="1.0.0"
+#
 # path to the temp file for patching configuration files
 TMP=/tmp/scs.$$
 #
@@ -7629,10 +7649,8 @@ TMPLarge=/bkup1
  #     # #     #  #  #    ## 
  #     # #     # ### #     #
 
-# set local variables
-APP=""
-ENV=""
-FILE=""
+# define global variables
+HostOS=$( [[ "$( uname -v )" =~ "Darwin" ]] && echo mac || echo linux )
 USERNAME=""
 
 # precaution
