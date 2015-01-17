@@ -7540,6 +7540,10 @@ if [[ "$1" == "-c" || "$1" == "--config" ]]; then
   shift;
   test -d "`dirname $1`" && CONF="$1" || usage
   shift; echo "chroot: $CONF"
+else
+  if [[ -n $SCS_CONF ]]; then
+    CONF=$SCS_CONF
+  fi
 fi
 
 # first run check
