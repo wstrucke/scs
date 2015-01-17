@@ -296,7 +296,7 @@
 # External requirements:
 #   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
 #     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
-#   My stuff - kvm-uuid, kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
+#   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
 #
 # TO DO:
 #   - bug fix:
@@ -335,7 +335,7 @@
 #     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
 #     - colorize system list output (different color per build)?
-#     - deprecate external kvm-install and kvm-uuid scripts and remove dependencies on external servers
+#     - deprecate external kvm-install script and remove dependencies on external servers
 #     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
 #     - send a deployment report when automatic provisioning and system creation occurs
 #   - environment stuff:
@@ -507,7 +507,7 @@ function expand_verb_alias {
 function fold_list {
   local foo food maxlen width
   while read foo; do test -z "$food" && food="$foo" || food="$food $foo"; done
-  maxlen=$( printf -- "$food" |tr ' ' '\n' | awk '{print length($1)}' | sort -n | tail -1 )
+  maxlen=$( printf -- "$food" |tr ' ' '\n' |awk 'length>max{max=length}END{print max}' )
   width=$(( $(tput cols) / ( $maxlen + 5 )))
   printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=1}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
 }
@@ -4912,9 +4912,7 @@ DESCRIPTION
 		/usr/local/utils/kvm
 		/usr/local/utils/kvm-install.sh
 
-	Additionally kvm-uuid should be in the path for scs and configured to use all scs configured hypervisors.
-
-	A future release should eliminate these external dependencies.
+	A future release should eliminate the external dependencies.
 
 OPTIONS
 	hypervisor create
@@ -5201,6 +5199,97 @@ function hypervisor_poll {
   IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" $IP "uptime |sed 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
+}
+
+# generate a unique system uuid and mac address for a qemu virtual machine
+#
+# arguments:
+#  -u  Validate Uniqueness of assigned UUIDs and MAC Addresses ONLY
+#  -v  Verbose Output
+#  -q  Generate a unique UUID/MAC ONLY
+#  -?  Display Usage
+#
+function hypervisor_qemu_uuid {
+  # variables
+  local ALL_HV="kvm-01 kvm-02 kvm-03 dc0pkvm-hv02 dc0pcore-hv01 dc0pcore-hv02 dc0pcore-hv03 dc1pcore-hv01 dc1pcore-hv02 dc1pcore-hv03"
+  local HVS=""
+  local TEMP="/tmp/kvm-uuid.$$"
+  local XMLPATH="/etc/libvirt/qemu"
+  local VERBOSE=0
+  local VALIDATE=1
+  local GENERATE=1
+  local QUIET=0
+  local DUPES=0
+  
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    '-u') GENERATE=0;;
+    '-v') VERBOSE=1;;
+    '-q') VALIDATE=0; QUIET=1;;
+    *) usage;;
+  esac; shift; done
+  
+  # validate all HVs are online and accessible
+  for H in $ALL_HV; do
+    if [ $VERBOSE -eq 1 ]; then
+      echo -n "Verifying hypervisor is online... " >&2
+      nc -z -w 2 $H 22 >&2
+    else
+      nc -z -w 2 $H 22 >/dev/null 2>&1
+    fi
+    if [ $? -ne 0 ]; then
+      test $VERBOSE -eq 1 && echo "error connecting to $H!" >&2
+    else
+      HVS="$( printf -- "$HVS $H" |sed 's/^ //' )"
+    fi
+  done
+  
+  test -z "$HVS" && exit 1
+  
+  # enumerate all addresses currently in use
+  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |sed -r 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
+  
+  if [ $VALIDATE -eq 1 ]; then
+    # MAC
+    for M in $( grep mac $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
+      echo "**WARNING** Duplicate MAC Address '$M' found!"; DUPES=1
+      for H in $HVS; do
+        R=$( ssh $H "cd ${XMLPATH}; grep '$M' *.xml |sed 's%\.xml.*%%'" |tr '\n' ',' |sed 's%,$%%' )
+        if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
+      done
+    done
+    
+    # UUID
+    for U in $( grep uuid $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
+      echo "**WARNING** Duplicate UUID '$U' found!"; DUPES=1
+      for H in $HVS; do
+        R=$( ssh $H "cd ${XMLPATH}; grep '$U' *.xml |sed 's%\.xml.*%%'" |tr '\n' ',' |sed 's%,$%%' )
+        if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
+      done
+    done
+  fi
+  
+  if [ $GENERATE -eq 1 ]; then
+    # find the next available MAC
+    MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |sed -r 's%(..)%:\1%g' )"
+    while [ `grep -ic $MAC $TEMP` -gt 0 ]; do
+      MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |sed -r 's%(..)%:\1%g' )"
+    done
+    
+    # find the next available UUID
+    UUID=$( uuidgen )
+    while [ `grep -ic $UUID $TEMP` -gt 0 ]; do UUID=$( uuidgen ); done
+    
+    test $QUIET -eq 0 && echo
+    echo "UUID       : $UUID"
+    echo "MAC Address: $MAC"
+  fi
+  
+  if [[ $VALIDATE -eq 1 && $DUPES -eq 1 ]]; then
+    exit 1
+  elif [ $VALIDATE -eq 1 ]; then
+    echo "All registered physical addresses are unique"
+  fi
 }
 
 # given a list of one or more hypervisors return the top ranked system based on
@@ -5746,7 +5835,7 @@ function system_convert {
       scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
     
       #  - get globally unique mac address and uuid for the new server
-      read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+      read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
 
       # create new vm
       if [ $DryRun -eq 0 ]; then
@@ -6349,7 +6438,7 @@ function system_provision {
   scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
 
   #  - get globally unique mac address and uuid for the new server
-  read -r UUID MAC <<< "$( $KVMUUID -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+  read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
 
   if [ -z "$OVERLAY" ]; then
     # this is a single or backing system build (not overlay)
@@ -6716,7 +6805,7 @@ function system_resolve_autooverlay {
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
 
   # auto-select backing image
-  BackingList="$( system_list --no-format --backing --build $BUILD --sort-by-build-date --exclude-parent $NAME --location $LOC --environment $EN |tr '\n' ' ' )"
+  BackingList="$( system_list_unformatted --backing --build $BUILD --sort-by-build-date --exclude-parent $NAME --location $LOC --environment $EN |tr '\n' ' ' )"
 
   if [ -z "$BackingList" ]; then
 
@@ -6749,7 +6838,7 @@ function system_list {
   if [[ "$1" == "--no-format" || "$1" == "-1" ]]; then shift; system_list_unformatted $@; return; fi
   local LIST NUM
   LIST="$( system_list_unformatted $@ |tr '\n' ' ' )"
-  NUM=$( printf -- "$LIST" |wc -w )
+  NUM=$( printf -- "$LIST" |wc -w |tr -d ' ' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
@@ -7492,9 +7581,6 @@ DOMAIN_NAME=2checkout.com
 # path to kickstart templates (centos6-i386.tpl, etc...)
 KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
 #
-# path to kvm-uuid, required for full build automation tasks
-KVMUUID="`dirname $0`/kvm-uuid"
-#
 # list of architectures for builds -- each arch in the list must be available
 #   for each OS version (below)
 OSARCH="i386,x86_64"
@@ -7546,11 +7632,11 @@ trap cleanup_and_exit EXIT INT
 
 # initialize
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
-test -x $KVMUUID || err "kvm-uuid was not found at the expected path and is required for some operations"
 test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
+<<<<<<< HEAD
   shift;
   test -d "`dirname $1`" && CONF="$1" || usage
   shift; echo "chroot: $CONF"
@@ -7558,6 +7644,9 @@ else
   if [[ -n $SCS_CONF ]]; then
     CONF=$SCS_CONF
   fi
+=======
+  test -d "`dirname $2`" && CONF="$2" && shift 2 || usage
+>>>>>>> remove dependency on kvm-uuid and implement some darwin fixes
 fi
 
 # first run check
