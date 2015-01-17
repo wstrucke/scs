@@ -305,10 +305,7 @@
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
-#     - remove ssh host key mismatch debug message
 #     - correct host name when creating overlays
-#     - lock/contention issue updating hosts during simultaneous builds
-#     - deleting a constant does not unset the previosly set values for the constant
 #     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
@@ -555,7 +552,7 @@ function generic_delete {
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return 1; fi
-  sed -i -e '/^'$C',/d' ${CONF}/$1
+  sed -ei '/^'$C',/d' ${CONF}/$1
   commit_file $1
   return 0
 }
@@ -801,8 +798,8 @@ function purge_known_hosts {
   if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
-  test -z "$name" || sed -i -e "/$( printf -- "$name" |sed -e 's/\./\\./g' )/d" $kh
-  test -z "$ipaddy" || sed -i -e "/$( printf -- "$ipaddy" |sed -e 's/\./\\./g' )/d" $kh
+  test -z "$name" || sed -ei "/$( printf -- "$name" |sed -e 's/\./\\./g' )/d" $kh
+  test -z "$ipaddy" || sed -ei "/$( printf -- "$ipaddy" |sed -e 's/\./\\./g' )/d" $kh
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
   ) 200>>$kh
 
@@ -1032,7 +1029,7 @@ SYNOPSIS
 	commit [-m 'commit message']
 	cancel [--force]
 	help | commands
-	abort | diff | lock | log | status | unlock
+	abort | diff | dir | lock | log | pdir | status | unlock
 
 	<component> create
 	<component> delete [<name>]
@@ -1156,6 +1153,15 @@ OPTIONS
 	--config <string>
 		Specify an alternate configuration directory (default location is '$CONF')
 
+	help
+		Displays this help dialogue.
+
+	dir
+		Print the path to the configuration directory.
+
+	pdir
+		Print the path to the executable directory (where this script is located).
+
 EXAMPLES
 
 RETURN CODE
@@ -1181,7 +1187,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
 		$0 commit [-m 'commit message']
 		$0 cancel [--force]
-		$0 abort | commands | diff | lock | log | status | unlock
+		$0 abort | commands | dir | diff | lock | log | pdir | status | unlock
 
 Run commit when complete to finalize changes.
 
@@ -1208,7 +1214,7 @@ Manage application/server configurations and base templates across all environme
 Usage $0 [options] component <sub-component|verb> [--option1] [--option2] [...]
 		$0 commit [-m 'commit message']
 		$0 cancel [--force]
-		$0 abort | commands | diff | lock | log | status | unlock
+		$0 abort | commands | diff | dir | lock | log | pdir | status | unlock
 
 Run commit when complete to finalize changes.
 
@@ -1547,7 +1553,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/by-app/$APP
+    sed -ei s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -1564,7 +1570,7 @@ function application_constant_undefine {
   generic_choose constant "$1" C
   test -f ${CONF}/value/by-app/$APP || return 0
   start_modify
-  sed -i -e '/^'"$C"',.*/d' ${CONF}/value/by-app/$APP
+  sed -ei '/^'"$C"',.*/d' ${CONF}/value/by-app/$APP
   commit_file ${CONF}/value/by-app/$APP
 }
 
@@ -1611,13 +1617,13 @@ function application_delete {
   generic_delete application $APP || return
   # delete from file-map as well
   # [FORMAT:file-map]
-  sed -i -e "/^[^,]*,$APP,.*\$/d" $CONF/file-map
+  sed -ei "/^[^,]*,$APP,.*\$/d" $CONF/file-map
   # [FORMAT:resource]
   for C in $( grep -E '^([^,]*,){2}application,([^,:]*:){2}'$APP',.*' resource |awk 'BEGIN{FS=","}{print $2}' ); do
     # [FORMAT:resource]
     IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$C," ${CONF}/resource )"
     # [FORMAT:resource]
-    sed -i -e 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+    sed -ei 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   done
   if [ -f "$CONF/value/by-app/$APP" ]; then delete_file value/by-app/$APP; fi
   for C in $( ls $CONF/env ); do if [ -f "$CONF/env/$C/by-app/$APP" ]; then delete_file env/$C/by-app/$APP; fi; done
@@ -1908,7 +1914,7 @@ function application_file_remove {
   # [FORMAT:file-map]
   grep -qE "^$F,$APP," $CONF/file-map || err "Error - requested file is not associated with $APP."
   # [FORMAT:file-map]
-  sed -i -e "/^$F,$APP,/d" $CONF/file-map
+  sed -ei "/^$F,$APP,/d" $CONF/file-map
   commit_file file-map
 }
 function application_file_remove_help { cat <<_EOF
@@ -1966,7 +1972,7 @@ function application_update {
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   get_yn CLUSTER "LVS Support (y/n)"
   # [FORMAT:application]
-  sed -i -e 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
+  sed -ei 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   # handle rename
   if [ "$NAME" != "$APP "]; then
      echo "Rename not implemented" >&2
@@ -2236,7 +2242,7 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  sed -i -e 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
+  sed -ei 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
   commit_file build
 }
 
@@ -2281,7 +2287,7 @@ function constant_delete {
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
         grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
-        if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+        if [ $? -eq 0 ]; then sed -ei "/^$1,/d" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
       fi
     done
   done
@@ -2292,7 +2298,7 @@ function constant_delete {
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
         grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
-        if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+        if [ $? -eq 0 ]; then sed -ei "/^$1,/d" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
       fi
     done
   done
@@ -2302,7 +2308,7 @@ function constant_delete {
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
       grep -qE "^$NAME," "${CONF}/env/$i/constant"
-      if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+      if [ $? -eq 0 ]; then sed -ei "/^$1,/d" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
     fi
   done
 
@@ -2311,14 +2317,14 @@ function constant_delete {
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
       grep -qE "^$NAME," "${CONF}/value/by-app/$i"
-      if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+      if [ $? -eq 0 ]; then sed -ei "/^$1,/d" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
     fi
   done
 
   # 5. global
   # [FORMAT:value/constant]
   grep -qE "^$NAME," ${CONF}/value/constant
-  if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+  if [ $? -eq 0 ]; then sed -ei "/^$1,/d" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
 }
 
 # general constant help
@@ -2534,7 +2540,7 @@ function constant_update {
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   # [FORMAT:constant]
-  sed -i -e 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
+  sed -ei 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
 }
 
@@ -2602,7 +2608,7 @@ function environment_application_define_constant {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/app]
-    sed -i -e 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/env/$ENV/by-app/$APP
+    sed -ei 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/env/$ENV/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/env/app]
@@ -2618,7 +2624,7 @@ function environment_application_undefine_constant {
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/app]
-  sed -i -e '/^'"$C"',.*/d' ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
+  sed -ei '/^'"$C"',.*/d' ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
   commit_file ${CONF}/env/$ENV/by-app/$APP
 }
 
@@ -2652,7 +2658,7 @@ function environment_application_byname_assign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' ${CONF}/resource
+  sed -ei 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -2677,7 +2683,7 @@ function environment_application_byname_unassign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' ${CONF}/resource
+  sed -ei 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -2718,7 +2724,7 @@ function environment_application_remove {
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)?"; test "$RL" != "y" && return
   # unassign the application
-  sed -i -e "/^$APP\$/d" $CONF/$LOC/$ENV
+  sed -ei "/^$APP\$/d" $CONF/$LOC/$ENV
   # !!FIXME!!
   # so... this says it's going to unassign resources and whatnot.  we should actually do that here...
   commit_file $LOC/$ENV
@@ -2747,7 +2753,7 @@ function environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/env/$ENV/constant
+    sed -ei s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
@@ -2763,7 +2769,7 @@ function environment_constant_undefine {
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/constant]
-  sed -i -e '/^'"$C"',.*/d' ${CONF}/env/$ENV/constant
+  sed -ei '/^'"$C"',.*/d' ${CONF}/env/$ENV/constant
   commit_file ${CONF}/env/$ENV/constant
 }
 
@@ -2801,7 +2807,7 @@ function environment_delete {
   generic_delete environment $1 || return
   cd $CONF >/dev/null 2>&1 || return
   test -d env/$1 && git rm -r env/$1
-  sed -i -e "/^$1,/d" $CONF/hv-environment
+  sed -ei "/^$1,/d" $CONF/hv-environment
   commit_file hv-environment
 }
 
@@ -2987,7 +2993,7 @@ function environment_update {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   # [FORMAT:environment]
-  sed -i -e 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
+  sed -ei 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
   # handle rename
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
@@ -3132,9 +3138,9 @@ function file_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:file]
-    sed -i -e '/^'$C',/d' ${CONF}/file
+    sed -ei '/^'$C',/d' ${CONF}/file
     # [FORMAT:file-map]
-    sed -i -e '/^'$C',/d' ${CONF}/file-map
+    sed -ei '/^'$C',/d' ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
@@ -3491,10 +3497,10 @@ function file_update {
     popd >/dev/null 2>&1
     # update map
     # [FORMAT:file-map]
-    $extsed -i -e 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+    $extsed -ei 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
   fi
   # [FORMAT:file]
-  sed -i -e "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
+  sed -ei "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
@@ -3587,7 +3593,7 @@ function location_environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/env/$ENV/by-loc/$LOC
+    sed -ei s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
@@ -3600,7 +3606,7 @@ function location_environment_constant_undefine {
   start_modify
   generic_choose constant "$1" C
   # [FORMAT:value/loc/constant]
-  sed -i -e '/^'"$C"',.*/d' $CONF/env/$2/by-loc/$1
+  sed -ei '/^'"$C"',.*/d' $CONF/env/$2/by-loc/$1
   commit_file $CONF/env/$2/by-loc/$1
 }
 
@@ -3709,12 +3715,12 @@ function location_update {
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:location]
-  sed -i -e 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
+  sed -ei 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
   # handle rename
   if [ "$CODE" != "$C" ]; then
     pushd $CONF >/dev/null 2>&1
     test -d $C && git mv $C $CODE >/dev/null 2>&1
-    sed -i -e 's/^'$C',/'$CODE',/' network
+    sed -ei 's/^'$C',/'$CODE',/' network
     popd >/dev/null 2>&1
   fi
   commit_file location
@@ -3806,9 +3812,9 @@ function network_create {
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -i -e 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -ei 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:network]
-    sed -i -e 's/,y$/,n/' ${CONF}/${LOC}/network
+    sed -ei 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -3830,9 +3836,9 @@ function network_delete {
   if [ "$RL" == "y" ]; then
     # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-    sed -i -e '/^'${C//-/,}',/d' ${CONF}/network
-    sed -i -e '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
-    sed -i -e '/^'${C//-/,}',/d' ${CONF}/hv-network
+    sed -ei '/^'${C//-/,}',/d' ${CONF}/network
+    sed -ei '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
+    sed -ei '/^'${C//-/,}',/d' ${CONF}/hv-network
     if [ -f ${CONF}/net/${NET} ]; then delete_file net/${NET}; fi
     if [ -f ${CONF}/net/${NET}-routes ]; then delete_file net/${NET}-routes; fi
   fi
@@ -3901,7 +3907,7 @@ function network_edit_routes {
 	get_input NET "  Target Network" --default "$NET"
         get_input NETMASK "  Target Network Mask" --default "$NETMASK"
 	get_input GATEWAY "  Gateway" --default "$GATEWAY"
-	sed -i -e "${V}d" $TMP/${1}-routes
+	sed -ei "${V}d" $TMP/${1}-routes
         # [FORMAT:net/routes]
         printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
 	;;
@@ -3909,7 +3915,7 @@ function network_edit_routes {
 	V=${OPT:1}
 #	if [ "$V" != "$( printf -- '$V' |sed -e 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed -e 's/[^0-9]*//g' )'"; sleep 1; continue; fi
 	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
-	sed -i -e "${V}d" $TMP/${1}-routes
+	sed -ei "${V}d" $TMP/${1}-routes
 	;;
     esac
   done
@@ -4020,13 +4026,13 @@ function network_ip_assign {
   if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $IP ) -ne 0 ]]; then
     # mark the address as reserved
     # [FORMAT:net/network]
-    sed -i -e "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+    sed -ei "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
     RET=1
   else
     # assign
     # [FORMAT:net/network]
-    sed -i -e s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' ${CONF}/net/${FILENAME}
+    sed -ei s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' ${CONF}/net/${FILENAME}
     RET=0
   fi
 
@@ -4212,7 +4218,7 @@ function network_ip_scan {
       # [FORMAT:net/network]
       IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
       # [FORMAT:net/network]
-      sed -i -e "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+      sed -ei "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
       echo "Found device at $( dec2ip $i )"
     fi
   done
@@ -4236,7 +4242,7 @@ function network_ip_unassign {
   # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # [FORMAT:net/network]
-  sed -i -e "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
+  sed -ei "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
 }
@@ -4364,7 +4370,7 @@ function network_ipam_remove_range {
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
       # get the file name
       FILENAME=$( get_network $( dec2ip $i ) 24 )
-      sed -i -e "/^$i,/d" ${CONF}/net/$FILENAME 2>/dev/null
+      sed -ei "/^$i,/d" ${CONF}/net/$FILENAME 2>/dev/null
     done
     git add ${CONF}/net/$FILENAME >/dev/null 2>&1
     commit_file ${CONF}/net/$FILENAME
@@ -4509,23 +4515,23 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -i -e 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -ei 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:location/network]
-    sed -i -e 's/,y$/,n/' ${CONF}/${LOC}/network
+    sed -ei 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
-  sed -i -e 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' ${CONF}/network
+  sed -ei 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
     # [FORMAT:location/network]
-    sed -i -e 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
+    sed -ei 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
     # [FORMAT:location/network]
-    sed -i -e '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
+    sed -ei '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
     # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -4573,7 +4579,7 @@ function parse_template {
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
       if [ $VERBOSE -eq 1 ]; then
         printf -- "  Missing Variable: '$NAME'\n" >&2
-        sed -i -e s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
+        sed -ei s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
         RETVAL=1
         continue
       else
@@ -4581,7 +4587,7 @@ function parse_template {
       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |sed -e "s/^$NAME //" )
-    sed -i -e s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
+    sed -ei s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
   done
   return $RETVAL
 }
@@ -4628,7 +4634,7 @@ function resource_byval_assign {
   generic_choose system "$2" HOST
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -i -e 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
+  $extsed -ei 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4648,7 +4654,7 @@ function resource_byval_unassign {
   test "$RL" != "y" && return
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -i -e 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
+  $extsed -ei 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4677,7 +4683,7 @@ function resource_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:resource]
-    sed -i -e '/^[^,]*,'${C}',/d' ${CONF}/resource
+    sed -ei '/^[^,]*,'${C}',/d' ${CONF}/resource
   fi
   commit_file resource
 }
@@ -4784,7 +4790,7 @@ function resource_update {
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
-  sed -i -e 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+  sed -ei 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4877,9 +4883,9 @@ function hypervisor_delete {
   generic_delete hypervisor $1 || return
   # also delete from hv-environment and hv-network
   # [FORMAT:hv-environment]
-  sed -i -e "/^[^,]*,$1\$/d" $CONF/hv-environment
+  sed -ei "/^[^,]*,$1\$/d" $CONF/hv-environment
   # [FORMAT:hv-network]
-  sed -i -e "/^[^,]*,$1,/d" $CONF/hv-network
+  sed -ei "/^[^,]*,$1,/d" $CONF/hv-network
   commit_file hv-environment hv-network
 }
 
@@ -5113,7 +5119,7 @@ function hypervisor_locate_system {
   PREF="$( grep -E "^$NAME,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
   start_modify
   # [FORMAT:hv-system]
-  sed -i -e '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+  sed -ei '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
 
   # set defaults
   for HV in $LIST; do
@@ -5141,7 +5147,7 @@ function hypervisor_locate_system {
 
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
-  if ! [ -z "$PREF" ]; then sed -i -e 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
+  if ! [ -z "$PREF" ]; then sed -ei 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
   commit_file hv-system
 
   # output results and return status
@@ -5350,7 +5356,7 @@ function hypervisor_remove_environment {
   grep -qE "^$ENV,$1\$" ${CONF}/hv-environment || return
   # remove mapping
   # [FORMAT:hv-environment]
-  sed -i -e '/^'$ENV','$1'/d' ${CONF}/hv-environment
+  sed -ei '/^'$ENV','$1'/d' ${CONF}/hv-environment
   commit_file hv-environment
 }
 
@@ -5372,7 +5378,7 @@ function hypervisor_remove_network {
   grep -qE "^$C,$1," ${CONF}/hv-network || return
   # remove mapping
   # [FORMAT:hv-network]
-  sed -i -e '/^'$C','$1',/d' ${CONF}/hv-network
+  sed -ei '/^'$C','$1',/d' ${CONF}/hv-network
   commit_file hv-network
 }
 
@@ -5445,12 +5451,12 @@ function hypervisor_update {
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
   get_yn ENABLED "Enabled (y/n)" --default "$ENABLED"
   # [FORMAT:hypervisor]
-  sed -i -e 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
+  sed -ei 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
   if [ "$NAME" != "$C" ]; then
     # [FORMAT:hv-environment]
-    sed -i -e "s/,$C\$/,$NAME/" ${CONF}/hv-environment
+    sed -ei "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
-    $extsed -i -e 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
+    $extsed -ei 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
   fi
   commit_file hypervisor hv-environment hv-network
 }
@@ -5875,7 +5881,7 @@ function system_convert {
       IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
       # save changes
       # [FORMAT:system]
-      sed -i -e 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+      sed -ei 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
       commit_file system
 
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
@@ -6458,7 +6464,7 @@ resource.sm-web $REPO_ADDR
 _EOF
     parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
-    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i -e 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
+    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -ei 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
     #  - send custom kickstart file over to the local sm-web repo/mirror
     ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
     scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
@@ -6497,7 +6503,7 @@ _EOF
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   
   # [FORMAT:system]
-  sed -i -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','`date +'%s'`'/' ${CONF}/system
+  sed -ei 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','`date +'%s'`'/' ${CONF}/system
 
   commit_file system
   return 0
@@ -6726,8 +6732,8 @@ function system_provision_phase2 {
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
     scslog "changing system network interface from '$HV_BUILD_INT' to '$HV_FINAL_INT'"
-    echo "ssh -n $HVIP \"sed -i -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
-    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -i -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    echo "ssh -n $HVIP \"sed -ei 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
+    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -ei 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
   fi
 
   if [ "$BASE_IMAGE" != "y" ]; then
@@ -6786,7 +6792,7 @@ function system_push_build_scripts {
     nc -z -w2 $1 22 || return 5
   fi
   cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
-  sed -i -e "/$( printf -- "$1" |sed -e 's/\./\\./g' )/d" /root/.ssh/known_hosts
+  sed -ei "/$( printf -- "$1" |sed -e 's/\./\\./g' )/d" /root/.ssh/known_hosts
   ssh -o "StrictHostKeyChecking no" $1 mkdir ESG 2>/dev/null
   scp -p -r "$SRCDIR" $1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
   cat /root/.ssh/known_hosts.$$ >/root/.ssh/known_hosts
@@ -6830,7 +6836,7 @@ function system_resolve_autooverlay {
 
   # save changes
   # [FORMAT:system]
-  sed -i -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' ${CONF}/system
+  sed -ei 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' ${CONF}/system
   
   commit_file system
 }
@@ -7302,7 +7308,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  sed -i -e 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+  sed -ei 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -7599,13 +7605,13 @@ RELEASEDIR=/bkup1/scs-release
 extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- '$extsed' )"
 #
 # path to activity log
-SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log || SCS_Activity_Log=scs_activity.log
+SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
 #
 # path to background task log
-SCS_Background_Log=/var/log/scs_bg.log; test -w $SCS_Background_Log || SCS_Background_Log=scs_bg.log
+SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_Background_Log=scs_bg.log
 #
 # path to error log
-SCS_Error_Log=/var/log/scs_error.log; test -w $SCS_Error_Log || SCS_Error_Log=scs_error.log
+SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
 # path to the temp file for patching configuration files
 TMP=/tmp/scs.$$
@@ -7661,15 +7667,19 @@ if [[ "${!#}" =~ \?$ ]]; then help $@; exit 0; fi
 SUBJ="$( expand_subject_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
 
 # intercept non subject/verb commands
-if [ "$SUBJ" == "commit" ]; then stop_modify $@; exit 0; fi
-if [[ "$SUBJ" == "cancel" || "$SUBJ" == "unlock" ]]; then cancel_modify $@; exit 0; fi
-if [ "$SUBJ" == "diff" ]; then diff_master; exit 0; fi
-if [ "$SUBJ" == "status" ]; then git_status --exit; fi
-if [ "$SUBJ" == "log" ]; then git_log; exit 0; fi
-if [ "$SUBJ" == "help" ]; then help $@; exit 0; fi
-if [ "$SUBJ" == "lock" ]; then start_modify; exit 0; fi
-if [ "$SUBJ" == "abort" ]; then scs_abort $@; exit 0; fi
-if [ "$SUBJ" == "commands" ]; then scs_commands; exit 0; fi
+case "$SUBJ" in
+  abort) scs_abort $@; exit 0;;
+  cancel|unlock) cancel_modify $@; exit 0;;
+  commands) scs_commands; exit 0;;
+  commit) stop_modify $@; exit 0;;
+  diff) diff_master; exit 0;;
+  dir) echo ${CONF}; exit 0;;
+  help) help $@; exit 0;;
+  lock) start_modify; exit 0;;
+  log) git_log; exit 0;;
+  pdir) echo `dirname $0`; exit 0;;
+  status) git_status --exit;;
+esac
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
