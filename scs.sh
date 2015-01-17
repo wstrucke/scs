@@ -294,8 +294,13 @@
 #   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Linux stuff - which, awk, sed, tr, echo, git, tput, head, tail, shuf, wc, nc, sort, ping, nohup, logger
+#   Packages: coreutils awk git iputils nc ncurses openssh sed which
 #     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
+#   Specifically:
+#     coreutils: echo, head, nohup, tail, tr, shuf, sort, wc
+#     iputils: ping
+#     ncurses: tput
+#     openssh: ssh, ssh-keygen
 #   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
 #
 # TO DO:
@@ -335,6 +340,8 @@
 #     - deprecate external kvm-install script and remove dependencies on external servers
 #     - add pxe boot, mirrors, kickstart, dhcp, etc... creation of VM to scs in networks on hypervisors
 #     - send a deployment report when automatic provisioning and system creation occurs
+#     - ipam network service?
+#     - hosts network service (or just use DNS!) ?
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -353,21 +360,6 @@
  #     #    #     #  #        #     #       #    
  #     #    #     #  #        #     #       #    
   #####     #    ### ####### ###    #       #
-
-# write to the activity log
-#
-function scslog {
-  test $# -eq 0 && return
-  get_user --no-prompt
-  if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
-    shift
-    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
-    printf -- '%s\n' "$@"
-  else
-    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
-  fi
-  return 0
-}
 
 # convert subnet mask bits into a network mask
 #   source: https://forum.openwrt.org/viewtopic.php?pid=220781#p220781
@@ -847,6 +839,45 @@ function read_dom () {
   return $RET
 }
 
+# register ssh public key on a remote host
+#
+# requires:
+#  $1	remote host name or ip
+#  $2	remote user name
+#  $3	local path to ssh private key
+#
+function register_ssh_key {
+  local PublicKey Pass
+  if [ $# -ne 3 ]; then err "Invalid arguments provided to register_ssh_key"; fi
+  check_host_alive $1 || err "Unable to connect to remote host"
+
+  # validate and load private key
+  test -s "$3" || err "Unable to access private key file"
+  PublicKey=$( ssh-keygen -y -P '' -q -f "$3" 2>/dev/null )
+  if [ $? -eq 1 ]; then err "Unable to load private key file"; fi
+
+  # get the ssh password
+  read -sp "Password [$2]: " Pass
+  test -z "$Pass" && err "A password is required to log in to the remote server"
+
+  expect -c "
+set timeout 10
+exp_internal 0
+log_user 0
+match_max 100000
+spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $2 $1
+expect \"*?assword:*\"
+send -- \"$Pass\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"grep -q \\\"$PublicKey\\\" .ssh/authorized_keys 2>/dev/null\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"if \[ \\\$? -eq 1 \]; then echo \\\"$PublicKey\\\" >>.ssh/authorized_keys; fi\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"exit\r\"
+expect eof
+"
+}
+
 function scs_abort {
   case $1 in
     '--disable'|'disable'|'--cancel'|'cancel')
@@ -864,6 +895,21 @@ function scs_abort {
   touch $ABORTFILE
   printf -- 'Abort file has been created. All background processes will exit.\n'
   scslog "abort enabled"
+}
+
+# write to the activity log
+#
+function scslog {
+  test $# -eq 0 && return
+  get_user --no-prompt
+  if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
+    shift
+    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+    printf -- '%s\n' "$@"
+  else
+    printf -- '%s %s scs: [%s] %s %s\n' "$( date +'%b %_d %T' )" "$( hostname )" "$$" "$USERNAME" "$@" >>$SCS_Activity_Log
+  fi
+  return 0
 }
 
 # Test an IP address for validity:
@@ -1262,7 +1308,7 @@ Component:
   help
   hypervisor
     --locate-system <system_name> [--quick] | --system-audit
-    <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+    <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--register-key|--search]
   location
     [<name>] [--assign|--unassign|--list]
     [<name>] constant [--define|--undefine|--list] [<environment>] [<constant>]
@@ -4875,6 +4921,7 @@ function hypervisor_byname {
     --add-environment) hypervisor_add_environment $1 ${@:3};;
     --add-network) hypervisor_add_network $1 ${@:3};;
     --poll) hypervisor_poll $1 ${@:3};;
+    --register-key) hypervisor_register_key $1 ${@:3};;
     --remove-environment) hypervisor_remove_environment $1 ${@:3};;
     --remove-network) hypervisor_remove_network $1 ${@:3};;
     --search) hypervisor_search $1 ${@:3};;
@@ -4926,7 +4973,7 @@ NAME
 
 SYNOPSIS
 	scs hypervisor --locate-system <system_name> [--quick] | --system-audit
-	scs hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--search]
+	scs hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--register-key|--search]
 
 DESCRIPTION
 	Hypervisors are libvirt/qemu CentOS Linux servers that are used for deployment and/or management of systems.
@@ -4990,6 +5037,15 @@ OPTIONS
 	hypervisor <name> --poll
 		Connect to the hypervisor and report back memory and disk utilization, and their respective values
 		as a percentage of the configured minimums for the host.
+
+	hypervisor <name> --register-key <remote-user> <private-key>
+		Register your SSH public key on the hypervisor under the specified user account.  The remote user
+		account must exist and must be authorized for remote login.  You will be prompted for the user's
+		password to add the key.
+
+		The <private-key> argument is the path on your machine to the SSH private key.  The public key
+		will be generated from this private key in order to validate both keys, and the private key can
+		not be encrypted.
 
 	hypervisor <name> --search <string>
 		Search a hypervisor for virtual machines matching the provided string.  The string will be passed to
@@ -5361,6 +5417,25 @@ function hypervisor_rank {
   # if we still do not have anything, then no joy
   if [ -z "$SEL" ]; then err "Error ranking hypervisors"; fi
   printf -- $SEL
+}
+
+# register an ssh key on a hypervisor
+#
+function hypervisor_register_key {
+  local IP
+  hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
+  if [ $# -ne 3 ]; then hypervisor_register_key_help >&2; exit 1; fi
+  IP=$( hypervisor_show $1 --brief |grep Address |cut -d' ' -f3 )
+  valid_ip $IP || err "The specified hypervisor has an invalid management address."
+  register_ssh_key "$IP" "$2" "$3"
+}
+function hypervisor_register_key_help { cat <<_EOF
+Usage: $0 hypervisor <name> --register-key <user-name> <private-key-file>
+
+Register an existing public/private key pair for key-based authentication
+to a remote hypervisor under the specified user account.  You must have
+the password and authorization to log in to the remote server.
+_EOF
 }
 
 function hypervisor_remove_environment {
