@@ -314,6 +314,7 @@
 #     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
+#     - renaming an application does not update all of the configuration files
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -342,6 +343,7 @@
 #     - send a deployment report when automatic provisioning and system creation occurs
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
+#     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
