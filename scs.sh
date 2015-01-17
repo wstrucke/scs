@@ -3402,15 +3402,15 @@ function file_show {
     printf -- "Name: $NAME\nType: $TYPE\nRemove: $PTH\nDescription: $DESC"
   else
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
-    [ "$TYPE" == "file" ] && printf -- "\nSize: `stat -c%s $CONF/template/$NAME` bytes"
-#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `stat -c%s $CONF/env/.../binary/$NAME` bytes"
+    [ "$TYPE" == "file" ] && printf -- "\nSize: `file_size $CONF/template/$NAME` bytes"
+#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `file_size $CONF/env/.../binary/$NAME` bytes"
   fi
   printf -- '\n'
 
   if [ "$TYPE" == "binary" ]; then
     printf -- "Local Path:\n"
     for F in $( find $CONF/env -name "$NAME" -print ); do
-      printf -- '  %s (%s bytes)' "$F" "$( stat -c%s $F )"
+      printf -- '  %s (%s bytes)' "$F" "$( file_size $F )"
       if [[ "$( file -b $F )" == "ASCII text" && -n "$( head -n1 $F |grep -- "-----BEGIN CERTIFICATE-----" )" ]]; then
         # this appears to be an ssl certificate
         printf -- '\n    SSL Certificate Data: '
@@ -3432,6 +3432,14 @@ function file_show {
   else
     grep "^$1," ${CONF}/file-map |cut -d, -f2 |sort |sed 's/^/  /'
   fi
+}
+
+# return the file size in bytes
+# implemented in this fashion to enable multi-platform compatibility
+#
+function file_size {
+  test -f "$1" || return
+  echo $(( `du -k $1 |cut -f1` * 1024 ))
 }
 
 function file_update {
@@ -5530,7 +5538,7 @@ function system_audit {
         test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
         test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
       fi
-    elif [ `stat -c%s $TMP/release/REFERENCE/$F` -eq 0 ]; then
+    elif [ `file_size $TMP/release/REFERENCE/$F` -eq 0 ]; then
       echo "Ignoring empty file $F"
     else
       echo "WARNING: Remote system is missing file: $F"
@@ -6717,7 +6725,7 @@ function system_provision_phase2 {
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
       scslog "updating hosts"
-      system_update_push_hosts $NAME $IP >>/root/scs_log 2>&1
+      system_update_push_hosts $NAME $IP >>$SCS_Background_Log 2>&1
       scslog "hosts updated"
   
       #  - wait for vm to come up
@@ -7577,13 +7585,13 @@ RELEASEDIR=/bkup1/scs-release
 extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- '$extsed' )"
 #
 # path to activity log
-SCS_Activity_Log=/var/log/scs_activity.log
+SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log || SCS_Activity_Log=scs_activity.log
 #
 # path to background task log
-SCS_Background_Log=/var/log/scs_bg.log
+SCS_Background_Log=/var/log/scs_bg.log; test -w $SCS_Background_Log || SCS_Background_Log=scs_bg.log
 #
 # path to error log
-SCS_Error_Log=/var/log/scs_error.log
+SCS_Error_Log=/var/log/scs_error.log; test -w $SCS_Error_Log || SCS_Error_Log=scs_error.log
 #
 # path to the temp file for patching configuration files
 TMP=/tmp/scs.$$
