@@ -348,6 +348,7 @@
 #     - database builds/options for environments
 #
 
+#Section: UTILITY
  #     # ####### ### #       ### ####### #     # 
  #     #    #     #  #        #     #     #   #  
  #     #    #     #  #        #     #      # #   
@@ -905,7 +906,7 @@ function valid_mask() {
   return 0
 }
 
-
+#Section: HELP
  #     # ####### #       ######  
  #     # #       #       #     # 
  #     # #       #       #     # 
@@ -1265,6 +1266,7 @@ _EOF
 }
 
 
+#Section GIT/VCS
   #####  ### #######       # #     #  #####   #####  
  #     #  #     #         #  #     # #     # #     # 
  #        #     #        #   #     # #       #       
@@ -1517,6 +1519,7 @@ function stop_modify {
 }
 
 
+#Section: APPLICATION
     #    ######  ######  #       ###  #####     #    ####### ### ####### #     # 
    # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    # 
   #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   # 
@@ -1979,6 +1982,7 @@ function application_update {
 }
 
 
+#Section: BUILD
  ######  #     # ### #       ######  
  #     # #     #  #  #       #     # 
  #     # #     #  #  #       #     # 
@@ -2244,6 +2248,7 @@ function build_update {
 }
 
 
+#Section: CONSTANT
   #####  ####### #     #  #####  #######    #    #     # ####### 
  #     # #     # ##    # #     #    #      # #   ##    #    #    
  #       #     # # #   # #          #     #   #  # #   #    #    
@@ -2541,6 +2546,7 @@ function constant_update {
 }
 
 
+#Section: ENVIRONMENT
  ####### #     # #     # ### ######  ####### #     # #     # ####### #     # ####### 
  #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #    
  #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #    
@@ -3004,6 +3010,7 @@ function environment_update {
 }
 
 
+#Section: FILE
  ####### ### #       ####### 
  #        #  #       #       
  #        #  #       #       
@@ -3498,6 +3505,7 @@ function file_update {
 }
 
 
+#Section: LOCATION
  #       #######  #####     #    ####### ### ####### #     # 
  #       #     # #     #   # #      #     #  #     # ##    # 
  #       #     # #        #   #     #     #  #     # # #   # 
@@ -3712,6 +3720,7 @@ function location_update {
 }
 
 
+#Section: NETWORK
  #     # ####### ####### #     # ####### ######  #    # 
  ##    # #          #    #  #  # #     # #     # #   #  
  # #   # #          #    #  #  # #     # #     # #  #   
@@ -4525,6 +4534,7 @@ function network_update {
 }
 
 
+#Section: TEMPLATE
  ####### ####### #     # ######  #          #    ####### ####### 
     #    #       ##   ## #     # #         # #      #    #       
     #    #       # # # # #     # #        #   #     #    #       
@@ -4576,6 +4586,7 @@ function parse_template {
 }
 
 
+#Section: RESOURCE
  ######  #######  #####  ####### #     # ######   #####  ####### 
  #     # #       #     # #     # #     # #     # #     # #       
  #     # #       #       #     # #     # #     # #       #       
@@ -4777,6 +4788,7 @@ function resource_update {
 }
 
 
+#Section: HYPERVISOR
  #     # #     # ######  ####### ######  #     # ###  #####  ####### ######
  #     #  #   #  #     # #       #     # #     #  #  #     # #     # #     #
  #     #   # #   #     # #       #     # #     #  #  #       #     # #     #
@@ -5354,6 +5366,7 @@ function hypervisor_update {
 }
 
 
+#Section: SYSTEM
   #####  #     #  #####  ####### ####### #     # 
  #     #  #   #  #     #    #    #       ##   ## 
  #         # #   #          #    #       # # # # 
@@ -7444,6 +7457,7 @@ function system_vm_disks {
 }
 
 
+#Section: SETTINGS
   #####  ####### ####### ####### ### #     #  #####   #####  
  #     # #          #       #     #  ##    # #     # #     # 
  #       #          #       #     #  # #   # #       #       
@@ -7510,6 +7524,7 @@ TMP=/tmp/scs.$$
 TMPLarge=/bkup1
 
 
+#Section: MAIN
  #     #    #    ### #     # 
  ##   ##   # #    #  ##    # 
  # # # #  #   #   #  # #   # 
