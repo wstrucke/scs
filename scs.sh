@@ -7640,17 +7640,11 @@ test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
-<<<<<<< HEAD
-  shift;
-  test -d "`dirname $1`" && CONF="$1" || usage
-  shift; echo "chroot: $CONF"
+  test -d "`dirname $2`" && CONF="$2" && shift 2 || usage
 else
   if [[ -n $SCS_CONF ]]; then
     CONF=$SCS_CONF
   fi
-=======
-  test -d "`dirname $2`" && CONF="$2" && shift 2 || usage
->>>>>>> remove dependency on kvm-uuid and implement some darwin fixes
 fi
 
 # first run check
