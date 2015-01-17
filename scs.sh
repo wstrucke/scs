@@ -507,7 +507,7 @@ function expand_verb_alias {
 function fold_list {
   local foo food maxlen width
   while read foo; do test -z "$food" && food="$foo" || food="$food $foo"; done
-  maxlen=$( printf -- "$food" |tr ' ' '\n' |wc -L |awk '{print $1}' )
+  maxlen=$( printf -- "$food" |tr ' ' '\n' | awk '{print length($1)}' | sort -n | tail -1 )
   width=$(( $(tput cols) / ( $maxlen + 5 )))
   printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=1}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
 }
