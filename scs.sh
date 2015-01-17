@@ -523,6 +523,17 @@ function fold_list {
   printf -- "$food" |tr ' ' '\n' |awk 'BEGIN{i=1}{printf "%-*s", '$((maxlen + 3))', $1; if ((i%'$width')==0) { printf "\n"; }; i++}END{print "\n"}'
 }
 
+# generate a new ssh keypair
+#
+# required:
+#  $1	path to key
+#
+function generate_ssh_key {
+  test $# -ne 1 && err "Please provide the path to store the key"
+  if [[ -f "$1" || -f "$1.pub" ]]; then err "Error: the specified key pair already exists"; fi
+  ssh-keygen -t rsa -b 4096 -C 'scs access key' -N '' -q -f "$1"
+}
+
 # generic choose function, since they are all exactly the same
 #
 # required:
