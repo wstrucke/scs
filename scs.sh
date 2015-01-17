@@ -663,15 +663,8 @@ function get_network {
 #   --no-prompt
 #
 function get_user {
-  if ! [ -z "$USERNAME" ]; then return; fi
-  if ! [ -z "$SUDO_USER" ]; then U=${SUDO_USER}; else
-    if [ "$1" == "--no-prompt" ]; then
-      U="root"
-    else
-      read -r -p "You have accessed root with a non-standard environment. What is your username? [root]? " U
-      U=$( echo "$U" |tr 'A-Z' 'a-z' ); [ -z "$U" ] && U=root
-    fi
-  fi
+  [ -n "$USERNAME" ] && return
+  if [ -n "$SUDO_USER" ]; then U=${SUDO_USER}; else U="`whoami`"; fi
   test -z "$U" && err "A user name is required to make modifications."
   USERNAME="$U"
 }
@@ -1296,7 +1289,7 @@ function cancel_modify {
   if [[ $L -gt 0 || $N -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
   if [ "$DF" == "y" ]; then
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git clean -f >/dev/null 2>&1
@@ -1325,7 +1318,7 @@ function commit_file {
   while [ $# -gt 0 ]; do
     match=0
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
       printf -- "$1" |grep -qE "^$F/"
       if [ $? -eq 0 ]; then
         # submodule file
@@ -1338,7 +1331,7 @@ function commit_file {
     if [ $match -eq 0 ]; then git add "$1" >/dev/null 2>&1; shift; fi
   done
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
       git commit -m"committing change" >/dev/null 2>&1
@@ -1361,7 +1354,7 @@ function delete_file {
   if [[ "${1:0:2}" == ".." || "${1:0:1}" == "/" || ! -f ${CONF}/$1 ]]; then return 1; fi
   pushd $CONF >/dev/null 2>&1
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
     printf -- "$1" |grep -qE "^$F/"
     if [ $? -eq 0 ]; then
       # submodule file
@@ -1374,7 +1367,7 @@ function delete_file {
   if [ $match -eq 0 ]; then git rm "$1" >/dev/null 2>&1; fi
   if [ "$2" != "1" ]; then
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git commit -m'removing file $1' >/dev/null 2>&1
@@ -1429,7 +1422,7 @@ function start_modify {
   if [ $? -eq 0 ]; then
     printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****" >&2
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git branch $USERNAME >/dev/null 2>&1
@@ -1466,7 +1459,7 @@ function stop_modify {
   git branch |grep -E '^\*' |grep -q master
   test $? -eq 0 && M=1 || M=0
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |sed -r 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
       git checkout master >/dev/null 2>&1 || err "Error switching to master on submodule $F"
@@ -2454,12 +2447,12 @@ function constant_list_unformatted {
 # combine two sets of variables and values, only including the first instance of duplicates
 #
 # example on including duplicates from first file only:
-#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |$extsed 's/^([^,]*,[^,]*),.*/\1/'
 #
 function constant_list_dedupe {
   if ! [ -f $1 ]; then cat $2; return; fi
   if ! [ -f $2 ]; then cat $1; return; fi
-  join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |sed -r 's/^([^,]*,[^,]*),.*/\1/'
+  join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |$extsed 's/^([^,]*,[^,]*),.*/\1/'
 }
 
 function constant_show {
@@ -2972,7 +2965,7 @@ function environment_show {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
-    find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |sed -r 's%'$CONF'/(.{3}).*%   \1%'
+    find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |$extsed 's%'$CONF'/(.{3}).*%   \1%'
   fi
   printf -- '\n'
 }
@@ -3483,7 +3476,7 @@ function file_update {
     popd >/dev/null 2>&1
     # update map
     # [FORMAT:file-map]
-    sed -ri 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+    $extsed -i 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
   fi
   # [FORMAT:file]
   sed -i "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
@@ -3796,7 +3789,7 @@ function network_create {
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    sed -ri 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -i 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
@@ -4499,7 +4492,7 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    sed -ri 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -i 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:location/network]
     sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
@@ -4556,7 +4549,7 @@ function parse_template {
   [[ $# -ge 4 && ! -z "$4" && "$4" == "1" ]] && local VERBOSE=1 || local VERBOSE=0
   local RETVAL=0
   while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
-    local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |sed -r 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
+    local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |$extsed 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2
     if [ $? -ne 0 ]; then
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
@@ -4616,7 +4609,7 @@ function resource_byval_assign {
   generic_choose system "$2" HOST
   # update the assignment in the resource file
   # [FORMAT:resource]
-  sed -ri 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
+  $extsed -i 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4636,7 +4629,7 @@ function resource_byval_unassign {
   test "$RL" != "y" && return
   # update the assignment in the resource file
   # [FORMAT:resource]
-  sed -ri 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
+  $extsed -i 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -5235,7 +5228,7 @@ function hypervisor_qemu_uuid {
   test -z "$HVS" && exit 1
   
   # enumerate all addresses currently in use
-  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |sed -r 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
+  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |$extsed 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
   
   if [ $VALIDATE -eq 1 ]; then
     # MAC
@@ -5259,9 +5252,9 @@ function hypervisor_qemu_uuid {
   
   if [ $GENERATE -eq 1 ]; then
     # find the next available MAC
-    MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |sed -r 's%(..)%:\1%g' )"
+    MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed 's%(..)%:\1%g' )"
     while [ `grep -ic $MAC $TEMP` -gt 0 ]; do
-      MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |sed -r 's%(..)%:\1%g' )"
+      MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed 's%(..)%:\1%g' )"
     done
     
     # find the next available UUID
@@ -5437,7 +5430,7 @@ function hypervisor_update {
     # [FORMAT:hv-environment]
     sed -i "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
-    sed -ri 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
+    $extsed -i 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
   fi
   commit_file hypervisor hv-environment hv-network
 }
@@ -5505,7 +5498,7 @@ function system_audit {
     mkdir -p $TMP/release/ACTUAL/`dirname $F`
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |sed -r 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |$extsed 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
 
   # review differences
   echo "Analyzing configuration..."
@@ -6323,7 +6316,7 @@ function system_provision {
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
     
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
-      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
     scslog "selected $Hypervisor"
@@ -6355,7 +6348,7 @@ function system_provision {
       fi
     
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
-      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |sed -r 's/[0-9]+[abv]*$//' ) $LIST )
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
 
@@ -7579,6 +7572,9 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
 RELEASEDIR=/bkup1/scs-release
+#
+# sed extended regular expressions depends on support...
+extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- '$extsed' )"
 #
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log
