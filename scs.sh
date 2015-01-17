@@ -555,7 +555,7 @@ function generic_delete {
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return 1; fi
-  sed -i '/^'$C',/d' ${CONF}/$1
+  sed -i -e '/^'$C',/d' ${CONF}/$1
   commit_file $1
   return 0
 }
@@ -601,10 +601,10 @@ function get_input {
         printf -- " ( .. long list .. )"
         tput smcup; clear; CL=1
         printf -- "Select an option from the below list:\n"
-        printf -- "$OPT\n" |tr ',' '\n' |fold_list |sed 's/^/ /'
+        printf -- "$OPT\n" |tr ',' '\n' |fold_list |sed -e 's/^/ /'
         test $NUL -eq 0 && printf -- '*'; printf -- "$P"
       else
-        printf -- " (`printf -- "$OPT" |sed 's/,/, /g'`"
+        printf -- " (`printf -- "$OPT" |sed -e 's/,/, /g'`"
         if [ $NUL -eq 1 ]; then printf -- ", null)"; else printf -- ")"; fi
       fi
     fi
@@ -801,8 +801,8 @@ function purge_known_hosts {
   if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
-  test -z "$name" || sed -i "/$( printf -- "$name" |sed 's/\./\\./g' )/d" $kh
-  test -z "$ipaddy" || sed -i "/$( printf -- "$ipaddy" |sed 's/\./\\./g' )/d" $kh
+  test -z "$name" || sed -i -e "/$( printf -- "$name" |sed -e 's/\./\\./g' )/d" $kh
+  test -z "$ipaddy" || sed -i -e "/$( printf -- "$ipaddy" |sed -e 's/\./\\./g' )/d" $kh
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
   ) 200>>$kh
 
@@ -911,11 +911,11 @@ function valid_mask() {
 # help wrapper
 #
 function help {
-  local SUBJ="$( expand_subject_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+  local SUBJ="$( expand_subject_alias "$( echo "$1" |sed -e 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
   if [ -z "$SUBJ" ]; then scs_help |less -c; exit 0; fi
   local VERB=""
   if [ $# -gt 0 ]; then
-    VERB="$( expand_verb_alias "$( echo "$1" |sed 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
+    VERB="$( expand_verb_alias "$( echo "$1" |sed -e 's/\?//' |tr 'A-Z' 'a-z' )")"; shift
   fi
   test -z "$VERB" && local HELPER="${SUBJ}_help" || local HELPER="${SUBJ}_${VERB}_help"
   ( {
@@ -1291,7 +1291,7 @@ function cancel_modify {
   if [[ $L -gt 0 || $N -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
   if [ "$DF" == "y" ]; then
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git clean -f >/dev/null 2>&1
@@ -1320,7 +1320,7 @@ function commit_file {
   while [ $# -gt 0 ]; do
     match=0
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
       printf -- "$1" |grep -qE "^$F/"
       if [ $? -eq 0 ]; then
         # submodule file
@@ -1333,7 +1333,7 @@ function commit_file {
     if [ $match -eq 0 ]; then git add "$1" >/dev/null 2>&1; shift; fi
   done
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
       git commit -m"committing change" >/dev/null 2>&1
@@ -1356,7 +1356,7 @@ function delete_file {
   if [[ "${1:0:2}" == ".." || "${1:0:1}" == "/" || ! -f ${CONF}/$1 ]]; then return 1; fi
   pushd $CONF >/dev/null 2>&1
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
     printf -- "$1" |grep -qE "^$F/"
     if [ $? -eq 0 ]; then
       # submodule file
@@ -1369,7 +1369,7 @@ function delete_file {
   if [ $match -eq 0 ]; then git rm "$1" >/dev/null 2>&1; fi
   if [ "$2" != "1" ]; then
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git commit -m'removing file $1' >/dev/null 2>&1
@@ -1424,7 +1424,7 @@ function start_modify {
   if [ $? -eq 0 ]; then
     printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****" >&2
     # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
       if [ -d $F ]; then
         pushd $F >/dev/null 2>&1
         git branch $USERNAME >/dev/null 2>&1
@@ -1452,7 +1452,7 @@ function stop_modify {
   if [ "$1" == "--no-prompt" ]; then SkipPrompt=1; shift; fi
   # optional commit message
   if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
-  if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed 's/^..//g' ); shift; fi
+  if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |sed -e 's/^..//g' ); shift; fi
   # get the running user
   get_user
   # switch directories
@@ -1461,7 +1461,7 @@ function stop_modify {
   git branch |grep -E '^\*' |grep -q master
   test $? -eq 0 && M=1 || M=0
   # handle submodules
-  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed 's/[[:space:]]*path = //' ); do
+  if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |$extsed -e 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
       git checkout master >/dev/null 2>&1 || err "Error switching to master on submodule $F"
@@ -1547,7 +1547,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/by-app/$APP
+    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -1564,7 +1564,7 @@ function application_constant_undefine {
   generic_choose constant "$1" C
   test -f ${CONF}/value/by-app/$APP || return 0
   start_modify
-  sed -i '/^'"$C"',.*/d' ${CONF}/value/by-app/$APP
+  sed -i -e '/^'"$C"',.*/d' ${CONF}/value/by-app/$APP
   commit_file ${CONF}/value/by-app/$APP
 }
 
@@ -1576,7 +1576,7 @@ function application_constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $APP."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/by-app/$APP |fold_list |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/value/by-app/$APP |fold_list |sed -e 's/^/   /'
 }
 
 function application_create {
@@ -1586,7 +1586,7 @@ function application_create {
   application_exists "$NAME" && err "Application already defined."
   get_input ALIAS "Alias" --auto "$2"
   application_exists --alias "$ALIAS" && err "Alias already defined."
-  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
   get_yn CLUSTER "LVS Support (y/n)" --auto "$4"
   # [FORMAT:application]
   printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
@@ -1611,13 +1611,13 @@ function application_delete {
   generic_delete application $APP || return
   # delete from file-map as well
   # [FORMAT:file-map]
-  sed -i "/^[^,]*,$APP,.*\$/d" $CONF/file-map
+  sed -i -e "/^[^,]*,$APP,.*\$/d" $CONF/file-map
   # [FORMAT:resource]
   for C in $( grep -E '^([^,]*,){2}application,([^,:]*:){2}'$APP',.*' resource |awk 'BEGIN{FS=","}{print $2}' ); do
     # [FORMAT:resource]
     IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$C," ${CONF}/resource )"
     # [FORMAT:resource]
-    sed -i 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+    sed -i -e 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   done
   if [ -f "$CONF/value/by-app/$APP" ]; then delete_file value/by-app/$APP; fi
   for C in $( ls $CONF/env ); do if [ -f "$CONF/env/$C/by-app/$APP" ]; then delete_file env/$C/by-app/$APP; fi; done
@@ -1837,7 +1837,7 @@ function application_file_list {
   ( for F in $( application_file_list_unformatted $APP ); do
     # [FORMAT:file]
     grep -E "^$F," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-  done ) |column -t |sed 's/^/   /'
+  done ) |column -t |sed -e 's/^/   /'
 }
 function application_file_list_help { cat <<_EOF
 List all files linked to an application
@@ -1908,7 +1908,7 @@ function application_file_remove {
   # [FORMAT:file-map]
   grep -qE "^$F,$APP," $CONF/file-map || err "Error - requested file is not associated with $APP."
   # [FORMAT:file-map]
-  sed -i "/^$F,$APP,/d" $CONF/file-map
+  sed -i -e "/^$F,$APP,/d" $CONF/file-map
   commit_file file-map
 }
 function application_file_remove_help { cat <<_EOF
@@ -1925,7 +1925,7 @@ function application_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S}."
   test $NUM -eq 0 && return
-  application_list_unformatted $@ |fold_list |sed 's/^/   /'
+  application_list_unformatted $@ |fold_list |sed -e 's/^/   /'
 }
 
 function application_list_unformatted {
@@ -1949,7 +1949,7 @@ function application_show {
     for ((i=0;i<${#FILES[*]};i++)); do
       # [FORMAT:file]
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-    done |sort |uniq |column -t |sed 's/^/   /'
+    done |sort |uniq |column -t |sed -e 's/^/   /'
   else
     printf -- "\nNo managed configuration files."
   fi
@@ -1963,10 +1963,10 @@ function application_update {
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
-  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   get_yn CLUSTER "LVS Support (y/n)"
   # [FORMAT:application]
-  sed -i 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
+  sed -i -e 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' ${CONF}/application
   # handle rename
   if [ "$NAME" != "$APP "]; then
      echo "Rename not implemented" >&2
@@ -2097,7 +2097,7 @@ function build_exists {
 }
 
 function build_lineage {
-  build_lineage_unformatted $@ |sed 's/,/ -> /g'
+  build_lineage_unformatted $@ |sed -e 's/,/ -> /g'
 }
 
 # return the lineage of a build
@@ -2115,7 +2115,7 @@ function build_lineage_unformatted {
     LINEAGE="$1"
     for Build in $BuildList; do
       [ "$Build" == "$1" ] && continue
-      LocalLineage="$( build_lineage $Build |sed 's/^.* '$1' /'$1' /' )"
+      LocalLineage="$( build_lineage $Build |sed -e 's/^.* '$1' /'$1' /' )"
       printf -- " -> ${LocalLineage} -> " |grep -q " -> $1 -> " && LINEAGE="${LINEAGE}\t${LocalLineage}"
     done
     printf -- "$LINEAGE" |tr '\t' '\n'
@@ -2144,7 +2144,7 @@ function build_list {
     else
       build_list_unformatted $@ |fold_list
     fi
-  fi |sed 's/^/   /'
+  fi |sed -e 's/^/   /'
 }
 
 # output the list of builds in a tree structure
@@ -2211,7 +2211,7 @@ function build_show {
   NUM=$( build_application_list "$1" |wc -l )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked application${S}."
-  if [ $NUM -gt 0 ]; then build_application_list "$1" |sed 's/^/   /'; fi
+  if [ $NUM -gt 0 ]; then build_application_list "$1" |sed -e 's/^/   /'; fi
 }
 
 function build_update {
@@ -2236,7 +2236,7 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  sed -i 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
+  sed -i -e 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' ${CONF}/build
   commit_file build
 }
 
@@ -2281,7 +2281,7 @@ function constant_delete {
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
         grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
-        if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+        if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
       fi
     done
   done
@@ -2292,7 +2292,7 @@ function constant_delete {
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
         grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
-        if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+        if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
       fi
     done
   done
@@ -2302,7 +2302,7 @@ function constant_delete {
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
       grep -qE "^$NAME," "${CONF}/env/$i/constant"
-      if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+      if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
     fi
   done
 
@@ -2311,14 +2311,14 @@ function constant_delete {
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
       grep -qE "^$NAME," "${CONF}/value/by-app/$i"
-      if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+      if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
     fi
   done
 
   # 5. global
   # [FORMAT:value/constant]
   grep -qE "^$NAME," ${CONF}/value/constant
-  if [ $? -eq 0 ]; then sed -i "/^$1,/d" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+  if [ $? -eq 0 ]; then sed -i -e "/^$1,/d" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
 }
 
 # general constant help
@@ -2441,7 +2441,7 @@ function constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S}."
   test $NUM -eq 0 && return
-  constant_list_unformatted |fold_list |sed 's/^/   /'
+  constant_list_unformatted |fold_list |sed -e 's/^/   /'
 }
 
 function constant_list_unformatted {
@@ -2452,12 +2452,12 @@ function constant_list_unformatted {
 # combine two sets of variables and values, only including the first instance of duplicates
 #
 # example on including duplicates from first file only:
-#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |$extsed 's/^([^,]*,[^,]*),.*/\1/'
+#   join -a1 -a2 -t',' <(sort -t',' -k1 1) <(sort -t',' -k1 2) |$extsed -e 's/^([^,]*,[^,]*),.*/\1/'
 #
 function constant_list_dedupe {
   if ! [ -f $1 ]; then cat $2; return; fi
   if ! [ -f $2 ]; then cat $1; return; fi
-  join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |$extsed 's/^([^,]*,[^,]*),.*/\1/'
+  join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |$extsed -e 's/^([^,]*,[^,]*),.*/\1/'
 }
 
 function constant_show {
@@ -2534,7 +2534,7 @@ function constant_update {
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   # [FORMAT:constant]
-  sed -i 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
+  sed -i -e 's/^'$C',.*/'${NAME}','"${DESC}"'/' ${CONF}/constant
   commit_file constant
 }
 
@@ -2602,7 +2602,7 @@ function environment_application_define_constant {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/app]
-    sed -i 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/env/$ENV/by-app/$APP
+    sed -i -e 's/^'"$C"',.*/'"$C"','"$VAL"'/' ${CONF}/env/$ENV/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/env/app]
@@ -2618,7 +2618,7 @@ function environment_application_undefine_constant {
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/app]
-  sed -i '/^'"$C"',.*/d' ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
+  sed -i -e '/^'"$C"',.*/d' ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
   commit_file ${CONF}/env/$ENV/by-app/$APP
 }
 
@@ -2631,7 +2631,7 @@ function environment_application_list_constant {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There $A $NUM defined constant$S for $ENV $APP."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-app/$APP |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-app/$APP |sort |sed -e 's/^/   /'
 }
 
 function environment_application_byname_assign {
@@ -2652,7 +2652,7 @@ function environment_application_byname_assign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' ${CONF}/resource
+  sed -i -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -2677,7 +2677,7 @@ function environment_application_byname_unassign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -i 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' ${CONF}/resource
+  sed -i -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -2705,7 +2705,7 @@ function environment_application_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined application${S} at $LOC $ENV."
   test $NUM -eq 0 && return
-  sort ${CONF}/${LOC}/${ENV} |sed 's/^/   /'
+  sort ${CONF}/${LOC}/${ENV} |sed -e 's/^/   /'
 }
 
 function environment_application_remove {
@@ -2718,7 +2718,7 @@ function environment_application_remove {
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)?"; test "$RL" != "y" && return
   # unassign the application
-  sed -i "/^$APP\$/d" $CONF/$LOC/$ENV
+  sed -i -e "/^$APP\$/d" $CONF/$LOC/$ENV
   # !!FIXME!!
   # so... this says it's going to unassign resources and whatnot.  we should actually do that here...
   commit_file $LOC/$ENV
@@ -2747,7 +2747,7 @@ function environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/env/$ENV/constant
+    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
@@ -2763,7 +2763,7 @@ function environment_constant_undefine {
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/constant]
-  sed -i '/^'"$C"',.*/d' ${CONF}/env/$ENV/constant
+  sed -i -e '/^'"$C"',.*/d' ${CONF}/env/$ENV/constant
   commit_file ${CONF}/env/$ENV/constant
 }
 
@@ -2774,7 +2774,7 @@ function environment_constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $ENV."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' ${CONF}/env/$ENV/constant |fold_list |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' ${CONF}/env/$ENV/constant |fold_list |sed -e 's/^/   /'
 }
 
 function environment_create {
@@ -2801,7 +2801,7 @@ function environment_delete {
   generic_delete environment $1 || return
   cd $CONF >/dev/null 2>&1 || return
   test -d env/$1 && git rm -r env/$1
-  sed -i "/^$1,/d" $CONF/hv-environment
+  sed -i -e "/^$1,/d" $CONF/hv-environment
   commit_file hv-environment
 }
 
@@ -2951,7 +2951,7 @@ function environment_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S}."
   test $NUM -eq 0 && return
-  environment_list_unformatted |sed 's/^/   /'
+  environment_list_unformatted |sed -e 's/^/   /'
 }
 
 function environment_list_unformatted {
@@ -2971,7 +2971,7 @@ function environment_show {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
-    find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |$extsed 's%'$CONF'/(.{3}).*%   \1%'
+    find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |$extsed -e 's%'$CONF'/(.{3}).*%   \1%'
   fi
   printf -- '\n'
 }
@@ -2987,7 +2987,7 @@ function environment_update {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   # [FORMAT:environment]
-  sed -i 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
+  sed -i -e 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' ${CONF}/environment
   # handle rename
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
@@ -3132,9 +3132,9 @@ function file_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:file]
-    sed -i '/^'$C',/d' ${CONF}/file
+    sed -i -e '/^'$C',/d' ${CONF}/file
     # [FORMAT:file-map]
-    sed -i '/^'$C',/d' ${CONF}/file-map
+    sed -i -e '/^'$C',/d' ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
@@ -3211,7 +3211,7 @@ function file_edit {
     echo "Validating template instances..."
     NEWPATCHES=(); NEWENVIRON=()
     pushd $CONF/template >/dev/null 2>&1
-    for E in $( find . -mindepth 2 -type f -name $C -printf '%h\n' |sed 's/^\.\///' ); do
+    for E in $( find . -mindepth 2 -type f -name $C -printf '%h\n' |sed -e 's/^\.\///' ); do
       echo -n "${E}... "
       cat /tmp/app-config.$$ >/tmp/app-config.$$.1
       patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
@@ -3387,7 +3387,7 @@ function file_list {
   echo "There ${A} ${NUM} defined file${S}."
   test $NUM -eq 0 && return
   # [FORMAT:file]
-  awk 'BEGIN{FS=","}{print $1,$2}' ${CONF}/file |sort |column -t |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1,$2}' ${CONF}/file |sort |column -t |sed -e 's/^/   /'
 }
 
 # show file details
@@ -3437,7 +3437,7 @@ function file_show {
   if [ "$( grep -c "^$1," ${CONF}/file-map )" -eq 0 ]; then
     printf -- '  None\n'
   else
-    grep "^$1," ${CONF}/file-map |cut -d, -f2 |sort |sed 's/^/  /'
+    grep "^$1," ${CONF}/file-map |cut -d, -f2 |sort |sed -e 's/^/  /'
   fi
 }
 
@@ -3491,10 +3491,10 @@ function file_update {
     popd >/dev/null 2>&1
     # update map
     # [FORMAT:file-map]
-    $extsed -i 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
+    $extsed -i -e 's%^'$C',(.*)%'${NAME}',\1%' ${CONF}/file-map
   fi
   # [FORMAT:file]
-  sed -i "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
+  sed -i -e "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" $CONF/file
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
@@ -3587,7 +3587,7 @@ function location_environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    sed -i s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/env/$ENV/by-loc/$LOC
+    sed -i -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
@@ -3600,7 +3600,7 @@ function location_environment_constant_undefine {
   start_modify
   generic_choose constant "$1" C
   # [FORMAT:value/loc/constant]
-  sed -i '/^'"$C"',.*/d' $CONF/env/$2/by-loc/$1
+  sed -i -e '/^'"$C"',.*/d' $CONF/env/$2/by-loc/$1
   commit_file $CONF/env/$2/by-loc/$1
 }
 
@@ -3611,7 +3611,7 @@ function location_environment_constant_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined constant${S} for $LOC $ENV."
   test $NUM -eq 0 && return
-  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-loc/$LOC |sort |sed 's/^/   /'
+  awk 'BEGIN{FS=","}{print $1}' $CONF/env/$ENV/by-loc/$LOC |sort |sed -e 's/^/   /'
 }
 
 # list environments at a location
@@ -3620,11 +3620,11 @@ function location_environment_constant_list {
 #  $1 location
 #
 function location_environment_list {
-  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type f |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |wc -l ) || NUM=0
+  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type f |sed -e 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |wc -l ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S} at $1."
   test $NUM -eq 0 && return
-  find ${CONF}/$1/ -type f |sed 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |sort |sed 's/^/   /'
+  find ${CONF}/$1/ -type f |sed -e 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |sort |sed -e 's/^/   /'
 }
 
 function location_environment_unassign {
@@ -3685,7 +3685,7 @@ function location_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined location${S}."
   test $NUM -eq 0 && return
-  location_list_unformatted |sed 's/^/   /'
+  location_list_unformatted |sed -e 's/^/   /'
 }
 
 function location_list_unformatted {
@@ -3709,12 +3709,12 @@ function location_update {
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:location]
-  sed -i 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
+  sed -i -e 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' ${CONF}/location
   # handle rename
   if [ "$CODE" != "$C" ]; then
     pushd $CONF >/dev/null 2>&1
     test -d $C && git mv $C $CODE >/dev/null 2>&1
-    sed -i 's/^'$C',/'$CODE',/' network
+    sed -i -e 's/^'$C',/'$CODE',/' network
     popd >/dev/null 2>&1
   fi
   commit_file location
@@ -3761,7 +3761,7 @@ function network_create {
   local LOC ZONE ALIAS DESC BITS GW HAS_ROUTES DNS DHCP NTP BUILD DEFAULT_BUILD REPO_ADDR REPO_PATH REPO_URL
   start_modify
   # get user input and validate
-  get_input LOC "Location Code" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input LOC "Location Code" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge
   get_input ALIAS "Site Alias"
   # validate unique name
@@ -3806,9 +3806,9 @@ function network_create {
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -i 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -i -e 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:network]
-    sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
+    sed -i -e 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -3830,9 +3830,9 @@ function network_delete {
   if [ "$RL" == "y" ]; then
     # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-    sed -i '/^'${C//-/,}',/d' ${CONF}/network
-    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
-    sed -i '/^'${C//-/,}',/d' ${CONF}/hv-network
+    sed -i -e '/^'${C//-/,}',/d' ${CONF}/network
+    sed -i -e '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${LOC}/network
+    sed -i -e '/^'${C//-/,}',/d' ${CONF}/hv-network
     if [ -f ${CONF}/net/${NET} ]; then delete_file net/${NET}; fi
     if [ -f ${CONF}/net/${NET}-routes ]; then delete_file net/${NET}-routes; fi
   fi
@@ -3893,7 +3893,7 @@ function network_edit_routes {
 	;;
       e)
 	V=${OPT:1}
-#	if [ "$V" != "$( printf -- '$V' |sed 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed 's/[^0-9]*//g' )'"; sleep 1; continue; fi
+#	if [ "$V" != "$( printf -- '$V' |sed -e 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed -e 's/[^0-9]*//g' )'"; sleep 1; continue; fi
 	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
         # [FORMAT:net/routes]
 	IFS=" " read -r DEVICE NET NETMASK GATEWAY <<<$(awk '{print $1,$3,$5,$7}' $TMP/${1}-routes |head -n$V |tail -n1)
@@ -3907,7 +3907,7 @@ function network_edit_routes {
 	;;
       d)
 	V=${OPT:1}
-#	if [ "$V" != "$( printf -- '$V' |sed 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed 's/[^0-9]*//g' )'"; sleep 1; continue; fi
+#	if [ "$V" != "$( printf -- '$V' |sed -e 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |sed -e 's/[^0-9]*//g' )'"; sleep 1; continue; fi
 	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
 	sed -i -e "${V}d" $TMP/${1}-routes
 	;;
@@ -3922,7 +3922,7 @@ function network_edit_routes {
 #
 function network_exists {
   test $# -eq 1 || return 1
-  test `printf -- "$1" |sed 's/[^-]*//g' |wc -c` -eq 2 || return 1
+  test `printf -- "$1" |sed -e 's/[^-]*//g' |wc -c` -eq 2 || return 1
   # [FORMAT:network]
   grep -qE "^${1//-/,}," $CONF/network || return 1
 }
@@ -4020,13 +4020,13 @@ function network_ip_assign {
   if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $IP ) -ne 0 ]]; then
     # mark the address as reserved
     # [FORMAT:net/network]
-    sed -i "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+    sed -i -e "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
     RET=1
   else
     # assign
     # [FORMAT:net/network]
-    sed -i s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' ${CONF}/net/${FILENAME}
+    sed -i -e s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' ${CONF}/net/${FILENAME}
     RET=0
   fi
 
@@ -4059,12 +4059,12 @@ function network_ip_check {
   if [ $( /bin/ping -c4 -n -s8 -w4 -q $1 |/bin/grep "0 received" |/usr/bin/wc -l ) -eq 0 ]; then return 1; fi
   # optional /etc/hosts matching
   if ! [ -z "$2" ]; then
-    grep -qE '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts
+    grep -qE '^'$( echo $1 |sed -e 's/\./\\./g' )'[ \t]' /etc/hosts
     if [ $? -eq 0 ]; then
-      grep -E '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$2" || return 1
+      grep -E '^'$( echo $1 |sed -e 's/\./\\./g' )'[ \t]' /etc/hosts |grep -q "$2" || return 1
     fi
   else
-    grep -qE '^'$( echo $1 |sed 's/\./\\./g' )'[ \t]' /etc/hosts && return 1
+    grep -qE '^'$( echo $1 |sed -e 's/\./\\./g' )'[ \t]' /etc/hosts && return 1
   fi
   return 0
 }
@@ -4212,7 +4212,7 @@ function network_ip_scan {
       # [FORMAT:net/network]
       IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
       # [FORMAT:net/network]
-      sed -i "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
+      sed -i -e "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
       echo "Found device at $( dec2ip $i )"
     fi
   done
@@ -4236,7 +4236,7 @@ function network_ip_unassign {
   # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # [FORMAT:net/network]
-  sed -i "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
+  sed -i -e "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
 }
@@ -4276,8 +4276,8 @@ function network_ipam_add_range {
   # first check if a mask was provided in the first address
   printf -- "$1" |grep -q "/"
   if [ $? -eq 0 ]; then
-    FIRST_IP=$( printf -- "$1" |sed 's%/.*%%' )
-    CIDR=$( printf -- "$1" |sed 's%.*/%%' )
+    FIRST_IP=$( printf -- "$1" |sed -e 's%/.*%%' )
+    CIDR=$( printf -- "$1" |sed -e 's%.*/%%' )
   else
     FIRST_IP=$1
   fi
@@ -4333,8 +4333,8 @@ function network_ipam_remove_range {
   # first check if a mask was provided in the first address
   printf -- "$1" |grep -q "/"
   if [ $? -eq 0 ]; then
-    FIRST_IP=$( printf -- "$1" |sed 's%/.*%%' )
-    CIDR=$( printf -- "$1" |sed 's%.*/%%' )
+    FIRST_IP=$( printf -- "$1" |sed -e 's%/.*%%' )
+    CIDR=$( printf -- "$1" |sed -e 's%.*/%%' )
   else
     FIRST_IP=$1
   fi
@@ -4364,7 +4364,7 @@ function network_ipam_remove_range {
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
       # get the file name
       FILENAME=$( get_network $( dec2ip $i ) 24 )
-      sed -i "/^$i,/d" ${CONF}/net/$FILENAME 2>/dev/null
+      sed -i -e "/^$i,/d" ${CONF}/net/$FILENAME 2>/dev/null
     done
     git add ${CONF}/net/$FILENAME >/dev/null 2>&1
     commit_file ${CONF}/net/$FILENAME
@@ -4404,7 +4404,7 @@ function network_list {
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
     echo "There ${A} ${NUM} defined network${S}."
     test $NUM -eq 0 && return
-    ( printf -- "Site Alias Network\n"; network_list_unformatted ) |column -t |sed 's/^/   /'
+    ( printf -- "Site Alias Network\n"; network_list_unformatted ) |column -t |sed -e 's/^/   /'
   fi
 }
 
@@ -4443,7 +4443,7 @@ function network_show {
   test $BRIEF -eq 1 && return
   printf -- "Static Routes:\n"
   if [ "$HAS_ROUTES" == "y" ]; then
-    cat ${CONF}/net/${NET}-routes |sed 's/^/   /'
+    cat ${CONF}/net/${NET}-routes |sed -e 's/^/   /'
   else
     printf -- "  None\n"
   fi
@@ -4468,7 +4468,7 @@ function network_update {
   network_exists "$C" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
   # [FORMAT:network]
   IFS="," read -r L Z A NETORIG MASKORIG BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH REPO_URL BUILD DEFAULT_BUILD NTP DHCP <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-  get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input LOC "Location Code" --default "$L" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   get_input ZONE "Network Zone" --options core,edge --default "$Z"
   get_input ALIAS "Site Alias" --default "$A"
   # validate unique name if it is changing
@@ -4509,23 +4509,23 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -i 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
+    $extsed -i -e 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' ${CONF}/network
     # [FORMAT:location/network]
-    sed -i 's/,y$/,n/' ${CONF}/${LOC}/network
+    sed -i -e 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
-  sed -i 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' ${CONF}/network
+  sed -i -e 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
     # [FORMAT:location/network]
-    sed -i 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
+    sed -i -e 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
     # [FORMAT:location/network]
-    sed -i '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
+    sed -i -e '/^'${ZONE}','${ALIAS}',/d' ${CONF}/${L}/network
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
     # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -4567,21 +4567,21 @@ function parse_template {
   [[ $# -ge 4 && ! -z "$4" && "$4" == "1" ]] && local VERBOSE=1 || local VERBOSE=0
   local RETVAL=0
   while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
-    local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |$extsed 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
+    local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |$extsed -e 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2
     if [ $? -ne 0 ]; then
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
       if [ $VERBOSE -eq 1 ]; then
         printf -- "  Missing Variable: '$NAME'\n" >&2
-        sed -i s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
+        sed -i -e s$'\001'"{% $NAME %}"$'\001'""$'\001' $1
         RETVAL=1
         continue
       else
         return 1
       fi
     fi
-    local VAL=$( grep -E "^$NAME " $2 |sed "s/^$NAME //" )
-    sed -i s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
+    local VAL=$( grep -E "^$NAME " $2 |sed -e "s/^$NAME //" )
+    sed -i -e s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' $1
   done
   return $RETVAL
 }
@@ -4628,7 +4628,7 @@ function resource_byval_assign {
   generic_choose system "$2" HOST
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -i 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
+  $extsed -i -e 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4648,7 +4648,7 @@ function resource_byval_unassign {
   test "$RL" != "y" && return
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -i 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
+  $extsed -i -e 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4677,7 +4677,7 @@ function resource_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:resource]
-    sed -i '/^[^,]*,'${C}',/d' ${CONF}/resource
+    sed -i -e '/^[^,]*,'${C}',/d' ${CONF}/resource
   fi
   commit_file resource
 }
@@ -4737,12 +4737,12 @@ function resource_list {
       # ok... load the resource so we show what it's assigned to
       # [FORMAT:resource]
       IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^$TYPE,$VAL," ${CONF}/resource )"
-      printf -- " $ASSIGN_TYPE:$ASSIGN_TO" |sed 's/^ host/ system/'
+      printf -- " $ASSIGN_TYPE:$ASSIGN_TO" |sed -e 's/^ host/ system/'
     else
       printf -- " [unassigned]"
     fi
     printf -- "\n"
-  done |column -t |sed 's/^/   /'
+  done |column -t |sed -e 's/^/   /'
 }
 
 # show available resources
@@ -4784,7 +4784,7 @@ function resource_update {
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
-  sed -i 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
+  sed -i -e 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' ${CONF}/resource
   commit_file resource
 }
 
@@ -4823,7 +4823,7 @@ function hypervisor_add_network {
     printf -- "\n"
     get_input C "Network to Modify (loc-zone-alias)"
   else
-    test `printf -- "$2" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    test `printf -- "$2" |sed -e 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
     C="$2"
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
@@ -4862,7 +4862,7 @@ function hypervisor_create {
   # validate unique name
   hypervisor_exists "$1" && err "Hypervisor already defined."
   while ! $(valid_ip "$IP"); do get_input IP "Management IP"; done
-  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   get_input VMPATH "VM Storage Path"
   get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$'
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$'
@@ -4877,9 +4877,9 @@ function hypervisor_delete {
   generic_delete hypervisor $1 || return
   # also delete from hv-environment and hv-network
   # [FORMAT:hv-environment]
-  sed -i "/^[^,]*,$1\$/d" $CONF/hv-environment
+  sed -i -e "/^[^,]*,$1\$/d" $CONF/hv-environment
   # [FORMAT:hv-network]
-  sed -i "/^[^,]*,$1,/d" $CONF/hv-network
+  sed -i -e "/^[^,]*,$1,/d" $CONF/hv-network
   commit_file hv-environment hv-network
 }
 
@@ -5001,7 +5001,7 @@ function hypervisor_list {
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
     echo "There ${A} ${NUM} defined hypervisor${S}."
     test $NUM -eq 0 && return
-    awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |sort |sed 's/^/   /'
+    awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |sort |sed -e 's/^/   /'
   else
     if [ $NUM -eq 0 ]; then return; fi
     LIST="$( awk 'BEGIN{FS=","}{print $1}' ${CONF}/hypervisor |tr '\n' ' ' )"
@@ -5113,7 +5113,7 @@ function hypervisor_locate_system {
   PREF="$( grep -E "^$NAME,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
   start_modify
   # [FORMAT:hv-system]
-  sed -i '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
+  sed -i -e '/^'$NAME',/d' ${CONF}/hv-system >/dev/null 2>&1
 
   # set defaults
   for HV in $LIST; do
@@ -5125,7 +5125,7 @@ function hypervisor_locate_system {
     nc -z -w 2 $HIP 22 >/dev/null 2>&1 || continue
     # search
     if [ "$BASE_IMAGE" == "y" ]; then
-      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |sed 's/\.img//'" )
+      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |sed -e 's/\.img//'" )
       if [ -z "$VM" ]; then STATE=""; else STATE="shut"; fi
     else
       read VM STATE <<<"$( ssh -o "StrictHostKeyChecking no" $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
@@ -5141,7 +5141,7 @@ function hypervisor_locate_system {
 
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
-  if ! [ -z "$PREF" ]; then sed -i 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
+  if ! [ -z "$PREF" ]; then sed -i -e 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' ${CONF}/hv-system; fi
   commit_file hv-system
 
   # output results and return status
@@ -5171,7 +5171,7 @@ function hypervisor_poll {
   nc -z -w 2 $IP 22 >/dev/null 2>&1 || err "Hypervisor is not accessible at this time"
   # collect memory usage
   FREEMEM=$( ssh -o "StrictHostKeyChecking no" $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
-  MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed 's/\..*//' )
+  MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |sed -e 's/\..*//' )
   # optionally only return memory
   if [ "$2" == "--mem" ]; then
     # if memory is at or below minimum mask it as 0
@@ -5188,8 +5188,8 @@ function hypervisor_poll {
     b) M="/ 1024 / 1024";;
     *) err "Unknown size qualifer in '$N'";;
   esac
-  FREEDISK=$( echo "${N%?} $M" |bc |sed 's/\..*//' ) 
-  DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |sed 's/\..*//' )
+  FREEDISK=$( echo "${N%?} $M" |bc |sed -e 's/\..*//' ) 
+  DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |sed -e 's/\..*//' )
   # optionally only return disk space
   if [ "$2" == "--disk" ]; then
     # if disk is at or below minimum mask it as 0
@@ -5197,7 +5197,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect load data
-  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" $IP "uptime |sed 's/.* load average: //'" )"
+  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" $IP "uptime |sed -e 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
 }
@@ -5241,21 +5241,21 @@ function hypervisor_qemu_uuid {
     if [ $? -ne 0 ]; then
       test $VERBOSE -eq 1 && echo "error connecting to $H!" >&2
     else
-      HVS="$( printf -- "$HVS $H" |sed 's/^ //' )"
+      HVS="$( printf -- "$HVS $H" |sed -e 's/^ //' )"
     fi
   done
   
   test -z "$HVS" && exit 1
   
   # enumerate all addresses currently in use
-  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |$extsed 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
+  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |$extsed -e 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
   
   if [ $VALIDATE -eq 1 ]; then
     # MAC
     for M in $( grep mac $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate MAC Address '$M' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh $H "cd ${XMLPATH}; grep '$M' *.xml |sed 's%\.xml.*%%'" |tr '\n' ',' |sed 's%,$%%' )
+        R=$( ssh $H "cd ${XMLPATH}; grep '$M' *.xml |sed -e 's%\.xml.*%%'" |tr '\n' ',' |sed -e 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
@@ -5264,7 +5264,7 @@ function hypervisor_qemu_uuid {
     for U in $( grep uuid $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate UUID '$U' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh $H "cd ${XMLPATH}; grep '$U' *.xml |sed 's%\.xml.*%%'" |tr '\n' ',' |sed 's%,$%%' )
+        R=$( ssh $H "cd ${XMLPATH}; grep '$U' *.xml |sed -e 's%\.xml.*%%'" |tr '\n' ',' |sed -e 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
@@ -5272,9 +5272,9 @@ function hypervisor_qemu_uuid {
   
   if [ $GENERATE -eq 1 ]; then
     # find the next available MAC
-    MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed 's%(..)%:\1%g' )"
+    MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed -e 's%(..)%:\1%g' )"
     while [ `grep -ic $MAC $TEMP` -gt 0 ]; do
-      MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed 's%(..)%:\1%g' )"
+      MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |$extsed -e 's%(..)%:\1%g' )"
     done
     
     # find the next available UUID
@@ -5319,7 +5319,7 @@ function hypervisor_rank {
     # this is the tricky part -- how to we determine which is 'better' ?
     # what if one host has lots of free disk space but no memory?
     # I am going to rank free memory higher than CPU -- the host with the most memory unless they are very close
-    C=$( echo "scale=2; (($M + 1) - ($MEM + 1)) / ($MEM + 1) * 100" |bc |sed 's/\..*//' )
+    C=$( echo "scale=2; (($M + 1) - ($MEM + 1)) / ($MEM + 1) * 100" |bc |sed -e 's/\..*//' )
     if [ $C -gt 5 ]; then
       # greater than 5% more memory on this hypervisor, set it as preferred
       # ... but first check for avoidance
@@ -5350,7 +5350,7 @@ function hypervisor_remove_environment {
   grep -qE "^$ENV,$1\$" ${CONF}/hv-environment || return
   # remove mapping
   # [FORMAT:hv-environment]
-  sed -i '/^'$ENV','$1'/d' ${CONF}/hv-environment
+  sed -i -e '/^'$ENV','$1'/d' ${CONF}/hv-environment
   commit_file hv-environment
 }
 
@@ -5363,7 +5363,7 @@ function hypervisor_remove_network {
     printf -- "\n"
     get_input C "Network to Modify (loc-zone-alias)"
   else
-    test `printf -- "$2" |sed 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    test `printf -- "$2" |sed -e 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
     C="$2"
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
@@ -5372,7 +5372,7 @@ function hypervisor_remove_network {
   grep -qE "^$C,$1," ${CONF}/hv-network || return
   # remove mapping
   # [FORMAT:hv-network]
-  sed -i '/^'$C','$1',/d' ${CONF}/hv-network
+  sed -i -e '/^'$C','$1',/d' ${CONF}/hv-network
   commit_file hv-network
 }
 
@@ -5407,11 +5407,11 @@ function hypervisor_show {
   # get networks
   printf -- "\nNetwork Interfaces:\n"
   # [FORMAT:hv-network]
-  grep -E ",$1," ${CONF}/hv-network |awk 'BEGIN{FS=","}{print $3":",$1}' |sed 's/^/  /' |sort
+  grep -E ",$1," ${CONF}/hv-network |awk 'BEGIN{FS=","}{print $3":",$1}' |sed -e 's/^/  /' |sort
   # get environments
   printf -- "\nLinked Environments:\n"
   # [FORMAT:hv-environment]
-  grep -E ",$1\$" ${CONF}/hv-environment |sed 's/^/  /; s/,.*//' |sort
+  grep -E ",$1\$" ${CONF}/hv-environment |sed -e 's/^/  /; s/,.*//' |sort
   echo
 }
 
@@ -5439,18 +5439,18 @@ function hypervisor_update {
   # validate unique name if it is changed
   test "$NAME" != "$C" && grep -qE "^$NAME," $CONF/hypervisor && err "Hypervisor already defined."
   while ! $(valid_ip "$IP"); do get_input IP "Management IP" --default "$ORIGIP" ; done
-  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --default "$LOC"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" --default "$LOC"
   get_input VMPATH "VM Storage Path" --default "$VMPATH"
   get_input MINDISK "Disk Space Minimum (MB)" --regex '^[0-9]*$' --default "$MINDISK"
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
   get_yn ENABLED "Enabled (y/n)" --default "$ENABLED"
   # [FORMAT:hypervisor]
-  sed -i 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
+  sed -i -e 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' ${CONF}/hypervisor
   if [ "$NAME" != "$C" ]; then
     # [FORMAT:hv-environment]
-    sed -i "s/,$C\$/,$NAME/" ${CONF}/hv-environment
+    sed -i -e "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
-    $extsed -i 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
+    $extsed -i -e 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' ${CONF}/hv-network
   fi
   commit_file hypervisor hv-environment hv-network
 }
@@ -5515,15 +5515,15 @@ function system_audit {
   rm -f scs-*
   # pull down the files to audit
   echo "Retrieving current system configuration..."
-  for F in $( find . -type f |sed 's%^\./%%' ); do
+  for F in $( find . -type f |sed -e 's%^\./%%' ); do
     mkdir -p $TMP/release/ACTUAL/`dirname $F`
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |$extsed 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |$extsed -e 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |sed -e 's/[`'"'"']*//g' >$TMP/release/scs-actual
 
   # review differences
   echo "Analyzing configuration..."
-  for F in $( find . -type f |sed 's%^\./%%' ); do
+  for F in $( find . -type f |sed -e 's%^\./%%' ); do
     SkipCheck=0
 
     if [ -f $TMP/release/ACTUAL/$F ]; then
@@ -5592,7 +5592,7 @@ function system_check {
       # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
       # remove leading '/' to make path relative
-      FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      FPTH=$( printf -- "$FPTH" |sed -e 's%^/%%' )
       # missing file
       if [ -z "$FNAME" ]; then printf -- "Error: '${FILES[i]}' is invalid. Critical error.\n" >&2; VALID=1; continue; fi
       # skip if path is null (implies an error occurred)
@@ -5813,16 +5813,16 @@ function system_convert {
   
       #  - get the network interfaces on the hypervisor
       # [FORMAT:hv-network]
-      HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-      HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+      HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed -e 's/^[^,]*,[^,]*,//' )
+      HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed -e 's/^[^,]*,[^,]*,//' )
       [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$Hypervisor' is missing one or more interface mappings for the selected networks."
 
       #  - load the architecture and operating system for the build
       # [FORMAT:build]
-      IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+      IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed -e 's/^[^,]*,[^,]*,[^,]*,//' )"
       ROOT=$( build_root $BUILD )
       # [FORMAT:build]
-      IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+      IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed -e 's/^[^,]*,[^,]*,[^,]*,//' )"
       test -z "$OS" && err "Error loading build"
     
       # set disk/ram
@@ -5836,7 +5836,7 @@ function system_convert {
       scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
     
       #  - get globally unique mac address and uuid for the new server
-      read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+      read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed -e 's/^[^:]*: //' |tr '\n' ' ' )"
 
       # create new vm
       if [ $DryRun -eq 0 ]; then
@@ -5858,10 +5858,10 @@ function system_convert {
       for File in $List; do
         if [ "$File" == "${VMPath}/${NAME}.img" ]; then continue; fi
         if [ $DryRun -eq 0 ]; then
-          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor
+          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed -e 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor
           if [ $? -eq 0 ]; then scslog "successfully added secondary disk to $NAME"; else scslog "error adding secondary disk to $NAME"; fi
         else
-          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor --dry-run
+          system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed -e 's/^'${NAME}'\.//; s/\.img$//' )" --disk $File --use-existing --hypervisor $Hypervisor --dry-run
         fi
       done
 
@@ -5875,7 +5875,7 @@ function system_convert {
       IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
       # save changes
       # [FORMAT:system]
-      sed -i 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+      sed -i -e 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
       commit_file system
 
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
@@ -5917,13 +5917,13 @@ function system_create {
   get_input NAME "Hostname" --auto "$1"
   # validate unique name
   grep -qE "^$NAME," $CONF/system && err "System already defined."
-  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$2"
-  get_input LOC "Location" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
-  get_input EN "Environment" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$4"
+  get_input BUILD "Build" --null --options "$( build_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$2"
+  get_input LOC "Location" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$3"
+  get_input EN "Environment" --options "$( environment_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$4"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --auto "$5"; done
   # automatic IP selection
   if [ "$IP" == "auto" ]; then
-    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
+    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
     shift
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
@@ -5933,7 +5933,7 @@ function system_create {
     get_yn BASE_IMAGE "Use as a backing image for overlay (y/n)?" --auto "$7"
     get_yn OVERLAY_Q "Overlay on another system (y/n)?" --auto "$8"
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$9"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$9"
     else
       OVERLAY=""
     fi
@@ -6337,7 +6337,7 @@ function system_provision {
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
     
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
-      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed 's/[0-9]+[abv]*$//' ) $LIST )
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed -e 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
     scslog "selected $Hypervisor"
@@ -6369,7 +6369,7 @@ function system_provision {
       fi
     
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
-      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed 's/[0-9]+[abv]*$//' ) $LIST )
+      Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |$extsed -e 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
 
@@ -6377,8 +6377,8 @@ function system_provision {
 
   #  - get the build and dest interfaces on the hypervisor
   # [FORMAT:hv-network]
-  HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
-  HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed 's/^[^,]*,[^,]*,//' )
+  HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |sed -e 's/^[^,]*,[^,]*,//' )
+  HV_FINAL_INT=$( grep -E "^$NETNAME,$Hypervisor," ${CONF}/hv-network |sed -e 's/^[^,]*,[^,]*,//' )
   [[ -z "$HV_BUILD_INT" || -z "$HV_FINAL_INT" ]] && err "Selected hypervisor '$Hypervisor' is missing one or more interface mappings for the selected networks."
 
   # get the hypervisor vmpath
@@ -6420,10 +6420,10 @@ function system_provision {
   #  - load the architecture and operating system for the build
   scslog "reading system architecture and build information"
   # [FORMAT:build]
-  IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+  IFS="," read -r OS ARCH DISK RAM PARENT <<< "$( grep -E "^$BUILD," ${CONF}/build |sed -e 's/^[^,]*,[^,]*,[^,]*,//' )"
   ROOT=$( build_root $BUILD )
   # [FORMAT:build]
-  IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed 's/^[^,]*,[^,]*,[^,]*,//' )"
+  IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |sed -e 's/^[^,]*,[^,]*,[^,]*,//' )"
   test -z "$OS" && err "Error loading build"
 
   scslog "prior to validation, using build $BUILD for system $NAME - assigned ram '$RAM' and disk '$DISK'"
@@ -6439,7 +6439,7 @@ function system_provision {
   scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
 
   #  - get globally unique mac address and uuid for the new server
-  read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed 's/^[^:]*: //' |tr '\n' ' ' )"
+  read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |sed -e 's/^[^:]*: //' |tr '\n' ' ' )"
 
   if [ -z "$OVERLAY" ]; then
     # this is a single or backing system build (not overlay)
@@ -6458,7 +6458,7 @@ resource.sm-web $REPO_ADDR
 _EOF
     parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
-    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
+    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -i -e 's/kernel-PAE/kernel/' ${TMP}/${NAME}.cfg; fi
     #  - send custom kickstart file over to the local sm-web repo/mirror
     ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
     scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
@@ -6497,7 +6497,7 @@ _EOF
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   
   # [FORMAT:system]
-  sed -i 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','`date +'%s'`'/' ${CONF}/system
+  sed -i -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','`date +'%s'`'/' ${CONF}/system
 
   commit_file system
   return 0
@@ -6582,7 +6582,7 @@ function system_provision_phase2 {
     List="$( ssh -o "StrictHostKeyChecking no" $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
     for File in $List; do
       if [ "$File" == "${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img" ]; then continue; fi
-      system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed 's/^'${OVERLAY}'\.//; s/\.img$//' )" --backing $File
+      system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |sed -e 's/^'${OVERLAY}'\.//; s/\.img$//' )" --backing $File
       if [ $? -eq 0 ]; then scslog "successfully added secondary disk to $NAME using backing image $( basename $File )"; else scslog "error adding secondary disk to $NAME using backing image $( basename $File )"; fi
     done
 
@@ -6593,13 +6593,13 @@ function system_provision_phase2 {
 
       DHCPIP=""
       scslog "attempting to trace DHCP IP"
-      echo "ssh $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |sed ':a;N;\$!ba;s/\\n/ /g; s/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
+      echo "ssh $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |sed -e ':a;N;\$!ba;s/\\n/ /g; s/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
  
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
         check_abort
         sleep 5
-        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |sed ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
+        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |sed -e ':a;N;$!ba;s/\n/ /g; s/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
 	if [[ -n "$DHCPIP" && "$( exit_status valid_ip "$DHCPIP" )" -ne 0 ]]; then
           errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
         fi
@@ -6726,8 +6726,8 @@ function system_provision_phase2 {
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
     scslog "changing system network interface from '$HV_BUILD_INT' to '$HV_FINAL_INT'"
-    echo "ssh -n $HVIP \"sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
-    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -i 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    echo "ssh -n $HVIP \"sed -i -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
+    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -i -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
   fi
 
   if [ "$BASE_IMAGE" != "y" ]; then
@@ -6786,7 +6786,7 @@ function system_push_build_scripts {
     nc -z -w2 $1 22 || return 5
   fi
   cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
-  sed -i "/$( printf -- "$1" |sed 's/\./\\./g' )/d" /root/.ssh/known_hosts
+  sed -i -e "/$( printf -- "$1" |sed -e 's/\./\\./g' )/d" /root/.ssh/known_hosts
   ssh -o "StrictHostKeyChecking no" $1 mkdir ESG 2>/dev/null
   scp -p -r "$SRCDIR" $1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
   cat /root/.ssh/known_hosts.$$ >/root/.ssh/known_hosts
@@ -6830,7 +6830,7 @@ function system_resolve_autooverlay {
 
   # save changes
   # [FORMAT:system]
-  sed -i 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' ${CONF}/system
+  sed -i -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' ${CONF}/system
   
   commit_file system
 }
@@ -6843,7 +6843,7 @@ function system_list {
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined system${S}."
   test $NUM -eq 0 && return
-  printf -- "$LIST\n" |tr ' ' '\n' |sort |fold_list |sed 's/^/   /'
+  printf -- "$LIST\n" |tr ' ' '\n' |sort |fold_list |sed -e 's/^/   /'
 }
 
 # system:
@@ -7027,9 +7027,9 @@ function system_release {
       # add to allfiles array
       AllFiles[${#AllFiles[@]}]="$FPTH"
       # remove leading '/' to make path relative
-      FPTH=$( printf -- "$FPTH" |sed 's%^/%%' )
+      FPTH=$( printf -- "$FPTH" |sed -e 's%^/%%' )
       # alternate octal representation
-      FOCT=$( printf -- $FOCTAL |sed 's%^0%%' )
+      FOCT=$( printf -- $FOCTAL |sed -e 's%^0%%' )
       # skip if path is null (implies an error occurred)
       test -z "$FPTH" && continue
       # ensure the relative path (directory) exists
@@ -7076,9 +7076,9 @@ function system_release {
         fi
         # stat
         if [ "$FTYPE" == "symlink" ]; then
-          printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |sed 's/binary$/file/' >>$STATFILE
+          printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |sed -e 's/binary$/file/' >>$STATFILE
         else
-          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |sed 's/binary$/file/' >>$STATFILE
+          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |sed -e 's/binary$/file/' >>$STATFILE
         fi
       fi
     done
@@ -7147,7 +7147,7 @@ function system_show {
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
     echo -e "\nThere ${A} ${NUM} linked application${S}."
     if [ $NUM -gt 0 ]; then
-      build_application_list "$BUILD" |sed 's/^/   /'
+      build_application_list "$BUILD" |sed -e 's/^/   /'
       # retrieve application related data
       # [FORMAT:application]
       for APP in $( grep -E ",${BUILD}," ${CONF}/application |awk 'BEGIN{FS=","}{print $1}' ); do
@@ -7163,14 +7163,14 @@ function system_show {
   echo -e "\nThere ${A} ${#RSRC[*]} linked resource${S}."
   if [ ${#RSRC[*]} -gt 0 ]; then for ((i=0;i<${#RSRC[*]};i++)); do
     printf -- "${RSRC[i]}\n" |awk 'BEGIN{FS=","}{print $2,$1,$3}'
-  done; fi |column -t |sed 's/^/   /'
+  done; fi |column -t |sed -e 's/^/   /'
   # output linked configuration file list
   if [ ${#FILES[*]} -gt 0 ]; then
     printf -- "\nManaged configuration files:\n"
     for ((i=0;i<${#FILES[*]};i++)); do
       # [FORMAT:file]
       grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-    done |sort |uniq |column -t |sed 's/^/   /'
+    done |sort |uniq |column -t |sed -e 's/^/   /'
   else
     printf -- "\nNo managed configuration files."
   fi
@@ -7234,17 +7234,17 @@ function system_update {
   IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   ORIGNAME="$NAME"
   get_input NAME "Hostname" --default "$NAME"
-  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
   # automatic IP selection
   if [ "$IP" == "auto" ]; then
-    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
+    get_input NETNAME "Network (loc-zone-alias)" --options "$( network_list_unformatted |grep -E "^${LOC}-" |awk '{print $1"-"$2 }' |sed -e ':a;N;$!ba;s/\n/,/g' )" --auto "$6"
     shift
     IP=$( network_ip_list_available $NETNAME --limit 1 )
     valid_ip $IP || err "Automatic IP selection failed"
   fi
-  get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )" 
-  get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed ':a;N;$!ba;s/\n/,/g' )"
+  get_input LOC "Location" --default "$LOC" --options "$( location_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )" 
+  get_input EN "Environment" --default "$EN" --options "$( environment_list_unformatted |sed -e ':a;N;$!ba;s/\n/,/g' )"
   # changing these settings can be non-trivial for a system that is already deployed...
   get_yn VIRTUAL "Virtual Server (y/n)" --default "$ORIGVIRTUAL"
   if [ "$ORIGVIRTUAL" != "$VIRTUAL" ]; then
@@ -7264,7 +7264,7 @@ function system_update {
       get_yn R "Are you SURE you want to change the type of system (y/n)?" || exit
     fi
     if [ "$OVERLAY_Q" == "y" ]; then
-      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed ':a;N;$!ba;s/\n/,/g' )" --default "$ORIGOVERLAY"
+      get_input OVERLAY "Overlay System (or auto to select when provisioned)" --options "auto,$( system_list_unformatted --backing --exclude-parent $NAME |sed -e ':a;N;$!ba;s/\n/,/g' )" --default "$ORIGOVERLAY"
     else
       OVERLAY=""
     fi
@@ -7302,7 +7302,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  sed -i 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
+  sed -i -e 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -7466,8 +7466,8 @@ function system_vm_disk_create {
     fi
   fi
 
-  DevID=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
-  NewDevID="$( printf -- "${DevID}" |sed 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
+  DevID=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed -e \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
+  NewDevID="$( printf -- "${DevID}" |sed -e 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
 
   if [ $Existing -eq 0 ]; then
     if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
@@ -7535,13 +7535,13 @@ function system_vm_disks {
   while read_dom; do
     [ -z "$TAG_NAME" ] && continue
     if [ "${TAG_NAME:0:1}" == "/" ]; then
-      PARENT="$( printf -- '%s' "$PARENT" |sed 's%[^/]*/$%%' )"
+      PARENT="$( printf -- '%s' "$PARENT" |sed -e 's%[^/]*/$%%' )"
       continue
     fi
     if [ "$TYPE" == "OPEN" ]; then PARENT="${PARENT}${TAG_NAME}/"; XMLPATH=$PARENT; else XMLPATH="${PARENT}${TAG_NAME}/"; fi
     #echo "Path: '$XMLPATH', Tag: '$TAG_NAME', Attributes: '$ATTRIBUTES', Type: '$TYPE', Content: '$CONTENT'"
     if [ "$XMLPATH" == "/domain/devices/disk/source/" ]; then
-      printf -- '%s\n' "$ATTRIBUTES" |sed "s/'//g; s/file=//"
+      printf -- '%s\n' "$ATTRIBUTES" |sed -e "s/'//g; s/file=//"
     fi
   done <<< "$( ssh -o "StrictHostKeyChecking no" $IP virsh dumpxml $1 )"
 }
