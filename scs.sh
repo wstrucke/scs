@@ -7738,7 +7738,7 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 RELEASEDIR=/bkup1/scs-release
 #
 # sed extended regular expressions depends on support...
-extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- '$extsed' )"
+extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- 'sed -r' )"
 #
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
