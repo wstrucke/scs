@@ -4167,7 +4167,7 @@ function network_ip_check {
   valid_ip "$1" || return 1
   # tcp port 22 (ssh), 80 (http), 443 (https), and 8080 (http-alt)
   check_host_alive $1 && return 1
-  for P in 80 443 8080 8443; do check_host_alive $1 $P 1 && return 1; done
+  for P in $IP_Check_Ports; do check_host_alive $1 $P 1 && return 1; done
   # icmp/ping
   if [ $( ping -c4 -n -s8 -W4 -q $1 |grep -E '0 (packets )?received' |/usr/bin/wc -l |awk '{print $1}' ) -eq 0 ]; then return 1; fi
   # optional /etc/hosts matching
@@ -7716,6 +7716,10 @@ DEF_MEM=1024
 #
 # site domain name (for hosts)
 DOMAIN_NAME=2checkout.com
+#
+# tcp ports to check to validate an ip address is not allocated (space seperated list)
+#   tcp/22 (ssh) is always checked
+IP_Check_Ports="80 443 8080 8443"
 #
 # path to kickstart templates (centos6-i386.tpl, etc...)
 KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
