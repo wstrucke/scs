@@ -760,7 +760,7 @@ function initialize_configuration {
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
-  printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n" >.gitignore
+  printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -1423,15 +1423,13 @@ function cancel_modify {
   pushd $CONF >/dev/null 2>&1 || err
   # get change count
   L=`git status -s |wc -l 2>/dev/null`
-  # make sure we are not on master
-  git branch |grep -E '^\*' |grep -q master; M=$?
-  if [[ $M -eq 0 && $L -gt 0 ]]; then err "Error -- changes on master branch must be resolved manually."; elif [ $M -eq 0 ]; then return; fi
-  # make sure we are on the correct branch...
-  git branch |grep -E '^\*' |grep -q $USERNAME
-  if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "Error -- this is not your branch."; fi
-  N=`git diff --name-status master |wc -l 2>/dev/null`
+  # validate the lock
+  if [ -f .scs_lock ]; then
+    grep -qE "^$USERNAME\$" .scs_lock
+    if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "ERROR: These are not your outstanding changes!"; fi
+  fi
   # confirm
-  if [[ $L -gt 0 || $N -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
+  if [[ $L -gt 0 ]]; then get_yn DF "Are you sure you want to discard outstanding changes (y/n)?"; else DF="y"; fi
   if [ "$DF" == "y" ]; then
     # handle submodules
     if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |perl -pe 's/[[:space:]]*path = //' ); do
@@ -1439,17 +1437,14 @@ function cancel_modify {
         pushd $F >/dev/null 2>&1
         git clean -f >/dev/null 2>&1
         git reset --hard >/dev/null 2>&1
-        git checkout master >/dev/null 2>&1
-        git branch -D $USERNAME >/dev/null 2>&1
         popd >/dev/null 2>&1
       fi
     done; fi
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
-    git checkout master >/dev/null 2>&1
-    git branch -D $USERNAME >/dev/null 2>&1
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
-    if [[ $L -gt 0 || $N -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
+    if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
+    if [[ $L -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
   fi
   popd >/dev/null 2>&1
 }
@@ -1542,13 +1537,12 @@ function git_status {
   local Exit=0 Status=0
   [ "$1" == "--exit" ] && Exit=1
   pushd $CONF >/dev/null 2>&1
-  local BRANCH=$( git branch |grep -E '^\*' |awk '{print $2}' )
   local N=`git diff --name-status master |wc -l 2>/dev/null`
-  if [ "$BRANCH" == "master" ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
+  if ! [ -f .scs_lock ]; then
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     if [ $N -gt 0 ]; then git status; fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $BRANCH *****" >&2
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     Status=1
     if [ $N -gt 0 ]; then git status; fi
   fi
@@ -1563,28 +1557,21 @@ function start_modify {
   get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
-  git branch |grep -E '^\*' |grep -q master
+  if [ -f .scs_lock ]; then
+    grep -qE "^$USERNAME\$" .scs_lock
+  else
+    echo "$USERNAME" >.scs_lock
+  fi
   if [ $? -eq 0 ]; then
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME *****" >&2
-    # handle submodules
-    if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |perl -pe 's/[[:space:]]*path = //' ); do
-      if [ -d $F ]; then
-        pushd $F >/dev/null 2>&1
-        git branch $USERNAME >/dev/null 2>&1
-        git checkout $USERNAME >/dev/null 2>&1
-        popd >/dev/null 2>&1
-      fi
-    done; fi
-    git branch $USERNAME >/dev/null 2>&1
-    git checkout $USERNAME >/dev/null 2>&1
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     scslog "locked"
   else
-    git branch |grep -E '^\*' |grep -q $USERNAME || err "Another change is in progress, aborting."
+    err "Another change is in progress, aborting."
   fi
   return 0
 }
 
-# merge changes back into master and remove the branch
+# merge changes back into the current branch
 #
 # optional:
 #  --no-prompt
@@ -1600,57 +1587,42 @@ function stop_modify {
   get_user
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
-  # check if the current branch is master
-  git branch |grep -E '^\*' |grep -q master
-  test $? -eq 0 && M=1 || M=0
+  # validate the lock
+  if [ -f .scs_lock ]; then
+    if [ "$USERNAME" != "$( cat .scs_lock )" ]; then err "The configuration is locked by $( cat .scs_lock )"; fi
+  fi
   # handle submodules
   if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |perl -pe 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
-      git checkout master >/dev/null 2>&1 || err "Error switching to master on submodule $F"
-      git merge --squash $USERNAME >/dev/null 2>&1
       git commit -a -m"$MSG" >/dev/null 2>&1
-      git branch -D $USERNAME >/dev/null 2>&1
       popd >/dev/null 2>&1
       git add $F >/dev/null 2>&1
       git commit -m'commited submodules changes' $F >/dev/null 2>&1
     fi
   done; fi
   # check for modifications
-  L=`git status -s |wc -l 2>/dev/null`
-  # return if there are no modifications and we are on the master branch
-  if [[ $L -eq 0 && $M -eq 1 ]]; then popd >/dev/null 2>&1; return 0; fi
-  # error if master was modified
-  if [[ $L -ne 0 && $M -eq 1 ]]; then
-    err "The master branch was modified outside of this script.  Please switch to '$CONF' and manually commit or resolve the changes."
-  fi
-  if [ $L -gt 0 ]; then
-    # there are modifictions on a branch
-    if [ $SkipPrompt -ne 1 ]; then
-      get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
-      test "$DF" == "y" && git diff
-      get_yn DF "Do you want to commit the changes (y/n)?"
-      if [ "$DF" != "y" ]; then return 0; fi
+  L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
+  # return if there are no modifications
+  if [[ $L -eq 0 ]]; then
+    if [ -f .scs_lock ]; then
+      rm -f .scs_lock
+      printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     fi
-    git commit -a -m'final branch commit' >/dev/null 2>&1 || err "Error committing outstanding changes"
-  else
-    if [ $SkipPrompt -ne 1 ]; then
-      get_yn DF "Do you want to review the changes from master (y/n)?"
-      test "$DF" == "y" && git diff master
-      get_yn DF "Do you want to commit the changes (y/n)?"
-      if [ "$DF" != "y" ]; then return 0; fi
-    fi
+    popd >/dev/null 2>&1
+    return 0
   fi
-  if [ `git status -s |wc -l 2>/dev/null` -ne 0 ]; then
-    git commit -a -m'final rebase' >/dev/null 2>&1 || err "Error committing rebase"
+  # there are uncommitted modifictions
+  if [ $SkipPrompt -ne 1 ]; then
+    get_yn DF "$L files have been modified. Do you want to review the changes (y/n)?"
+    test "$DF" == "y" && git diff
+    get_yn DF "Do you want to commit the changes (y/n)?"
+    if [ "$DF" != "y" ]; then return 0; fi
   fi
-  git checkout master >/dev/null 2>&1 || err "Error switching to master"
-  git merge --squash $USERNAME >/dev/null 2>&1
-  if [ $? -ne 0 ]; then git stash >/dev/null 2>&1; git checkout $USERNAME >/dev/null 2>&1; err "Error merging changes into master."; fi
-  git commit -a -m"$MSG" >/dev/null 2>&1
-  git branch -D $USERNAME >/dev/null 2>&1
+  git commit -a -m"$MSG" >/dev/null 2>&1 || err "Error committing outstanding changes"
+  if [ -f .scs_lock ]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
-  printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED *****" >&2
+  printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
   scslog "committed pending changes with message: $MSG"
 }
 
