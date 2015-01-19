@@ -344,6 +344,8 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
+#     - use more environment variables and add help section detailing the options
+#     - make locking an optional behavior
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -1075,21 +1077,22 @@ SYNOPSIS
 	scs unlock|cancel
 
 DESCRIPTION
-	Locking (effectively automatic git branching) ensures changes to SCS are never unintentionally committed to the master
-	configuration.  Essentially any function that modifies the configuration will automatically 'lock' (or branch) the
-	repository and force the user to either commit or cancel the changes.
+	SCS implements some rudimentary locking to ensure two users on a multi-user system (sharing a single instance of the
+	repository) do not overlap configuration changes.  Essentially any function that modifies the configuration will
+	automatically 'lock' the repository and force the user to either commit or cancel the changes.  If it is desirable
+	for multiple users to modify the configuration at once then each user should check out their own copy of the
+	configuration.
 
-	Cumulative changes from master can be reviewed at any time with 'scs diff' (essentially 'git diff master') and either
-	committed (and released) with 'scs commit' or discarded with 'scs cancel'.
+	Uncommitted from master can be reviewed at any time with 'scs diff' and either committed (and released) with
+	'scs commit' or discarded with 'scs cancel'.
 
-	Since locks are tied to the active user (using the SUDO_USER environment variable) multiple concurrent users can not
-	modify a single configuration repository at the same time.  This behavior is intentional to significantly reduce the
-	risk of merge conflicts from branches, rollup changes into one commit, and abstract the version control to a simple
-	update -> commit / discard concept for end users.
+	Cumulative changes from an upstream tracking branch or local master can be viewed in the same fashion using
+	'scs diff --master', 'scs diff --branch <name>', or scs diff '--upstream'.  See the diff documentation below for
+	more information.
 
 	Any user can masquerade as another user by setting the SUDO_USER environment variable.  E.g.:
 		SUDO_USER=bbuckeye $0 lock
-	... will lock scs as the user 'bbuckeye'.
+	... will lock scs as the user 'bbuckeye'. This usage is discourged.
 
 OPTIONS
 	abort [--disable|--cancel]
@@ -1103,27 +1106,42 @@ OPTIONS
 		their own. This is a bug.
 
 	cancel
-		Unlocks a locked repository and permanently discards and deletes any changes from master.
+		Unlocks a locked repository and permanently discards and deletes any outstanding changes.
 
-	commit [--no-prompt] [-m'message']
-		Commit all outstanding changes to master and unlock the configuration.  A commit message is strongly encouraged.
+	commit [-y|--no-prompt] [--message|-m 'message'] [-p|--push]
+		Commit all outstanding changes to the current branch and unlock the configuration.  A commit message is
+		strongly encouraged.
 
-		The '--no-prompt' option must come before the optional commit message and skips the normal request to
-		review changes and confirm closing of the branch.
+		The '--no-prompt' option skips the normal request to review changes and confirm closing of the branch.
 
-	diff
-		Show all changes from master using 'git diff master'.
+		The '--push' option will commit to the local repository and also attempt to push all outstanding changes
+		to the upstream tracking branch (will *never* push to origin/master).
+
+	diff [-b|--branch <name>] [-m|--master] [-u|--upstream]
+		Wrapper for 'git diff' for some commonly used scenarios.  For anything not covered here simply switch
+		to the scs configuration folder and use git diff:
+			cd $( scs dir )
+
+		'--branch' will diff against a local branch with the provided name.
+
+		'--master' will diff against the local master.
+
+		'--upstream' can be used with '--branch' or '--master' and perform the same function against the
+			configured upstream repository.  If '--upstream' is provided alone the configured tracking
+			repository will be referenced.
 
 	lock
-		Creates and switches to a git branch without otherwise modifying the configuration.  Useful for preventing other
-		users on a multi-user system from locking the repository while preparing for changes.
+		Locks the repository for the current user without otherwise modifying the configuration.  Used exclusively
+		to prevent other users on a multi-user system from locking the repository while you prepare changes.
 
 	log
-		Shows the git change log for all time. This shows why commit messages are important.
+		Shows the git change log for all time. This illustrates why commit messages are important.
 
 	status [-v|--verbose]
-		Check whether or not scs is currently locked.  Returns 0 if unlocked and 1 if locked. This is useful for scripting
-		scs commands.
+		Check whether or not scs is currently locked.  Returns 0 if unlocked and 1 if locked. This is useful for
+		scripting scs commands.
+
+		The '--verbose' flag will also include the state of any upstream repository.
 
 	unlock
 		Alias for 'cancel'.
@@ -1517,7 +1535,9 @@ function delete_file {
   popd >/dev/null 2>&1
 }
 
+#	diff [-b|--branch <name>] [-m|--master] [-u|--upstream]
 function diff_master {
+# !!TODO!! support new arguments
   pushd $CONF >/dev/null 2>&1
   git diff master
   popd >/dev/null 2>&1
@@ -1560,7 +1580,7 @@ function git_status {
   if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
     git fetch >/dev/null 2>&1
     Ahead=$( git branch -v |grep ^* |grep ahead |perl -pe 's/.* \[ahead ([0-9]+)].*/\1/' );            if [ -z "$Ahead" ]; then Ahead=0; fi
-    Behind=$( git branch -v |grep ^* |grep behind |perl -pe 's/.*(\[|, )behind ([0-9]+)(]|,).*/\2/' ); if [ -z "$Behind" ]; then Behind=0; fi 
+    Behind=$( git branch -v |grep ^* |grep behind |perl -pe 's/.*(\[|, )behind ([0-9]+)(]|,).*/\2/' ); if [ -z "$Behind" ]; then Behind=0; fi
     echo "--> tracking remote $RemoteRepo:$RemoteBranch"
     echo "--> $Ahead ahead, $Behind behind"
   elif [ $Verbose -eq 1 ]; then
@@ -1594,17 +1614,21 @@ function start_modify {
 # merge changes back into the current branch
 #
 # optional:
-#  --no-prompt
-#  -m   commit message
+#  -p|--push        push changes upstream too
+#  -m|--message     commit message
+#  -y|--no-prompt   do not prompt for review/confirmation
 #
 function stop_modify {
-  local SkipPrompt=0
-  if [ "$1" == "--no-prompt" ]; then SkipPrompt=1; shift; fi
-  # optional commit message
-  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at $( date )"; fi
-  if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |-perl -pe 's/^..//g' ); shift; fi
   # get the running user
   get_user
+  local SkipPrompt=0 Message="$USERNAME completed modifications at $( date )" Push=0
+  # process arguments
+  while [ $# -gt 0 ]; do case "$1" in
+    -p|--push) Push=1;;
+    -m|--message) Message="$2"; shift;;
+    -y|--no-prompt) SkipPrompt=1;;
+    *) if [[ "$1" =~ ^-m ]]; then Message=$( echo $1 |-perl -pe 's/^..//g' ); shift; fi;;
+  esac; shift; done
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
   # validate the lock
@@ -1615,7 +1639,7 @@ function stop_modify {
   if [ -f .gitmodules ]; then for F in $( grep "path = " .gitmodules |perl -pe 's/[[:space:]]*path = //' ); do
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
-      git commit -a -m"$MSG" >/dev/null 2>&1
+      git commit -a -m"$Message" >/dev/null 2>&1
       popd >/dev/null 2>&1
       git add $F >/dev/null 2>&1
       git commit -m'commited submodules changes' $F >/dev/null 2>&1
@@ -1639,11 +1663,11 @@ function stop_modify {
     get_yn DF "Do you want to commit the changes (y/n)?"
     if [ "$DF" != "y" ]; then return 0; fi
   fi
-  git commit -a -m"$MSG" >/dev/null 2>&1 || err "Error committing outstanding changes"
+  git commit -a -m"$Message" >/dev/null 2>&1 || err "Error committing outstanding changes"
   if [ -f .scs_lock ]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
   printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
-  scslog "committed pending changes with message: $MSG"
+  scslog "committed pending changes with message: $Message"
 }
 
 
