@@ -5056,7 +5056,7 @@ function hypervisor_list {
 # --search-as-single    force search as a single regardless of system configuration
 #
 function hypervisor_locate_system {
-
+  # !!FIXME!! -- This needs to not lock the repository, like, ever.
   system_exists $1 || err "Unknown system"
 
   # variable scope
