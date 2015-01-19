@@ -1536,7 +1536,7 @@ function git_log {
 #   --exit           internally used flag indicating the script should exit after this function
 #
 function git_status {
-  local Exit=0 Status=0 Verbose=0 Branch RemoteRepo RemoteBranch Message N
+  local Exit=0 Status=0 Verbose=0 Branch RemoteRepo RemoteBranch Ahead Behind Message N
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
     -v|--verbose) Verbose=1;;
@@ -1558,8 +1558,12 @@ function git_status {
   fi
   # check upstream
   if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
+    git fetch >/dev/null 2>&1
+    Ahead=$( git branch -v |grep ^* |grep ahead |perl -pe 's/.* \[ahead ([0-9]+)].*/\1/' );            if [ -z "$Ahead" ]; then Ahead=0; fi
+    Behind=$( git branch -v |grep ^* |grep behind |perl -pe 's/.*(\[|, )behind ([0-9]+)(]|,).*/\2/' ); if [ -z "$Behind" ]; then Behind=0; fi 
     echo "--> tracking remote $RemoteRepo:$RemoteBranch"
-   elif [ $Verbose -eq 1 ]; then
+    echo "--> $Ahead ahead, $Behind behind"
+  elif [ $Verbose -eq 1 ]; then
     echo "--> no upstream master"
   fi
   popd >/dev/null 2>&1
