@@ -431,6 +431,35 @@ function cleanup_and_exit {
   exit $code
 }
 
+# compare version strings
+#
+# SOURCE: http://stackoverflow.com/questions/4023830/bash-how-compare-two-strings-in-version-format
+#
+# requires:
+#  $1,$2	strings to compare
+#
+# returns:
+#  0	if the versions match
+#  1	if $1 > $2
+#  2	if $2 > $1
+#
+function compare_version {
+  if [[ $1 == $2 ]]; then return 0; fi
+  local IFS=.
+  local i ver1=($1) ver2=($2)
+  # fill empty fields in ver1 with zeros
+  for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do ver1[i]=0; done
+  for ((i=0; i<${#ver1[@]}; i++)); do
+    if [[ -z ${ver2[i]} ]]; then
+      # fill empty fields in ver2 with zeros
+      ver2[i]=0
+    fi
+    if ((10#${ver1[i]} > 10#${ver2[i]})); then return 1; fi
+    if ((10#${ver1[i]} < 10#${ver2[i]})); then return 2; fi
+  done
+  return 0
+}
+
 # convert a decimal value to an ipv4 address
 #
 # SOURCE: http://stackoverflow.com/questions/10768160/ip-address-converter
@@ -7769,6 +7798,7 @@ TMPLarge=/bkup1
  #     # #     # ### #     #
 
 # define global variables
+GitVer=$( git version 2>/dev/null |perl -pe 's/.* ([0-9\.]*)( .*|$)/\1/' )
 HostOS=$( [[ "$( uname -v )" =~ "Darwin" ]] && echo mac || echo linux )
 USERNAME=""
 
