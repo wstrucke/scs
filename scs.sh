@@ -1121,7 +1121,7 @@ OPTIONS
 	log
 		Shows the git change log for all time. This shows why commit messages are important.
 
-	status
+	status [-v|--verbose]
 		Check whether or not scs is currently locked.  Returns 0 if unlocked and 1 if locked. This is useful for scripting
 		scs commands.
 
@@ -1531,18 +1531,36 @@ function git_log {
 
 # output the status (modified, added, deleted files list)
 #
+# optional:
+#   -v | --verbose   output additional information
+#   --exit           internally used flag indicating the script should exit after this function
+#
 function git_status {
-  local Exit=0 Status=0
-  [ "$1" == "--exit" ] && Exit=1
+  local Exit=0 Status=0 Verbose=0 Branch RemoteRepo RemoteBranch Message N
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    -v|--verbose) Verbose=1;;
+    --exit) Exit=1;;
+  esac; shift; done
   pushd $CONF >/dev/null 2>&1
-  local N=$( git diff --name-status |wc -l 2>/dev/null |awk '{print $1}' )
+  N=$( git diff --name-status |wc -l 2>/dev/null |awk '{print $1}' )
+  Branch=$( git branch |grep ^* |cut -d' ' -f2 )
+  RemoteRepo=$( git config -l |grep "branch.$Branch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
+  RemoteBranch=$( git config -l |grep "branch.$Branch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
+  if [ -z "$Branch" ]; then Branch=master; fi
   if ! [ -f .scs_lock ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
+    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
     if [ $N -gt 0 ]; then git status; fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
+    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
     Status=1
     if [ $N -gt 0 ]; then git status; fi
+  fi
+  # check upstream
+  if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
+    echo "--> tracking remote $RemoteRepo:$RemoteBranch"
+   elif [ $Verbose -eq 1 ]; then
+    echo "--> no upstream master"
   fi
   popd >/dev/null 2>&1
   [ $Exit -eq 1 ] && exit $Status
@@ -7815,7 +7833,7 @@ case "$SUBJ" in
   lock) start_modify; exit 0;;
   log) git_log; exit 0;;
   pdir) echo $( dirname $0 ); exit 0;;
-  status) git_status --exit;;
+  status) git_status --exit $@;;
 esac
 
 # get verb
