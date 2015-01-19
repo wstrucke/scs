@@ -1469,6 +1469,9 @@ function cancel_modify {
 #
 function commit_file {
   test -z "$1" && return
+  # disabled
+  return 0
+  # disabled
   local match
   pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
   while [ $# -gt 0 ]; do
@@ -1549,6 +1552,52 @@ function git_log {
   popd >/dev/null 2>&1
 }
 
+# push repository changes to master
+#
+# requires:
+#   --path </path/to/repo>
+#
+# optional:
+#   --no-prompt
+#   --title <string>
+#
+function git_push {
+  local SkipPrompt=0 Title="repository" RepoPath Behind Branch RemoteRepo
+  # get arguments
+  while [ $# -gt 0 ]; do case "$1" in
+    --no-prompt) SkipPrompt=1;;
+    --path) RepoPath="$2"; shift;;
+    --title) Title="$2"; shift;;
+  esac; shift; done
+  test -d "$RepoPath" || err "Repository path is invalid"
+  get_user
+  pushd $RepoPath >/dev/null 2>&1
+  Branch=$( git branch |grep ^* |cut -d' ' -f2 )
+  RemoteRepo=$( git config -l |grep "branch.$Branch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
+  RemoteBranch=$( git config -l |grep "branch.$Branch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
+  if [ -z "$Branch" ]; then Branch=master; fi
+  if [[ -n $RemoteRepo ]]; then
+    git fetch >/dev/null 2>&1
+    # disallow commits to upstream master
+    if [ "$RemoteBranch" == "master" ]; then
+      RemoteBranch="$USERNAME-$( date +'%Y%m%d-%H%M' )"
+      if [ $SkipPrompt -ne 1 ]; then
+        get_input RemoteBranch "Commits to upstream master are disallowed.  New $Title remote branch" --nc --default "$RemoteBranch"
+      fi
+      # configure for the new upstream branch
+      git config branch.$Branch.remote $RemoteRepo
+      git config branch.$Branch.merge refs/heads/$RemoteBranch
+      if [ $? -ne 0 ]; then err "Error setting $Title remote tracking branch to '$RemoteBranch'!"; fi
+      git config push.default simple
+    fi
+    Behind=$( git branch -v |grep ^* |grep behind |perl -pe 's/.*(\[|, )behind ([0-9]+)(]|,).*/\2/' ); if [ -z "$Behind" ]; then Behind=0; fi
+    if [ $Behind -gt 0 ]; then err "ERROR: $Title is behind master.  Please merge changes and retry."; else git push $RemoteRepo HEAD:$RemoteBranch >/dev/null 2>&1; fi
+    if [ $? -ne 0 ]; then err "Error pushing $Title changes to the upstream repository!"; fi
+  fi
+  popd >/dev/null 2>&1
+  return 0
+}
+
 # output the status (modified, added, deleted files list)
 #
 # optional:
@@ -1599,15 +1648,13 @@ function start_modify {
   cd $CONF || err
   if [ -f .scs_lock ]; then
     grep -qE "^$USERNAME\$" .scs_lock
+    if [ $? -ne 0 ]; then err "Another change is in progress, aborting."; fi
+    return 0
   else
     echo "$USERNAME" >.scs_lock
   fi
-  if [ $? -eq 0 ]; then
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
-    scslog "locked"
-  else
-    err "Another change is in progress, aborting."
-  fi
+  printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
+  scslog "locked"
   return 0
 }
 
@@ -1640,6 +1687,11 @@ function stop_modify {
     if [ -d $F ]; then
       pushd $F >/dev/null 2>&1
       git commit -a -m"$Message" >/dev/null 2>&1
+      if [[ $Push -eq 1 && $SkipPrompt -eq 0 ]]; then
+        git_push --title "Sub-module $F" --path "$CONF/$F" || err "Error pushing changes to upstream repository!"
+      elif [[ $Push -eq 1 ]]; then
+        git_push --title "Sub-module $F" --path "$CONF/$F" --no-prompt || err "Error pushing changes to upstream repository!"
+      fi
       popd >/dev/null 2>&1
       git add $F >/dev/null 2>&1
       git commit -m'commited submodules changes' $F >/dev/null 2>&1
@@ -1647,8 +1699,13 @@ function stop_modify {
   done; fi
   # check for modifications
   L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
-  # return if there are no modifications
+  # just unlock &&/|| push if there are not uncommitted changes
   if [[ $L -eq 0 ]]; then
+    if [[ $Push -eq 1 && $SkipPrompt -eq 0 ]]; then
+      git_push --path $CONF || err "Error pushing changes to upstream repository!"
+    elif [[ $Push -eq 1 ]]; then
+      git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
+    fi
     if [ -f .scs_lock ]; then
       rm -f .scs_lock
       printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
@@ -1664,6 +1721,11 @@ function stop_modify {
     if [ "$DF" != "y" ]; then return 0; fi
   fi
   git commit -a -m"$Message" >/dev/null 2>&1 || err "Error committing outstanding changes"
+  if [[ $Push -eq 1 && $SkipPrompt -eq 0 ]]; then
+    git_push --path $CONF || err "Error pushing changes to upstream repository!"
+  elif [[ $Push -eq 1 ]]; then
+    git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
+  fi
   if [ -f .scs_lock ]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
   printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
