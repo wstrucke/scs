@@ -315,8 +315,6 @@
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - renaming an application does not update all of the configuration files
-#     - 'wc -c' on darwin prepends space to the output; it's also causes a null when piped into cut
-#     - 'sed -e' on darwin helpfully adds a line break at the end of output without a line break
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -651,7 +649,7 @@ function get_input {
     test $NUL -eq 0 && printf -- '*'; printf -- "$P"
     # output the list of valid options if one was provided
     if ! [ -z "$OPT" ]; then
-      LEN=$( printf -- "$OPT" |wc -c )
+      LEN=$( printf -- "$OPT" |wc -c |awk '{print $1}' )
       if [ $LEN -gt $(( $WIDTH - 25 )) ]; then
         printf -- " ( .. long list .. )"
         tput smcup; clear; CL=1
@@ -2323,7 +2321,7 @@ function build_show {
   printf -- "Lineage: $( build_lineage $NAME )\n"
   test $BRIEF -eq 1 && return
   # look up the applications configured for this build
-  NUM=$( build_application_list "$1" |wc -l )
+  NUM=$( build_application_list "$1" |wc -l |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked application${S}."
   if [ $NUM -gt 0 ]; then build_application_list "$1" |perl -pe 's/^/   /'; fi
@@ -3082,7 +3080,7 @@ function environment_show {
   printf -- "Name: $NAME\nAlias: $ALIAS\nDescription: $DESC\n"
   test $BRIEF -eq 1 && return
   # also show installed locations
-  NUM=$( find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |wc -l )
+  NUM=$( find $CONF -name $NAME -type f |grep -vE '(env|template|value)' |wc -l |awk '{print $1}' )
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${NUM} linked location${S}."
   if [ $NUM -gt 0 ]; then
@@ -3305,7 +3303,7 @@ function file_edit {
     test "$Q" != "y" && err "Aborted!"
     # write the new patch file
     cat $TMP/$C.patch >$CONF/template/$ENV/$C
-    echo "Wrote $( wc -c $CONF/template/$ENV/$C |cut -d' ' -f1 ) bytes to $ENV/$C."
+    echo "Wrote $( wc -c $CONF/template/$ENV/$C |awk '{print $1}' ) bytes to $ENV/$C."
     # commit
     pushd $CONF >/dev/null 2>&1
     git add template/$ENV/$C >/dev/null 2>&1
@@ -3561,7 +3559,7 @@ function file_show {
 #
 function file_size {
   test -f "$1" || return
-  echo $(( $( du -k $1 |cut -f1 ) * 1024 ))
+  echo $( wc -c $1 |awk '{print $1}' )
 }
 
 function file_update {
@@ -3735,7 +3733,7 @@ function location_environment_constant_list {
 #  $1 location
 #
 function location_environment_list {
-  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type f |perl -pe 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |wc -l ) || NUM=0
+  test -d ${CONF}/$1 && NUM=$( find ${CONF}/$1/ -type f |perl -pe 's%'"${CONF}/$1"'/%%' |grep -vE '^(\.|template|network|$)' |wc -l |awk '{print $1}' ) || NUM=0
   if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo "There ${A} ${NUM} defined environment${S} at $1."
   test $NUM -eq 0 && return
@@ -4037,7 +4035,7 @@ function network_edit_routes {
 #
 function network_exists {
   test $# -eq 1 || return 1
-  if [[ $( printf -- "$1" |perl -pe 's/[^-]*//g' |wc -c) -ne 2 ]]; then return 1; fi
+  if [[ $( printf -- "$1" |perl -pe 's/[^-]*//g' |wc -c |awk '{print $1}' ) -ne 2 ]]; then return 1; fi
   # [FORMAT:network]
   grep -qE "^${1//-/,}," $CONF/network || return 1
 }
@@ -4170,7 +4168,7 @@ function network_ip_check {
   check_host_alive $1 && return 1
   for P in $IP_Check_Ports; do check_host_alive $1 $P 1 && return 1; done
   # icmp/ping
-  if [ $( ping -c4 -n -s8 -W4 -q $1 |grep -E '0 (packets )?received' |/usr/bin/wc -l |awk '{print $1}' ) -eq 0 ]; then return 1; fi
+  if [ $( ping -c4 -n -s8 -W4 -q $1 |grep -E '0 (packets )?received' |wc -l |awk '{print $1}' ) -eq 0 ]; then return 1; fi
   # optional /etc/hosts matching
   if ! [ -z "$2" ]; then
     grep -qE '^'$( echo $1 |perl -pe 's/\./\\./g' )'[ \t]' /etc/hosts
@@ -5923,11 +5921,11 @@ function system_convert {
 
       # verify no other systems overlay on this one
       for File in $List; do
-        Count=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l" )
+        Count=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'" )
         if [ $DryRun -eq 0 ]; then
           if [ $Count -gt 0 ]; then errlog "found $Count system overlay images on '$File': aborting"; exit 1; fi
         else
-          echo ssh $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l"
+          echo ssh $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'"
           echo "found $Count system overlay images on '$File': anything over 0 will normally cause an error"
         fi
       done
@@ -6762,7 +6760,7 @@ function system_provision_phase2 {
   sleep 15
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -6795,7 +6793,7 @@ function system_provision_phase2 {
   fi
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -6856,7 +6854,7 @@ function system_provision_phase2 {
   fi
 
   # wait for power off
-  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
   scslog "successfully stopped $NAME"
 
   #  - check for abort
@@ -7282,7 +7280,7 @@ function system_show {
   test $BRIEF -eq 1 && return
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
-    NUM=$( build_application_list "$BUILD" |wc -l )
+    NUM=$( build_application_list "$BUILD" |wc -l |awk '{print $1}' )
     if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
     echo -e "\nThere ${A} ${NUM} linked application${S}."
     if [ $NUM -gt 0 ]; then
@@ -7425,7 +7423,7 @@ function system_update {
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
       ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1 
-      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |/bin/grep -i running |/usr/bin/wc -l )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
+      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |/bin/grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
       #scslog "successfully stopped $NAME"
       sleep 15
       # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
