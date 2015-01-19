@@ -659,7 +659,7 @@ function get_input {
         printf -- "$OPT\n" |tr ',' '\n' |fold_list |perl -pe 's/^/ /'
         test $NUL -eq 0 && printf -- '*'; printf -- "$P"
       else
-        printf -- " (`printf -- "$OPT" |perl -pe 's/,/, /g'`"
+        printf -- " ($( printf -- "$OPT" |perl -pe 's/,/, /g' )"
         if [ $NUL -eq 1 ]; then printf -- ", null)"; else printf -- ")"; fi
       fi
     fi
@@ -720,7 +720,7 @@ function get_network {
 #
 function get_user {
   [ -n "$USERNAME" ] && return
-  if [ -n "$SUDO_USER" ]; then U=${SUDO_USER}; else U="`whoami`"; fi
+  if [ -n "$SUDO_USER" ]; then U=${SUDO_USER}; else U="$( whoami )"; fi
   test -z "$U" && err "A user name is required to make modifications."
   USERNAME="$U"
 }
@@ -1422,7 +1422,7 @@ function cancel_modify {
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
   # get change count
-  L=`git status -s |wc -l 2>/dev/null`
+  L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
   # validate the lock
   if [ -f .scs_lock ]; then
     grep -qE "^$USERNAME\$" .scs_lock
@@ -1478,7 +1478,7 @@ function commit_file {
       popd >/dev/null 2>&1
     fi
   done; fi
-  if [ `git status -s |wc -l` -ne 0 ]; then
+  if [ $( git status -s |wc -l 2>/dev/null |awk '{print $1}' ) -ne 0 ]; then
     git commit -m"committing change" >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
@@ -1537,7 +1537,7 @@ function git_status {
   local Exit=0 Status=0
   [ "$1" == "--exit" ] && Exit=1
   pushd $CONF >/dev/null 2>&1
-  local N=`git diff --name-status master |wc -l 2>/dev/null`
+  local N=$( git diff --name-status |wc -l 2>/dev/null |awk '{print $1}' )
   if ! [ -f .scs_lock ]; then
     printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     if [ $N -gt 0 ]; then git status; fi
@@ -1581,7 +1581,7 @@ function stop_modify {
   local SkipPrompt=0
   if [ "$1" == "--no-prompt" ]; then SkipPrompt=1; shift; fi
   # optional commit message
-  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at `date`"; fi
+  if [[ "$1" == "-m" && ! -z "$2" ]]; then MSG="${@:2}"; shift 2; else MSG="$USERNAME completed modifications at $( date )"; fi
   if [[ "$1" =~ ^-m ]]; then MSG=$( echo $@ |-perl -pe 's/^..//g' ); shift; fi
   # get the running user
   get_user
@@ -3290,7 +3290,7 @@ function file_edit {
     vim $TMP/$C
     wait
     # do nothing further if there were no changes made
-    if [ `md5sum $TMP/$C{.ORIG,} 2>/dev/null |cut -d' ' -f1 |uniq |wc -l` -eq 1 ]; then
+    if [ $( md5sum $TMP/$C{.ORIG,} 2>/dev/null |cut -d' ' -f1 |uniq |wc -l |awk '{print $1}' ) -eq 1 ]; then
       echo "No changes were made."; exit 0
     fi
     # generate a new patch file against the original template
@@ -3364,7 +3364,7 @@ function file_edit {
     done
     popd >/dev/null 2>&1
     pushd ${CONF} >/dev/null 2>&1
-    if [ `git status -s template/${C} |wc -l` -ne 0 ]; then
+    if [ $( git status -s template/${C} |wc -l |awk '{print $1}' ) -ne 0 ]; then
       git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
     fi
     popd >/dev/null 2>&1
@@ -3524,8 +3524,8 @@ function file_show {
     printf -- "Name: $NAME\nType: $TYPE\nRemove: $PTH\nDescription: $DESC"
   else
     printf -- "Name: $NAME\nType: $TYPE\nPath: $PTH\nPermissions: $( octal2text $OCTAL ) $OWNER $GROUP\nDescription: $DESC"
-    [ "$TYPE" == "file" ] && printf -- "\nSize: `file_size $CONF/template/$NAME` bytes"
-#    [ "$TYPE" == "binary" ] && printf -- "\nSize: `file_size $CONF/env/.../binary/$NAME` bytes"
+    [ "$TYPE" == "file" ] && printf -- "\nSize: $( file_size $CONF/template/$NAME ) bytes"
+#    [ "$TYPE" == "binary" ] && printf -- "\nSize: $( file_size $CONF/env/.../binary/$NAME ) bytes"
   fi
   printf -- '\n'
 
@@ -3561,7 +3561,7 @@ function file_show {
 #
 function file_size {
   test -f "$1" || return
-  echo $(( `du -k $1 |cut -f1` * 1024 ))
+  echo $(( $( du -k $1 |cut -f1 ) * 1024 ))
 }
 
 function file_update {
@@ -3595,11 +3595,11 @@ function file_update {
     # move file
     pushd ${CONF} >/dev/null 2>&1
     if [ "$TYPE" == "file" ]; then
-      for DIR in `find template/ -type f -name $C -exec dirname {} \\;`; do
+      for DIR in $( find template/ -type f -name $C -exec dirname {} \\; ); do
         git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
       done
     elif [ "$TYPE" == "binary" ]; then
-      for DIR in `find env/ -type f -name $C -exec dirname {} \\;`; do
+      for DIR in $( find env/ -type f -name $C -exec dirname {} \\; ); do
         git mv $DIR/$C $DIR/$NAME >/dev/null 2>&1
       done
     fi
@@ -3634,7 +3634,7 @@ function location_create {
   start_modify
   # get user input and validate
   get_input CODE "Location Code (three characters)"
-  test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
+  test $( printf -- "$CODE" |wc -c |awk '{print $1}' ) -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc
   get_input DESC "Description" --nc --null
   # validate unique name
@@ -3820,7 +3820,7 @@ function location_update {
   # [FORMAT:location]
   IFS="," read -r CODE NAME DESC <<< "$( grep -E "^$C," ${CONF}/location )"
   get_input CODE "Location Code (three characters)" --default "$CODE"
-  test `printf -- "$CODE" |wc -c` -eq 3 || err "Error - the location code must be exactly three characters."
+  test $( printf -- "$CODE" |wc -c |awk '{print $1}' ) -eq 3 || err "Error - the location code must be exactly three characters."
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:location]
@@ -3896,7 +3896,7 @@ function network_create {
     get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)?"
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
     # [FORMAT:network]
-    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
+    if [[ "$DEFAULT_BUILD" == "y" && $( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l |awk '{print $1}' ) -ne 0 ]]; then
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)?"
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
@@ -3916,7 +3916,7 @@ function network_create {
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   # [FORMAT:location/network]
-  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
+  if [[ "$DEFAULT_BUILD" == "y" && $( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l |awk '{print $1}' ) -gt 0 ]]; then
     # get the current default network (if any) and update it
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
@@ -4603,7 +4603,7 @@ function network_update {
   if [ "$BUILD" == "y" ]; then
     get_yn DEFAULT_BUILD "Should this be the *default* build network at the location (y/n)?" --default "$DEFAULT_BUILD"
     # when adding a new default build network make sure we prompt if another exists, since it will be replaced
-    if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -ne 0 ]]; then
+    if [[ "$DEFAULT_BUILD" == "y" && $( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l |awk '{print $1}' ) -ne 0 ]]; then
       get_yn RL "WARNING: Another default build network exists at this site. Are you sure you want to replace it (y/n)?"
       if [ "$RL" != "y" ]; then echo "...aborted!"; return; fi
     fi
@@ -4618,7 +4618,7 @@ function network_update {
   fi
   # make sure to remove any other default build network
   # [FORMAT:location/network]
-  if [[ "$DEFAULT_BUILD" == "y" && `grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l` -gt 0 ]]; then
+  if [[ "$DEFAULT_BUILD" == "y" && $( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," |wc -l |awk '{print $1}' ) -gt 0 ]]; then
     # get the current default network (if any) and update it
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
@@ -4680,7 +4680,7 @@ function parse_template {
   [[ $# -ge 3 && ! -z "$3" && "$3" == "1" ]] && local SHOWERROR=1 || local SHOWERROR=0
   [[ $# -ge 4 && ! -z "$4" && "$4" == "1" ]] && local VERBOSE=1 || local VERBOSE=0
   local RETVAL=0
-  while [ `grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1` -gt 0 ]; do
+  while [ $( grep -cE '{% (resource|constant|system)\.[^ ,]+ %}' $1 ) -gt 0 ]; do
     local NAME=$( grep -Em 1 '{% (resource|constant|system)\.[^ ,]+ %}' $1 |perl -pe 's/.*\{% (resource|constant|system)\.([^ ,]+) %\}.*/\1.\2/' )
     grep -qE "^$NAME " $2
     if [ $? -ne 0 ]; then
@@ -4937,7 +4937,7 @@ function hypervisor_add_network {
     printf -- "\n"
     get_input C "Network to Modify (loc-zone-alias)"
   else
-    test `printf -- "$2" |perl -pe 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    test $( printf -- "$2" |perl -pe 's/[^-]*//g' |wc -c |awk '{print $1}' ) -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
     C="$2"
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
@@ -5393,13 +5393,13 @@ function hypervisor_qemu_uuid {
   if [ $GENERATE -eq 1 ]; then
     # find the next available MAC
     MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
-    while [ `grep -ic $MAC $TEMP` -gt 0 ]; do
+    while [ $( grep -ic $MAC $TEMP ) -gt 0 ]; do
       MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
     done
     
     # find the next available UUID
     UUID=$( uuidgen )
-    while [ `grep -ic $UUID $TEMP` -gt 0 ]; do UUID=$( uuidgen ); done
+    while [ $( grep -ic $UUID $TEMP ) -gt 0 ]; do UUID=$( uuidgen ); done
     
     test $QUIET -eq 0 && echo
     echo "UUID       : $UUID"
@@ -5502,7 +5502,7 @@ function hypervisor_remove_network {
     printf -- "\n"
     get_input C "Network to Modify (loc-zone-alias)"
   else
-    test `printf -- "$2" |perl -pe 's/[^-]*//g' |wc -c` -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
+    test $( printf -- "$2" |perl -pe 's/[^-]*//g' |wc -c |awk '{print $1}' ) -eq 2 || err "Invalid format. Please ensure you are entering 'location-zone-alias'."
     C="$2"
   fi
   grep -qE "^${C//-/,}," ${CONF}/network || err "Unknown network"
@@ -5655,7 +5655,7 @@ function system_audit {
   # pull down the files to audit
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |perl -pe 's%^\./%%' ); do
-    mkdir -p $TMP/release/ACTUAL/`dirname $F`
+    mkdir -p $TMP/release/ACTUAL/$( dirname $F )
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
   ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
@@ -5683,14 +5683,14 @@ function system_audit {
         fi
       fi
 
-      if [[ $SkipCheck -eq 0 && `md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l` -gt 1 ]]; then
+      if [[ $SkipCheck -eq 0 && $( md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
         get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
         test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
         test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
       fi
-    elif [ `file_size $TMP/release/REFERENCE/$F` -eq 0 ]; then
+    elif [ $( file_size $TMP/release/REFERENCE/$F ) -eq 0 ]; then
       echo "Ignoring empty file $F"
     else
       echo "WARNING: Remote system is missing file: $F"
@@ -5737,7 +5737,7 @@ function system_check {
       # skip if path is null (implies an error occurred)
       if [ -z "$FPTH" ]; then printf -- "Error: '$FNAME' has no path (index $i). Critical error.\n" >&2; VALID=1; continue; fi
       # ensure the relative path (directory) exists
-      mkdir -p $TMP/release/`dirname $FPTH`
+      mkdir -p $TMP/release/$( dirname $FPTH )
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
@@ -6132,10 +6132,10 @@ function system_deploy {
   printf -- "Cleaning up...\n"
   rm -f $FILE
   if [ $Install -eq 0 ]; then
-    printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh\"\n\n"
+    printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh $System "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh"
+    ssh $System "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -6636,7 +6636,7 @@ _EOF
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   
   # [FORMAT:system]
-  sed -i '' -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','`date +'%s'`'/' ${CONF}/system
+  sed -i '' -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','$( date +'%s' )'/' ${CONF}/system
 
   commit_file system
   return 0
@@ -6818,7 +6818,7 @@ function system_provision_phase2 {
   scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/`basename $FILE` -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
   
   # !!FIXME!!
   #  * - ship over latest code release
@@ -6910,7 +6910,7 @@ function system_provision_phase2 {
 #
 function system_push_build_scripts {
   if [[ $# -lt 1 || $# -gt 2 ]]; then echo -e "Usage: install_build hostname|ip [path]\n"; return 1; fi
-  if [ "`whoami`" != "root" ]; then echo "You must be root"; return 2; fi
+  if [ "$( whoami )" != "root" ]; then echo "You must be root"; return 2; fi
   if ! [ -z "$2" ]; then
     test -d "$2" || return 3
     SRCDIR="$2"
@@ -7112,21 +7112,21 @@ function system_release {
   # create the temporary directory to store the release files
   mkdir -p $TMP/release $RELEASEDIR
   AUDITSCRIPT="$TMP/release/scs-audit.sh"
-  RELEASEFILE="$NAME-release-`date +'%Y%m%d-%H%M%S'`.tgz"
+  RELEASEFILE="$NAME-release-$( date +'%Y%m%d-%H%M%S' ).tgz"
   RELEASESCRIPT="$TMP/release/scs-install.sh"
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
 
   # create the audit script
-  printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on `date`\n#\n\n" >$AUDITSCRIPT
-  printf -- "# warn if not target host\ntest \"\`hostname\`\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
+  printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on $( date )\n#\n\n" >$AUDITSCRIPT
+  printf -- "# warn if not target host\ntest \"\$( hostname )\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
   printf -- "PASS=0\n" >>$AUDITSCRIPT
 
   # create the installation script
-  printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on `date`\n#\n\n" >$RELEASESCRIPT
-  printf -- "# safety first\ntest \"\`hostname\`\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
-  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on `date`\"\n\n" >>$RELEASESCRIPT
+  printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on $( date )\n#\n\n" >$RELEASESCRIPT
+  printf -- "# safety first\ntest \"\$( hostname )\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
+  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
   touch ${RELEASESCRIPT}.tail
 
   # create the stat file
@@ -7172,7 +7172,7 @@ function system_release {
       # skip if path is null (implies an error occurred)
       test -z "$FPTH" && continue
       # ensure the relative path (directory) exists
-      mkdir -p $TMP/release/`dirname $FPTH`
+      mkdir -p $TMP/release/$( dirname $FPTH )
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
@@ -7226,7 +7226,7 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\n#test -d /var/backups || mkdir -p /var/backups\n#tar czf /var/backups/\`hostname\`-scs-backup-\`date +%%y%%m%%d-%%H%%M\`.tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
+    printf -- "# create backup\n#test -d /var/backups || mkdir -p /var/backups\n#tar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
     [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
     printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
 
@@ -7296,7 +7296,7 @@ function system_show {
     fi
   fi
   # pull system resources
-  RSRC=( `system_resource_list "$NAME"` )
+  RSRC=( $( system_resource_list "$NAME" ) )
   # show assigned resources (by host, application + environment)
   if [ ${#RSRC[*]} -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
   echo -e "\nThere ${A} ${#RSRC[*]} linked resource${S}."
@@ -7459,7 +7459,7 @@ function system_update_push_hosts {
   test -z "$PUSH_HOSTS" && return
   local ENTRY kh=/etc/hosts
 
-  printf -- " $PUSH_HOSTS " |grep -q " `hostname` "
+  printf -- " $PUSH_HOSTS " |grep -q " $( hostname ) "
   if [ $? -ne 0 ]; then echo "This system is not authorized to update /etc/hosts" >&2; return 3; fi
 
   # hostname and IP should either both be unique, or both registered together
@@ -7785,7 +7785,7 @@ test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
-  test -d "`dirname $2`" && CONF="$2" && shift 2 || usage
+  test -d "$( dirname $2 )" && CONF="$2" && shift 2 || usage
 else
   if [[ -n $SCS_CONF ]]; then
     CONF=$SCS_CONF
@@ -7816,7 +7816,7 @@ case "$SUBJ" in
   help) help $@; exit 0;;
   lock) start_modify; exit 0;;
   log) git_log; exit 0;;
-  pdir) echo `dirname $0`; exit 0;;
+  pdir) echo $( dirname $0 ); exit 0;;
   status) git_status --exit;;
 esac
 
