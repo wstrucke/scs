@@ -1538,11 +1538,52 @@ function delete_file {
   popd >/dev/null 2>&1
 }
 
+# diff the configuration against the git repository (or upstream)
 #	diff [-b|--branch <name>] [-m|--master] [-u|--upstream]
-function diff_master {
-# !!TODO!! support new arguments
+#
+function git_diff {
+  local Branch='' Master=0 Upstream=0 LocalBranch RemoteRepo RemoteBranch
+
+  # process arguments
+  while [ $# -gt 0 ]; do case "$1" in
+    -b|--branch) Branch="$2"; shift;;
+    -m|--master) Master=1;;
+    -u|--upstream) Upstream=1;;
+  esac; shift; done
+
+  # sanity check
+  if [[ -n "$Branch" && $Master -eq 1 ]]; then err "Branch and master can not be specified together"; fi
+
+  # load remote settings
   pushd $CONF >/dev/null 2>&1
-  git diff master
+  LocalBranch=$( git branch |grep ^* |cut -d' ' -f2 )
+  if [ -z "$LocalBranch" ]; then LocalBranch=master; fi
+  RemoteRepo=$( git config -l |grep "branch.$LocalBranch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
+  RemoteBranch=$( git config -l |grep "branch.$LocalBranch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
+
+  # select branch
+  if [[ $Master -eq 0 && -z "$Branch" ]]; then
+    if [[ $Upstream -eq 1 && -n "$RemoteBranch" ]]; then
+      Branch="$RemoteRepo/$RemoteBranch"
+    else
+      Branch="$LocalBranch"
+    fi
+  else
+    if [[ $Master -eq 1 && $Upstream -eq 1 ]]; then
+      if [[ -n "$RemoteRepo" ]]; then
+        Branch="$RemoteRepo/master"
+      else
+        Branch="master"
+      fi
+    elif [ $Master -eq 1 ]; then
+      Branch="master"
+    elif [[ $Upstream -eq 1 && -n "$RemoteRepo" ]]; then
+      Branch="$RemoteRepo/$Branch"
+    fi
+  fi
+
+  # diff
+  git diff $Branch
   popd >/dev/null 2>&1
 }
 
@@ -7917,7 +7958,7 @@ case "$SUBJ" in
   cancel|unlock) cancel_modify $@; exit 0;;
   commands) scs_commands; exit 0;;
   commit) stop_modify $@; exit 0;;
-  diff) diff_master; exit 0;;
+  diff) git_diff $@; exit 0;;
   dir) echo ${CONF}; exit 0;;
   help) help $@; exit 0;;
   lock) start_modify; exit 0;;
