@@ -6904,7 +6904,7 @@ function system_provision_phase2 {
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status check_host_alive $DHCPIP )" -ne 0 ]; do sleep 5; check_abort; done
         while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1
+        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1
         scslog "successfully moved system to assigned build address"
       fi
     fi
@@ -7576,7 +7576,7 @@ function system_update {
       NETNAME=$( network_list --match $IP )
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
-      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1 
+      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1 
       #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
       #scslog "successfully stopped $NAME"
       sleep 15
