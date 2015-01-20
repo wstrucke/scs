@@ -973,12 +973,7 @@ function scslog {
 # shuf is not necessarily available
 #
 function shuf {
-  which shuf >/dev/null 2>&1
-  if [ $? -eq 0 ]; then
-    shuf
-  else
-    perl -MList::Util=shuffle -le'printf for shuffle <>'
-  fi
+  perl -MList::Util=shuffle -le'printf for shuffle <>'
 }
 
 # Test an IP address for validity:
@@ -6684,23 +6679,30 @@ function system_provision {
 
   #  - assign a temporary IP as needed
   if [[ "$NETNAME" != "$BUILDNET" || "$IP" == "dhcp" ]]; then
-    echo "attempting to assign a build address" >>$SCS_Background_Log
+    echo "attempting to assign a build address in network '$BUILDNET'" >>$SCS_Background_Log
 
     BUILDIP=""
     while [ -z "$BUILDIP" ]; do
+      echo "(loop) 0 check_abort" >>$SCS_Background_Log
       check_abort
-      BUILDIP=$( network_ip_list_available $BUILDNET --limit 1 )
-      if [ $( exit_status valid_ip $BUILDIP ) -ne 0 ]; then BUILDIP=""; continue; fi
+      echo "(loop) 0 network_ip_list_available \"$BUILDNET\" --limit 1" >>$SCS_Background_Log
+      BUILDIP=$( network_ip_list_available "$BUILDNET" --limit 1 )
+      echo "(loop) 1 ip=$BUILDIP" >>$SCS_Background_Log
+      if [ $( exit_status valid_ip "$BUILDIP" ) -ne 0 ]; then BUILDIP=""; continue; fi
+      echo "(loop) 2 ip=$BUILDIP" >>$SCS_Background_Log
       # verify the build IP is not in use
-      if [ $( exit_status network_ip_check $BUILDIP $NAME ) -ne 0 ]; then BUILDIP=""; continue; fi
+      if [ $( exit_status network_ip_check "$BUILDIP" "$NAME" ) -ne 0 ]; then BUILDIP=""; continue; fi
+      echo "(loop) 3 ip=$BUILDIP name=$NAME" >>$SCS_Background_Log
     done
 
     # assign/reserve IP
-    network_ip_assign $BUILDIP $NAME || err "Unable to assign IP address"
+    echo "calling network_ip_assign $BUILDIP $NAME" >>$SCS_Background_Log
+    network_ip_assign $BUILDIP $NAME || errlog "Unable to assign IP address"
 
     echo "assigned $BUILDIP to $NAME" >>$SCS_Background_Log
   else
     BUILDIP=$IP
+    echo "set buildip=$BUILDIP" >>$SCS_Background_Log
   fi
 
   #  - load the architecture and operating system for the build
@@ -6742,7 +6744,10 @@ system.dns $DNS
 system.arch $ARCH
 resource.sm-web $REPO_ADDR
 _EOF
+
+    echo "Using build server at '$REPO_ADDR' for system $NAME@$BUILDIP in $BUILDNET" >>$SCS_Background_Log
     parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
+
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
     if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -e 's/kernel-PAE/kernel/' -i ${TMP}/${NAME}.cfg; fi
     #  - send custom kickstart file over to the local sm-web repo/mirror
@@ -6996,10 +7001,10 @@ function system_provision_phase2 {
 
   if [ "$BASE_IMAGE" == "y" ]; then
     # flush hardware address, ssh host keys, and device mappings to anonymize system
-    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; /sbin/shutdown -P now" >/dev/null 2>&1
+    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt" >/dev/null 2>&1
   else
     # power down vm
-    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "/sbin/shutdown -P now" >/dev/null 2>&1
+    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "halt" >/dev/null 2>&1
   fi
 
   # wait for power off
