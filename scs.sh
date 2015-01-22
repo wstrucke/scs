@@ -476,6 +476,14 @@ function dec2ip {
   return 0
 }
 
+# Dereference a symlink or directory name
+#
+function deref {
+  test $# -eq 1 || return 1;
+  if [ -d "$1" ]; then pushd $1 >/dev/null 2>&1 && pwd && popd >/dev/null 2>&1; return 0; fi
+  local FILE="$1"; while [ -L "$FILE" ]; do FILE=$( readlink $FILE ); done; echo $FILE; return 0;
+}
+
 # error / exit function
 #
 function err {
@@ -7968,7 +7976,7 @@ case "$SUBJ" in
   help) help $@; exit 0;;
   lock) start_modify; exit 0;;
   log) git_log; exit 0;;
-  pdir) echo $( dirname $0 ); exit 0;;
+  pdir) dirname $( deref $0 ); exit 0;;
   status) git_status --exit $@;;
 esac
 
