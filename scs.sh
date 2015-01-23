@@ -147,6 +147,8 @@
 #                            subtract from all).
 #                            e.g.: 'none+test+production' or 'all-beta'
 #                            the '+' flag is not valid with all and '-' is not valid with none
+#                            an environment with a hyphen in the name will have it translated to an underscore
+#                              in the configuration for flags, i.e. "my-environment" is stored as "my_environment"
 #
 #   hv-environment
 #   --description: hypervisor/environment map
@@ -2145,10 +2147,10 @@ function application_file_list_unformatted {
         Include=1
       elif [ "${Limit:0:3}" == "all" ]; then
         Include=1
-        for E in $( echo $Limit |tr '-' ' ' ); do if [ "$EN" == "$E" ]; then Include=0; fi; done
+        for E in $( echo $Limit |tr '-' ' ' ); do if [ "${EN//-/_}" == "$E" ]; then Include=0; fi; done
       elif [ "${Limit:0:4}" == "none" ]; then
         Include=0
-        for E in $( echo $Limit |tr '+' ' ' ); do if [ "$EN" == "$E" ]; then Include=1; fi; done
+        for E in $( echo $Limit |tr '+' ' ' ); do if [ "${EN//-/_}" == "$E" ]; then Include=1; fi; done
       else
         err "Unhandled or invalid value in file::application map environment limit: '$Limit'"
       fi
