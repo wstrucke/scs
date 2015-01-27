@@ -7161,7 +7161,7 @@ function system_list {
 #   --sort-by-build-date        sort output by build date (descending) instead of alphabetically
 #
 function system_list_unformatted {
-  local Backing=0 Overlay=0 Build BuildList LIST N NL M SortByDate=0 System PassTests
+  local Backing=0 Overlay=0 Build BuildList LIST N NL M SortByDate=0 System PassTests Parent
 
   if [ $# -eq 0 ]; then
 
@@ -7186,7 +7186,12 @@ function system_list_unformatted {
 
       --build)
         NL=""
-        BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
+        Parent="$( build_parent $2 )"
+        if [[ -n $Parent ]]; then
+          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
+        else
+          BuildList="$2"
+        fi
         for N in $LIST; do
           # [FORMAT:system]
           grep -qE '^'$N','$2',.*$' ${CONF}/system
