@@ -348,6 +348,7 @@
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
 #     - use more environment variables and add help section detailing the options
 #     - make locking an optional behavior
+#     - application show should list systems linked to the application and the environment for the systems
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -6287,7 +6288,7 @@ function system_deploy {
     printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh $System "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
+    ssh $System "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -6980,7 +6981,7 @@ function system_provision_phase2 {
   scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve=system --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
   
   # !!FIXME!!
   #  * - ship over latest code release
