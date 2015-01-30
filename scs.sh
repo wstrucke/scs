@@ -349,6 +349,7 @@
 #     - use more environment variables and add help section detailing the options
 #     - make locking an optional behavior
 #     - application show should list systems linked to the application and the environment for the systems
+#     - need to be able to define number of processors for a build or system
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -2504,7 +2505,7 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  sed -e 's/^'$C',.*/'${NAME}','${ROLE}','"${DESC//,/}"','${OS}','${ARCH}','${DISK}','${RAM}','${PARENT}'/' -i ${CONF}/build
+  sed -e s$'\001''^'"$C"',.*'$'\001'"${NAME}"','"${ROLE}"','"${DESC//,/}"','"${OS}"','"${ARCH}"','"${DISK}"','"${RAM}"','"${PARENT}"$'\001' -i ${CONF}/build
   commit_file build
 }
 
