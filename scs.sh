@@ -1832,7 +1832,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    perl -i -pe "my \$str = \"$C,${VAL//&/\&}\"; s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -2521,7 +2521,7 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  perl -i -pe "my \$str = \"${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\"; s/^$C,.*/\$str/" ${CONF}/build
+  perl -i -pe "my \$str = '${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}'; s/^$C,.*/\$str/" ${CONF}/build
   commit_file build
 }
 
@@ -3032,7 +3032,7 @@ function environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    perl -i -pe "my \$str = \"$C,${VAL//&/\&}\"; s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
@@ -3872,7 +3872,7 @@ function location_environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    perl -i -pe "my \$str = \"$C,${VAL//&/\&}\"; s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
@@ -4311,7 +4311,7 @@ function network_ip_assign {
   else
     # assign
     # [FORMAT:net/network]
-    perl -i -pe "my \$str = \"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME\"; s/^$( ip2dec $IP ),.*/\$str/" ${CONF}/net/${FILENAME}
+    perl -i -pe "my \$str = '$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME'; s/^$( ip2dec $IP ),.*/\$str/" ${CONF}/net/${FILENAME}
     RET=0
   fi
 
@@ -4865,7 +4865,7 @@ function parse_template {
       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |perl -pe "s/^$NAME //" )
-    perl -i -pe "my \$str = \"${VAL//&/\&}\"; s/{% ${NAME} %}/\$str/" $1
+    perl -i -pe "my \$str = '${VAL//&/\&}'; s/{% ${NAME} %}/\$str/" $1
   done
   return $RETVAL
 }
