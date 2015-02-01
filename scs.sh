@@ -1832,7 +1832,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    perl -i -pe "s$'\001'^$C,.*$'\001'$C,${VAL//&/\&}$'\001'" ${CONF}/value/by-app/$APP
+    perl -i -pe "my \$str = quotemeta(\"$C,${VAL//&/\&}\"); s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -2521,7 +2521,7 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  perl -i -pe "s$'\001'^$C,.*$'\001'${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}$'\001'" ${CONF}/build
+  perl -i -pe "my \$str = quotemeta(\"${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\"); s/^$C,.*/\$str/" ${CONF}/build
   commit_file build
 }
 
@@ -3032,7 +3032,7 @@ function environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    perl -i -pe "s$'\001'^$C,.*$'\001'$C,${VAL//&/\&}$'\001'" ${CONF}/env/$ENV/constant
+    perl -i -pe "my \$str = quotemeta(\"$C,${VAL//&/\&}\"); s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
@@ -3872,7 +3872,7 @@ function location_environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    perl -i -pe "s$'\001'^$C,.*$'\001'$C,${VAL//&/\&}$'\001'" $CONF/env/$ENV/by-loc/$LOC
+    perl -i -pe "my \$str = quotemeta(\"$C,${VAL//&/\&}\"); s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
@@ -4311,7 +4311,7 @@ function network_ip_assign {
   else
     # assign
     # [FORMAT:net/network]
-    perl -i -pe "s$'\001'^$( ip2dec $IP ),.*$'\001'$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME$'\001'" ${CONF}/net/${FILENAME}
+    perl -i -pe "my \$str = quotemeta(\"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME\"); s/^$( ip2dec $IP ),.*/\$str/" ${CONF}/net/${FILENAME}
     RET=0
   fi
 
@@ -4857,7 +4857,7 @@ function parse_template {
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
       if [ $VERBOSE -eq 1 ]; then
         printf -- "  Missing Variable: '$NAME'\n" >&2
-        perl -i -pe "s$'\001'{% ${NAME} %}$'\001'$'\001'" $1
+        perl -i -pe "s/{% ${NAME} %}//" $1
         RETVAL=1
         continue
       else
@@ -4865,7 +4865,7 @@ function parse_template {
       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |perl -pe "s/^$NAME //" )
-    perl -i -pe "s$'\001'{% ${NAME} %}$'\001'${VAL//&/\&}$'\001'" $1
+    perl -i -pe "my \$str = quotemeta(\"${VAL//&/\&}\"); s/{% ${NAME} %}/\$str/" $1
   done
   return $RETVAL
 }
@@ -6416,6 +6416,8 @@ function system_distribute {
 
   if ! [ -z "$HVList" ]; then hypervisor_exists $HVList || err "Invalid hypervisor"; fi
 
+  if ! [[ -d $TMPLarge ]]; then mkdir $TMPLarge >/dev/null 2>&1 || err "Unable to create temporary folder"; fi
+
   # get the network by the system IP
   if [ "$IP" != "dhcp" ]; then
     Network=$( network_list --match $IP )
@@ -7921,7 +7923,7 @@ OSLIST="centos4,centos5,centos6"
 PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
-RELEASEDIR=/bkup1/scs-release
+RELEASEDIR=/bkup1/scs-release             ; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
@@ -7939,7 +7941,7 @@ SCS_Version="1.0.0"
 TMP=/tmp/scs.$$
 #
 # path to a large local folder for temporary file transfers
-TMPLarge=/bkup1
+TMPLarge=/bkup1                           ; test -d $TMPLarge || TMPLarge=~/scs-large-tmp
 
 
 #Section: MAIN
