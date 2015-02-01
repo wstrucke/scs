@@ -3496,7 +3496,7 @@ function file_edit {
     echo "Validating template instances..."
     NEWPATCHES=(); NEWENVIRON=()
     pushd $CONF/template >/dev/null 2>&1
-    for E in $( find . -mindepth 2 -type f -name $C |xargs dirname |perl -pe 's/^\.\///' ); do
+    for E in $( find . -mindepth 2 -type f -name $C -print0 |xargs -0 -n1 dirname |perl -pe 's/^\.\///' ); do
       echo -n "${E}... "
       cat /tmp/app-config.$$ >/tmp/app-config.$$.1
       patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
