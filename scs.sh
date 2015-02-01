@@ -1556,7 +1556,7 @@ function delete_file {
         popd >/dev/null 2>&1
       fi
     done; fi
-    git commit -m'removing file $1' >/dev/null 2>&1
+    #git commit -m'removing file $1' >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
 }
@@ -3400,7 +3400,7 @@ function file_create {
     test -d template || mkdir template >/dev/null 2>&1
     touch template/${NAME}
     git add template/${NAME} >/dev/null 2>&1
-    git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
+    #git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
     popd >/dev/null 2>&1
   elif [ "$TYPE" == "binary" ]; then
     printf -- "\nPlease copy the binary file to: $CONF/env/<environment>/binary/$NAME\n"
@@ -3423,7 +3423,7 @@ function file_delete {
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
-    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
+    #git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
     find env/ -type f -name $C -exec rm -f {} \; >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
@@ -3533,11 +3533,11 @@ function file_edit {
       cat ${NEWPATCHES[i]} >${NEWENVIRON[i]}/$C
     done
     popd >/dev/null 2>&1
-    pushd ${CONF} >/dev/null 2>&1
-    if [ $( git status -s template/${C} |wc -l |awk '{print $1}' ) -ne 0 ]; then
-      git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
-    fi
-    popd >/dev/null 2>&1
+    #pushd ${CONF} >/dev/null 2>&1
+    #if [ $( git status -s template/${C} |wc -l |awk '{print $1}' ) -ne 0 ]; then
+    #  git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
+    #fi
+    #popd >/dev/null 2>&1
   fi
 }
 function file_edit_help {
@@ -3784,7 +3784,7 @@ function file_update {
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm {} \; >/dev/null 2>&1
-    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
+    #git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
   commit_file file file-map
@@ -3844,7 +3844,7 @@ function location_environment_assign {
   pushd $CONF >/dev/null 2>&1
   touch ${LOC}/$ENV
   git add ${LOC}/$ENV >/dev/null 2>&1
-  git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
+  #git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
 
@@ -3922,7 +3922,7 @@ function location_environment_unassign {
   # unassign the environment
   pushd $CONF >/dev/null 2>&1
   test -f ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
-  git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
+  #git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
 
