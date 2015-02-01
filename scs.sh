@@ -638,7 +638,7 @@ function generic_delete {
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return 1; fi
-  perl -ni -e "/^$C,/" ${CONF}/$1
+  perl -i -ne "print unless /^$C,/" ${CONF}/$1
   commit_file $1
   return 0
 }
@@ -1832,7 +1832,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    perl -i -pe "s$'\001''^'$C',.*'$'\001'$C','${VAL//&/\&}$'\001'" ${CONF}/value/by-app/$APP
+    perl -i -pe "s$'\001'^$C,.*$'\001'$C,${VAL//&/\&}$'\001'" ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -1849,7 +1849,7 @@ function application_constant_undefine {
   generic_choose constant "$1" C
   test -f ${CONF}/value/by-app/$APP || return 0
   start_modify
-  perl -i -pe "print unless /^$C,.*/" ${CONF}/value/by-app/$APP
+  perl -i -ne "print unless /^$C,.*/" ${CONF}/value/by-app/$APP
   commit_file ${CONF}/value/by-app/$APP
 }
 
@@ -1896,7 +1896,7 @@ function application_delete {
   generic_delete application $APP || return
   # delete from file-map as well
   # [FORMAT:file-map]
-  perl -i -pe "print unless /^[^,]*,$APP,.*\$/" $CONF/file-map
+  perl -i -ne "print unless /^[^,]*,$APP,.*\$/" $CONF/file-map
   # [FORMAT:resource]
   for C in $( grep -E '^([^,]*,){2}application,([^,:]*:){2}'$APP',.*' resource |awk 'BEGIN{FS=","}{print $2}' ); do
     # [FORMAT:resource]
@@ -4793,13 +4793,13 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    perl -i -pe "s%^(${LOC},${ZP},${AP},.*),y,y(,[^,]*){2}$%\1,y,n\2%" ${CONF}/network
+    perl -i -pe "s%^(${LOC},${ZP},${AP},.*),y,y(,[^,]*){2}\$%\1,y,n\2%" ${CONF}/network
     # [FORMAT:location/network]
     perl -i -pe 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
-  perl -i -pe "s%^${C//-/,},.*%${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC}${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}%" ${CONF}/network
+  perl -i -pe "s%^${C//-/,},.*%${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}%" ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
@@ -5164,7 +5164,7 @@ function hypervisor_delete {
   # [FORMAT:hv-environment]
   perl -i -ne "print unless /^[^,]*,$1\$/" $CONF/hv-environment
   # [FORMAT:hv-network]
-  perl -i ne "print unless /^[^,]*,$1,/" $CONF/hv-network
+  perl -i -ne "print unless /^[^,]*,$1,/" $CONF/hv-network
   commit_file hv-environment hv-network
 }
 
