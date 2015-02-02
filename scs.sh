@@ -216,7 +216,7 @@
 #   ----vlan            network vlan tag/number (numeric)
 #   ----description     description of the network
 #   ----repo_address    ip address or hostname of the repository/mirror for installing an OS or related packages for the network
-#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in 
+#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in
 #                         (no trailing slash), e.g. /var/web/building/scs
 #   ----repo_path_url   absolute path from the client web browser to the repo_fs_path, no leading or trailing slash, e.g. 'building/scs'
 #   ----build           'y' or 'n', yes if this network has DHCP with PXE to boot into a network install image
@@ -377,12 +377,12 @@
 #
 
 #Section: UTILITY
- #     # ####### ### #       ### ####### #     # 
- #     #    #     #  #        #     #     #   #  
- #     #    #     #  #        #     #      # #   
- #     #    #     #  #        #     #       #    
- #     #    #     #  #        #     #       #    
- #     #    #     #  #        #     #       #    
+ #     # ####### ### #       ### ####### #     #
+ #     #    #     #  #        #     #     #   #
+ #     #    #     #  #        #     #      # #
+ #     #    #     #  #        #     #       #
+ #     #    #     #  #        #     #       #
+ #     #    #     #  #        #     #       #
   #####     #    ### ####### ###    #       #
 
 # convert subnet mask bits into a network mask
@@ -613,7 +613,7 @@ function generic_choose {
     eval $1_list \"$4\"
     printf -- "\n"
     get_input I "Please specify $AN $1"
-    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
+    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1"
     printf -- "\n"
     eval $3="$I"
     return 1
@@ -1057,13 +1057,13 @@ function valid_mask() {
 }
 
 #Section: HELP
- #     # ####### #       ######  
- #     # #       #       #     # 
- #     # #       #       #     # 
- ####### #####   #       ######  
- #     # #       #       #       
- #     # #       #       #       
- #     # ####### ####### # 
+ #     # ####### #       ######
+ #     # #       #       #     #
+ #     # #       #       #     #
+ ####### #####   #       ######
+ #     # #       #       #
+ #     # #       #       #
+ #     # ####### ####### #
 
 # help wrapper
 #
@@ -1442,13 +1442,13 @@ _EOF
 
 
 #Section GIT/VCS
-  #####  ### #######       # #     #  #####   #####  
- #     #  #     #         #  #     # #     # #     # 
- #        #     #        #   #     # #       #       
- #  ####  #     #       #    #     # #        #####  
- #     #  #     #      #      #   #  #             # 
- #     #  #     #     #        # #   #     # #     # 
-  #####  ###    #    #          #     #####   ##### 
+  #####  ### #######       # #     #  #####   #####
+ #     #  #     #         #  #     # #     # #     #
+ #        #     #        #   #     # #       #
+ #  ####  #     #       #    #     # #        #####
+ #     #  #     #      #      #   #  #             #
+ #     #  #     #     #        # #   #     # #     #
+  #####  ###    #    #          #     #####   #####
 
 # cancel changes and switch back to master
 #
@@ -1798,12 +1798,12 @@ function stop_modify {
 
 
 #Section: APPLICATION
-    #    ######  ######  #       ###  #####     #    ####### ### ####### #     # 
-   # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    # 
-  #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   # 
- #     # ######  ######  #        #  #       #     #    #     #  #     # #  #  # 
- ####### #       #       #        #  #       #######    #     #  #     # #   # # 
- #     # #       #       #        #  #     # #     #    #     #  #     # #    ## 
+    #    ######  ######  #       ###  #####     #    ####### ### ####### #     #
+   # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    #
+  #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   #
+ #     # ######  ######  #        #  #       #     #    #     #  #     # #  #  #
+ ####### #       #       #        #  #       #######    #     #  #     # #   # #
+ #     # #       #       #        #  #     # #     #    #     #  #     # #    ##
  #     # #       #       ####### ###  #####  #     #    #    ### ####### #     #
 
 # manage global application constants
@@ -2261,13 +2261,13 @@ function application_update {
 
 
 #Section: BUILD
- ######  #     # ### #       ######  
- #     # #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- ######  #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- ######   #####  ### ####### ######  
+ ######  #     # ### #       ######
+ #     # #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ ######  #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ ######   #####  ### ####### ######
 
 # return all applications linked to a build
 #
@@ -2437,7 +2437,7 @@ function build_list {
 function build_list_format_tree {
   local LINE
   local IFS=$'\n'
-  for LINE in $( build_list_unformatted $@ ); do 
+  for LINE in $( build_list_unformatted $@ ); do
     IFS=',' read -r B D <<< "$LINE"
     printf -- "$( build_lineage_unformatted $B )\t$D\n"
   done |LC_ALL=C sort |perl -pe 's/([^,]*,)/"    \\" . ("-" x (length($1)-4)) . "> "/gei' |perl -pe 's/(\s+\\-+>\s+\\)/" " x length($1) . "\\"/gei' |column -s$'\t' -t
@@ -2527,12 +2527,12 @@ function build_update {
 
 
 #Section: CONSTANT
-  #####  ####### #     #  #####  #######    #    #     # ####### 
- #     # #     # ##    # #     #    #      # #   ##    #    #    
- #       #     # # #   # #          #     #   #  # #   #    #    
- #       #     # #  #  #  #####     #    #     # #  #  #    #    
- #       #     # #   # #       #    #    ####### #   # #    #    
- #     # #     # #    ## #     #    #    #     # #    ##    #    
+  #####  ####### #     #  #####  #######    #    #     # #######
+ #     # #     # ##    # #     #    #      # #   ##    #    #
+ #       #     # # #   # #          #     #   #  # #   #    #
+ #       #     # #  #  #  #####     #    #     # #  #  #    #
+ #       #     # #   # #       #    #    ####### #   # #    #
+ #     # #     # #    ## #     #    #    #     # #    ##    #
   #####  ####### #     #  #####     #    #     # #     #    #
 
 function constant_create {
@@ -2825,12 +2825,12 @@ function constant_update {
 
 
 #Section: ENVIRONMENT
- ####### #     # #     # ### ######  ####### #     # #     # ####### #     # ####### 
- #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #    
- #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #    
- #####   #  #  # #     #  #  ######  #     # #  #  # #  #  # #####   #  #  #    #    
- #       #   # #  #   #   #  #   #   #     # #   # # #     # #       #   # #    #    
- #       #    ##   # #    #  #    #  #     # #    ## #     # #       #    ##    #    
+ ####### #     # #     # ### ######  ####### #     # #     # ####### #     # #######
+ #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #
+ #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #
+ #####   #  #  # #     #  #  ######  #     # #  #  # #  #  # #####   #  #  #    #
+ #       #   # #  #   #   #  #   #   #     # #   # # #     # #       #   # #    #
+ #       #    ##   # #    #  #    #  #     # #    ## #     # #       #    ##    #
  ####### #     #    #    ### #     # ####### #     # #     # ####### #     #    #
 
 # manipulate applications at a specific environment at a specific location
@@ -3289,13 +3289,13 @@ function environment_update {
 
 
 #Section: FILE
- ####### ### #       ####### 
- #        #  #       #       
- #        #  #       #       
- #####    #  #       #####   
- #        #  #       #       
- #        #  #       #       
- #       ### ####### ####### 
+ ####### ### #       #######
+ #        #  #       #
+ #        #  #       #
+ #####    #  #       #####
+ #        #  #       #
+ #        #  #       #
+ #       ### ####### #######
 
 # output a (text) file contents to stdout
 #
@@ -3471,7 +3471,7 @@ function file_edit {
     echo -e "Please confirm the change to the patch:\n"
     diff -c $CONF/template/$ENV/$C $TMP/$C.patch
     echo -e "\n\n"
-    get_yn Q "Look OK? (y/n)" 
+    get_yn Q "Look OK? (y/n)"
     test "$Q" != "y" && err "Aborted!"
     # write the new patch file
     cat $TMP/$C.patch >$CONF/template/$ENV/$C
@@ -3717,7 +3717,7 @@ function file_show {
       fi
     done
   fi
-  
+
   printf -- 'Linked Applications:\n'
   if [ "$( grep -c "^$1," ${CONF}/file-map )" -eq 0 ]; then
     printf -- '  None\n'
@@ -3792,12 +3792,12 @@ function file_update {
 
 
 #Section: LOCATION
- #       #######  #####     #    ####### ### ####### #     # 
- #       #     # #     #   # #      #     #  #     # ##    # 
- #       #     # #        #   #     #     #  #     # # #   # 
- #       #     # #       #     #    #     #  #     # #  #  # 
- #       #     # #       #######    #     #  #     # #   # # 
- #       #     # #     # #     #    #     #  #     # #    ## 
+ #       #######  #####     #    ####### ### ####### #     #
+ #       #     # #     #   # #      #     #  #     # ##    #
+ #       #     # #        #   #     #     #  #     # # #   #
+ #       #     # #       #     #    #     #  #     # #  #  #
+ #       #     # #       #######    #     #  #     # #   # #
+ #       #     # #     # #     #    #     #  #     # #    ##
  ####### #######  #####  #     #    #    ### ####### #     #
 
 function location_create {
@@ -3857,7 +3857,7 @@ function location_environment_constant {
   case "$C" in
     --define) location_environment_constant_define "$LOC" "$ENV" $@;;
     --undefine) location_environment_constant_undefine "$LOC" "$ENV" $@;;
-    *) location_environment_constant_list "$LOC" "$ENV";; 
+    *) location_environment_constant_list "$LOC" "$ENV";;
   esac
 }
 
@@ -4007,12 +4007,12 @@ function location_update {
 
 
 #Section: NETWORK
- #     # ####### ####### #     # ####### ######  #    # 
- ##    # #          #    #  #  # #     # #     # #   #  
- # #   # #          #    #  #  # #     # #     # #  #   
- #  #  # #####      #    #  #  # #     # ######  ###    
- #   # # #          #    #  #  # #     # #   #   #  #   
- #    ## #          #    #  #  # #     # #    #  #   #  
+ #     # ####### ####### #     # ####### ######  #    #
+ ##    # #          #    #  #  # #     # #     # #   #
+ # #   # #          #    #  #  # #     # #     # #  #
+ #  #  # #####      #    #  #  # #     # ######  ###
+ #   # # #          #    #  #  # #     # #   #   #  #
+ #    ## #          #    #  #  # #     # #    #  #   #
  #     # #######    #     ## ##  ####### #     # #    #
 
 # network functions
@@ -4820,12 +4820,12 @@ function network_update {
 
 
 #Section: TEMPLATE
- ####### ####### #     # ######  #          #    ####### ####### 
-    #    #       ##   ## #     # #         # #      #    #       
-    #    #       # # # # #     # #        #   #     #    #       
-    #    #####   #  #  # ######  #       #     #    #    #####   
-    #    #       #     # #       #       #######    #    #       
-    #    #       #     # #       #       #     #    #    #       
+ ####### ####### #     # ######  #          #    ####### #######
+    #    #       ##   ## #     # #         # #      #    #
+    #    #       # # # # #     # #        #   #     #    #
+    #    #####   #  #  # ######  #       #     #    #    #####
+    #    #       #     # #       #       #######    #    #
+    #    #       #     # #       #       #     #    #    #
     #    ####### #     # #       ####### #     #    #    #######
 
 # locate template variables and replace with actual data
@@ -4872,12 +4872,12 @@ function parse_template {
 
 
 #Section: RESOURCE
- ######  #######  #####  ####### #     # ######   #####  ####### 
- #     # #       #     # #     # #     # #     # #     # #       
- #     # #       #       #     # #     # #     # #       #       
- ######  #####    #####  #     # #     # ######  #       #####   
- #   #   #             # #     # #     # #   #   #       #       
- #    #  #       #     # #     # #     # #    #  #     # #       
+ ######  #######  #####  ####### #     # ######   #####  #######
+ #     # #       #     # #     # #     # #     # #     # #
+ #     # #       #       #     # #     # #     # #       #
+ ######  #####    #####  #     # #     # ######  #       #####
+ #   #   #             # #     # #     # #   #   #       #
+ #    #  #       #     # #     # #     # #    #  #     # #
  #     # #######  #####  #######  #####  #     #  #####  #######
 
 # manage or list resource assignments
@@ -4898,7 +4898,7 @@ function resource_byval {
 #
 # requires:
 #   $1  resource
-# 
+#
 # optional:
 #   $2  system
 #
@@ -4920,7 +4920,7 @@ function resource_byval_assign {
 #
 # requires:
 #   $1  resource
-# 
+#
 function resource_byval_unassign {
   start_modify
   # input validation
@@ -5047,7 +5047,7 @@ function resource_list_unformatted {
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
   # [FORMAT:resource]
-  grep -qE "^[^,]*,$1," ${CONF}/resource || err "Unknown resource" 
+  grep -qE "^[^,]*,$1," ${CONF}/resource || err "Unknown resource"
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$1," ${CONF}/resource )"
   printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO\n"
@@ -5482,7 +5482,7 @@ function hypervisor_poll {
     b) M="/ 1024 / 1024";;
     *) err "Unknown size qualifer in '$N'";;
   esac
-  FREEDISK=$( echo "${N%?} $M" |bc |perl -pe 's/\..*//' ) 
+  FREEDISK=$( echo "${N%?} $M" |bc |perl -pe 's/\..*//' )
   DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |perl -pe 's/\..*//' )
   # optionally only return disk space
   if [ "$2" == "--disk" ]; then
@@ -5515,7 +5515,7 @@ function hypervisor_qemu_uuid {
   local GENERATE=1
   local QUIET=0
   local DUPES=0
-  
+
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
     '-u') GENERATE=0;;
@@ -5523,7 +5523,7 @@ function hypervisor_qemu_uuid {
     '-q') VALIDATE=0; QUIET=1;;
     *) usage;;
   esac; shift; done
-  
+
   # validate all HVs are online and accessible
   for H in $ALL_HV; do
     if [ $VERBOSE -eq 1 ]; then echo -n "Verifying hypervisor is online... " >&2; fi
@@ -5534,12 +5534,12 @@ function hypervisor_qemu_uuid {
       HVS="$( printf -- "$HVS $H" |perl -pe 's/^ //' )"
     fi
   done
-  
+
   test -z "$HVS" && exit 1
-  
+
   # enumerate all addresses currently in use
   for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |perl -pe 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
-  
+
   if [ $VALIDATE -eq 1 ]; then
     # MAC
     for M in $( grep mac $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
@@ -5549,7 +5549,7 @@ function hypervisor_qemu_uuid {
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
-    
+
     # UUID
     for U in $( grep uuid $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate UUID '$U' found!"; DUPES=1
@@ -5559,23 +5559,23 @@ function hypervisor_qemu_uuid {
       done
     done
   fi
-  
+
   if [ $GENERATE -eq 1 ]; then
     # find the next available MAC
     MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
     while [ $( grep -ic $MAC $TEMP ) -gt 0 ]; do
       MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
     done
-    
+
     # find the next available UUID
     UUID=$( uuidgen )
     while [ $( grep -ic $UUID $TEMP ) -gt 0 ]; do UUID=$( uuidgen ); done
-    
+
     test $QUIET -eq 0 && echo
     echo "UUID       : $UUID"
     echo "MAC Address: $MAC"
   fi
-  
+
   if [[ $VALIDATE -eq 1 && $DUPES -eq 1 ]]; then
     exit 1
   elif [ $VALIDATE -eq 1 ]; then
@@ -5766,12 +5766,12 @@ function hypervisor_update {
 
 
 #Section: SYSTEM
-  #####  #     #  #####  ####### ####### #     # 
- #     #  #   #  #     #    #    #       ##   ## 
- #         # #   #          #    #       # # # # 
-  #####     #     #####     #    #####   #  #  # 
-       #    #          #    #    #       #     # 
- #     #    #    #     #    #    #       #     # 
+  #####  #     #  #####  ####### ####### #     #
+ #     #  #   #  #     #    #    #       ##   ##
+ #         # #   #          #    #       # # # #
+  #####     #     #####     #    #####   #  #  #
+       #    #          #    #    #       #     #
+ #     #    #    #     #    #    #       #     #
   #####     #     #####     #    ####### #     #
 
 # system functions
@@ -6023,7 +6023,7 @@ function system_convert {
 
   # get current type
   curType=$( system_type $NAME )
-  
+
   # get the network by the system IP
   if [ -z "$NETNAME" ]; then
     NETNAME=$( network_list --match $IP ); if [ -z "$NETNAME" ]; then err "Unable to identify a registered network for the system"; fi
@@ -6036,12 +6036,12 @@ function system_convert {
 
   # confirm operation (unless explicitly told not to)
   if [ $Confirm -ne 0 ]; then get_yn RL "Are you sure you want to convert $NAME from $curType to $newType (y/n)?" || return 0; fi
-  
+
   if [ $DryRun -eq 0 ]; then start_modify; else echo "Dry Run - No changes will be made"; fi
 
   # locate system
   Hypervisor=$( hypervisor_locate_system $NAME )
-  
+
   if [[ -z "$Hypervisor" && $Force -eq 1 ]]; then
     Hypervisor=$( hypervisor_locate_system $NAME --search-as-single )         ; if [ -z "$Hypervisor" ]; then err "Unable to locate hypervisor"; exit 1; fi
     HypervisorAll=$( hypervisor_locate_system $NAME --all --search-as-single ); if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; exit 1; fi
@@ -6144,7 +6144,7 @@ function system_convert {
       else
         BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
       fi
-  
+
       #  - get the network interfaces on the hypervisor
       # [FORMAT:hv-network]
       HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |perl -pe 's/^[^,]*,[^,]*,//' )
@@ -6158,17 +6158,17 @@ function system_convert {
       # [FORMAT:build]
       IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |perl -pe 's/^[^,]*,[^,]*,[^,]*,//' )"
       test -z "$OS" && err "Error loading build"
-    
+
       # set disk/ram
       if [ -z "$DISK" ]; then DISK=$RDISK; fi
       if [ -z "$RAM" ]; then RAM=$RRAM; fi
-    
+
       #  - get disk size and memory
       test -z "$DISK" && DISK=$DEF_HDD
       test -z "$RAM" && RAM=$DEF_MEM
-    
+
       scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
-    
+
       #  - get globally unique mac address and uuid for the new server
       read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |perl -pe 's/^[^:]*: //' |tr '\n' ' ' )"
 
@@ -6603,7 +6603,7 @@ OPTIONS
 
 		--dry-run    : Do not make any actual changes, just show what would be done.
 
-		--force      : Force execution even when some validation checks fail. 
+		--force      : Force execution even when some validation checks fail.
 
 		--network    : Requires the network name; required in order to convert to overlay or single.
 
@@ -6797,7 +6797,7 @@ function system_provision {
 
   # check redistribute
   if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
-  
+
   if [ "$IP" != "dhcp" ]; then
     # verify the system's IP is not in use
     network_ip_check $IP $NAME || err "System is alive; will not redeploy."
@@ -6822,7 +6822,7 @@ function system_provision {
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
   scslog "build network: $BUILDNET"
-  
+
   if [ -z "$OVERLAY" ]; then
     # this is a single or backing system build (not overlay)
 
@@ -6834,19 +6834,19 @@ function system_provision {
     valid_ip $DNS || err "Build network does not have a defined DNS server"
     valid_mask $NETMASK || err "Build network does not have a valid network mask"
     if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
-  
+
     if [ -z "$Hypervisor" ]; then
       scslog "locating hypervisor"
       #  - locate available HVs
       LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-    
+
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
       Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |perl -pe 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
     scslog "selected $Hypervisor"
-  
+
   else
 
     # this is an overlay build
@@ -6860,19 +6860,19 @@ function system_provision {
 
     if [ -z "$Hypervisor" ]; then
       # list hypervisors capable of hosting this system
-      # -- if none, build it ? 
+      # -- if none, build it ?
       LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY --enabled | tr '\n' ' ' )
-  
+
       if [ -z "$LIST" ]; then
         # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
         #   does not exist than just ignore and continue since the entire chain can be built later
         LIST=$( hypervisor_list --backing $OVERLAY --enabled | tr '\n' ' ' )
         test ! -z "$LIST" && err "The selected backing image '$OVERLAY' is built and deployed to set of hypervisors that does not intersect with those otherwise capable of building this server.  Please copy the overlay or select a different backing image."
-  
+
         LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
         test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
       fi
-    
+
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
       Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |perl -pe 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
@@ -6970,7 +6970,7 @@ resource.sm-web $REPO_ADDR
 _EOF
 
     echo "Using build server at '$REPO_ADDR' for system $NAME@$BUILDIP in $BUILDNET" >>$SCS_Background_Log
-    parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
+    parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const
 
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
     if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then perl -i -pe "s/kernel-PAE/kernel/" ${TMP}/${NAME}.cfg; fi
@@ -7010,7 +7010,7 @@ _EOF
   # update last build date
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
-  
+
   # [FORMAT:system]
   perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},$( date +'%s' )/" ${CONF}/system
 
@@ -7061,7 +7061,7 @@ function system_provision_phase2 {
 
   if ! [ -z "$OVERLAY" ]; then
     # this is an overlay system
- 
+
     #  - lookup network details for the build network (used in the kickstart configuration)
     #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
     # [FORMAT:network]
@@ -7109,7 +7109,7 @@ function system_provision_phase2 {
       DHCPIP=""
       scslog "attempting to trace DHCP IP"
       echo "ssh $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |tr '\\n' ' ' |perl -pe 's/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
- 
+
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
         check_abort
@@ -7119,7 +7119,7 @@ function system_provision_phase2 {
           errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
         fi
       done
-      
+
       if ! [ -z "$DHCPIP" ]; then
         purge_known_hosts --ip $DHCPIP
         DHCPNETNAME=$( network_ip_locate $BUILDIP )
@@ -7195,14 +7195,14 @@ function system_provision_phase2 {
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
   ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
-  
+
   # !!FIXME!!
   #  * - ship over latest code release
   #  - install code
 
   #  - check for abort
   check_abort
-  
+
   # update system ip as needed
   if [ "$BUILDIP" != "$IP" ]; then
     scslog "Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
@@ -7249,13 +7249,13 @@ function system_provision_phase2 {
     #  - start vm
     scslog "starting $NAME on $HV"
     ssh -o "StrictHostKeyChecking no" -n $HVIP "virsh start $NAME" >/dev/null 2>&1
-   
+
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
       scslog "updating hosts"
       system_update_push_hosts $NAME $IP >>$SCS_Background_Log 2>&1
       scslog "hosts updated"
-  
+
       #  - wait for vm to come up
       sleep 15
       while [ "$( exit_status check_host_alive $IP )" -ne 0 ]; do sleep 5; check_abort; done
@@ -7339,14 +7339,14 @@ function system_resolve_autooverlay {
       system_resolve_autooverlay $ParentName
     fi
 
-  else      
+  else
     ParentName=$( printf -- "$BackingList" |awk '{print $1}' )
   fi
 
   # save changes
   # [FORMAT:system]
   perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemBuildDate}/" ${CONF}/system
-  
+
   commit_file system
 }
 
@@ -7580,7 +7580,7 @@ function system_release {
         # add delete to command script
         printf -- "# delete '$FNAME' if it exists\n" >>${RELEASESCRIPT}.tail
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
-        # add audit check 
+        # add audit check
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
       fi
       # stage permissions for audit and processing
@@ -7805,8 +7805,8 @@ function system_update {
       NETNAME=$( network_list --match $IP )
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
-      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1 
-      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
+      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1
+      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
       #scslog "successfully stopped $NAME"
       sleep 15
       # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
@@ -7970,7 +7970,7 @@ function system_vm_disk_create {
   # [FORMAT:hypervisor]
   read HypervisorIP VMPath HypervisorEnabled <<<"$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4,$7}' )"
   [ "$HypervisorEnabled" == "y" ] || err "The primary hypervisor for this system is not enabled"
-  
+
   if ! [ -z "$Backing" ]; then
     ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f $Backing" >/dev/null 2>&1
     if [ $? -ne 0 ]; then err "Specified backing disk does not exist"; fi
@@ -7991,7 +7991,7 @@ function system_vm_disk_create {
 
   if [ $Existing -eq 0 ]; then
     if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
-  
+
     if [ $DryRun -eq 1 ]; then
       echo "DRY-RUN: Create disk..."
       echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
@@ -8068,13 +8068,13 @@ function system_vm_disks {
 
 
 #Section: SETTINGS
-  #####  ####### ####### ####### ### #     #  #####   #####  
- #     # #          #       #     #  ##    # #     # #     # 
- #       #          #       #     #  # #   # #       #       
-  #####  #####      #       #     #  #  #  # #  ####  #####  
-       # #          #       #     #  #   # # #     #       # 
- #     # #          #       #     #  #    ## #     # #     # 
-  #####  #######    #       #    ### #     #  #####   ##### 
+  #####  ####### ####### ####### ### #     #  #####   #####
+ #     # #          #       #     #  ##    # #     # #     #
+ #       #          #       #     #  # #   # #       #
+  #####  #####      #       #     #  #  #  # #  ####  #####
+       # #          #       #     #  #   # # #     #       #
+ #     # #          #       #     #  #    ## #     # #     #
+  #####  #######    #       #    ### #     #  #####   #####
 
 # settings
 #
@@ -8139,12 +8139,12 @@ TMPLarge=/bkup1                           ; test -d $TMPLarge || TMPLarge=~/scs-
 
 
 #Section: MAIN
- #     #    #    ### #     # 
- ##   ##   # #    #  ##    # 
- # # # #  #   #   #  # #   # 
- #  #  # #     #  #  #  #  # 
- #     # #######  #  #   # # 
- #     # #     #  #  #    ## 
+ #     #    #    ### #     #
+ ##   ##   # #    #  ##    #
+ # # # #  #   #   #  # #   #
+ #  #  # #     #  #  #  #  #
+ #     # #######  #  #   # #
+ #     # #     #  #  #    ##
  #     # #     # ### #     #
 
 # define global variables
