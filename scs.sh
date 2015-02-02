@@ -5781,7 +5781,7 @@ function system_byname {
   system_exists "$1" || err "Unknown or missing system name"
   # function
   case "$2" in
-    --audit)               system_audit $1;;
+    --audit)               system_audit $1 ${@:3};;
     --check)               system_check $1 ${@:3};;
     --convert)             system_convert $1 ${@:3};;
     --deploy)              system_deploy $1 ${@:3};;
@@ -5798,37 +5798,59 @@ function system_byname {
   esac
 }
 
+# audit a system against the generated configuration
+#
+# requires:
+#  $1  system name
+#
+# optional:
+#   --no-prompt   do not ask to review changes, just show differences
+#
 function system_audit {
   system_exists "$1" || err "Unknown or missing system name"
-  local VALID=0 SkipCheck
+  local VALID=0 SkipCheck SkipPrompt=0 System="$1"; shift
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    --no-prompt) SkipPrompt=1;;
+    *) err "invalid argument";;
+  esac; shift; done
+
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # test connectivity
   check_host_alive $1 || err "System $1 is not accessible at this time"
+
   # generate the release
   echo "Generating release..."
   FILE=$( system_release $1 |tail -n1 )
   test -s "$FILE" || err "Error generating release"
+
   # extract release to local directory
   echo "Extracting..."
   mkdir -p $TMP/release/{REFERENCE,ACTUAL}
   tar xzf $FILE -C $TMP/release/REFERENCE/ || err "Error extracting release to local directory"
+
   # clean up temporary release archive
   rm -f $FILE
+
   # switch to the release root
   pushd $TMP/release/REFERENCE >/dev/null 2>&1
+
   # move the stat file out of the way
   mv scs-stat ../
+
   # remove scs deployment scripts for audit
   rm -f scs-*
+
   # pull down the files to audit
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |perl -pe 's%^\./%%' ); do
     mkdir -p $TMP/release/ACTUAL/$( dirname $F )
     scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh -o "StrictHostKeyChecking no" -l root $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
 
   # review differences
   echo "Analyzing configuration..."
@@ -5856,10 +5878,13 @@ function system_audit {
       if [[ $SkipCheck -eq 0 && $( md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
-        get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
-        test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
-        test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+        if [[ $SkipPrompt -ne 1 ]]; then
+          get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
+          test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
+          test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+        fi
       fi
+
     elif [ $( file_size $TMP/release/REFERENCE/$F ) -eq 0 ]; then
       echo "Ignoring empty file $F"
     else
@@ -6526,11 +6551,180 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
+                            --push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
+	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
+	manages, audits, and deploys the configured systems.
 
 OPTIONS
+	system <value> --audit [--no-prompt]
+		Audit the generated system configuration with the deployed configuration.  This will only analyze the
+		managed files and directories configured for the system (see system show <name> for a complete list).
+		Both permissions and content are reviewed.  SCS will return PASS (exit code 0) if both file content
+		and permissions match exactly for all managed files.  SCS will return FAIL (exit code 1) if any file
+		differs from the generated value.
+
+		By default the user will be prompted to review the changes in vimdiff (y), diff (d), or skip (n).  If
+		the '--no-prompt' argument is provided the no user interaction is required.
+
+	system <value> --check [--verbose]
+		Run a check against the scs configuration to ensure a valid configuration can be generated for the
+		specified system.  This runs through the process of building the managed configuration files and
+		filling in variables wherever they appear.  This is useful for validating that all variables are
+		defined for a system in an environment.
+
+		If the '--verbose' (or -v) option is provided then all undefined variables will be enumerated so they
+		can be defined.  By default only the result of the operation is output.
+
+	system <value> --convert [--backing] [--distribute] [--dry-run] [--force] [--network <loc-zone-alias>]
+                                 [--no-prompt] [--overlay <backing_image>] [--single]
+		Convert a system to a different type.  This can be a highly dangerous operation if not used with care.
+		This function is mostly used by the system provisioning processes to create and manage backing images,
+		but is exposed through the UI to enable automation of various management processes.
+
+		Extreme care should be taken when change system types due to potential non-obvious dependencies.  If,
+		for example, an entire environment is build on a single backing image and that backing image is
+		converted to a system, all other systems will cease functioning.
+
+		System types include:
+
+			single	: Normal standalone virtual machine.
+
+			backing	: Backing image.  This is a disk image that is not attached to a virtual machine
+				  and designated for other system images to overlay on (using qemu).
+
+			overlay	: A virtual machine whose primary disk image is an overlay on another image.
+
+		--backing    : Convert TO a backing image
+
+		--distribute : Distribute converted image to hypervisors (this is pretty much for backing images)
+
+		--dry-run    : Do not make any actual changes, just show what would be done.
+
+		--force      : Force execution even when some validation checks fail. 
+
+		--network    : Requires the network name; required in order to convert to overlay or single.
+
+		--no-prmopt  : Do not confirm change.
+
+		--overlay    : Convert TO an overlay (not implemented at this time)
+
+		--single     : Convert TO a single (normal virtual machine)
+
+	system <value> --deploy [--install]
+		Build the configuration for a system, package in a tarball, and scp to the remote system at /root/.
+
+		If the '--install' option is provided, automatically deploy the configuration files and permissions.
+
+	system <value> --deprovision [--dry-run] [--yes-i-am-sure]
+		Delete a deployed virtual-machine.  If it is running it is immediately destroyed and the permanently
+		removed.  This action should be used with extreme care.
+
+		The '--dry-run' option will execute without making any changes to the remote system.
+
+		The '--yes-i-am-sure' will bypass confirmation of the action.  This is very dangerous but useful for
+		scripting.
+
+	system <value> --distribute [--dry-run] [--hypervisor "<name1> <name2> ..."] [--location <name>]
+		Redistribute all attached disk images for a system to other hypervisors.  This should be used to
+		copy backing images to other hosts. SCS will try to do a remote to remote (direct) copy, but that
+		requires each hypervisor to have a root key set up for each other hypervisor.  If this fails then
+		the disk image(s) will be copied to the local system and then copied up to each destination host.
+
+		--dry-run    : Do not make changes, just show what would be done.
+
+		--hypervisor : A list of configured hypervisors can be provided to copy the image TO.
+
+		--location   : If provided, all hypervisors at the specified location will be loaded into the copy
+		               copy TO list.
+
+	system <value> --provision [--distribute] [--foreground] [--hypervisor <name>] [--network <loc-zone-alias>]
+		                   [--skip-distribute]
+		Provision (create/install) a configured virtual machine.  By default a hypervisor will be
+		automatically selected (if possible).  If the system is configured to be an overlay and the overlay
+		is not provisioned or is set to auto an overlay will be automatically built and/or selected as
+		needed.
+
+		--distribute : Automatically redistribute the built vm (useful for backing images) to other
+		               configured hypervisors at the same location after it is built
+
+		--foreground : Normally the provisioning process will detach and run in the background after all
+		               settings and configuration have been validated.  This option will keep the process
+		               in the foreground.  This can be useful for scripting.
+
+		--hypervisor : Force deployment on the specified hypervisor.  The hypervisor must be registered
+		               and enabled.  If this option is not specified a hypervisor will be chosen
+		               automatically for those available at the location and environment the system being
+		               deployed to.
+
+		--network    : If the system IP is set to auto the user will be prompted to provide the network
+		               in order for the IP to be automatically selected.  The network can be specified
+		               from the command line with this option to avoid the prompt.
+
+		--skip-distribute : If the build VM was to be automatically distributed to other hypervisors after
+		                    it is built, bypass and do not distribute it.
+
+	system <value> --push-build-scripts [/path/to/scripts]
+		Copy the system build scripts to the remote server.  By default they are pulled from the local
+		system at /home/wstrucke/ESG/system-builds.  The path to the scripts can be provided as an
+		argument if necessary or desired.  This function is called automatically during the system
+		provision process.
+
+	system <value> --release
+		Generate the release (configuration) in a tarball for the specified system.  The release is copied
+		to the scs release directory.
+
+	system <value> --start-remote-build <current_ip> [<role>]
+		Executes the system build scripts on the remote system at the provided IP address.  If a role is
+		provided it will be added as an argument to the role script.  The remote system will be instructed
+		to shut itself off after running the build.  This function is called during the system provision
+		process.
+
+		The build scripts are called at 'ESG/system-builds/role.sh' on the remote system.
+
+	system <value> --type
+		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
+		'overlay'.
+
+	system <value> --vars
+		Assemble the complete list of variables defined for the system.  This is exactly what is compiled
+		on demand anytime a system configuration is built and can be referenced to identify what settings
+		are available.
+
+	system <value> --vm-add-disk [--alias <name>] [--backing </path/to/name.img>] [--disk </path/to/disk.img>] [--use-existing] [--hypervisor <name>] [--size <size_in_gb>] [--type <type>] [--destroy] [--dry-run]
+		Create a new disk on the hypervisor for a system and attach it (or attach an existing disk). This
+		function is called automatically by the system provision process for an overlay when the backing
+		system also has multiple disk images.
+
+		--alias   : Provide an alias for the disk image.  This is only used on the hypervisor file system
+		            as a component of the new image file name. (i.e. 'system.alias.img')
+
+		--backing : Specify an existing backing image for the new system.  If a backing image is specified
+		            then the disk size argument is ignored (since it must match the backing imge).
+
+		--disk    : Path to store the disk image at.  If an image exists at this location and use-existing
+		            or destroy is not specified then this will generate an error and fail.
+
+		--use-existing : When a disk image is provided (or inferred) and the image already exists, do not
+		                 overwrite and just attach it as-is to the system.
+
+		--hypervisor : Specify the hypervisor to connect to for this operation.  If this argument is not
+		               provided then the hypervisor will be determined automatically.
+
+		--size    : Size in GB of the created disk image.  The image will be thin-provisioned.
+
+		--type    : Override the default type of image to create.  Valid options include:
+		            'ide', 'scsi', 'usb', 'virtio', and 'xen'.
+
+		--destroy : If a disk image exists at the generated or specified path, remove it first.  Use with
+		            caution.
+
+		--dry-run : Do not make any changes, just output what would be done.
+
+	system <value> --vm-disks
+		Connect to the hypervisor for the system and list all configured disk images.
 
 EXAMPLES
 
