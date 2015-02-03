@@ -6707,6 +6707,10 @@ DESCRIPTION
 	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
 	manages, audits, and deploys the configured systems.
 
+	A system is associated directly or indirectly with all other resource types.  It is the 'thing' an assembled
+	configuration is deployed or installed to; it is built or managed and must be accessible from the management
+	server with a root ssh key.
+
 OPTIONS
 	system <value> --audit [--no-prompt]
 		Audit the generated system configuration with the deployed configuration.  This will only analyze the
