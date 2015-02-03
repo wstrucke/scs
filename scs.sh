@@ -361,7 +361,6 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
-#     - use more environment variables and add help section detailing the options
 #     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
 #     - application show should list systems linked to the application and the environment for the systems
