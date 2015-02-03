@@ -332,6 +332,7 @@
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - renaming an application does not update all of the configuration files
+#     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -365,6 +366,8 @@
 #     - flock is not available on darwin (... or would have to be built ...)
 #     - application show should list systems linked to the application and the environment for the systems
 #     - need to be able to define number of processors for a build or system
+#     - add support to system module to show and manage snapshots on hypervisors
+#     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
