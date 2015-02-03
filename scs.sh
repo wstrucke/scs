@@ -433,8 +433,8 @@ function check_abort {
 function check_host_alive {
   local Port Timeout Pid C=0 Result=0
   if [ $# -eq 0 ]; then return 1; fi
-  if [ $? -eq 2 ]; then Port=$2; else Port=22; fi
-  if [ $? -eq 3 ]; then Timeout=$3; else Timeout=2; fi
+  if [ $# -eq 2 ]; then Port=$2; else Port=22; fi
+  if [ $# -eq 3 ]; then Timeout=$3; else Timeout=2; fi
   if [ "$HostOS" == "mac" ]; then
     ( ( exec 3<>/dev/tcp/$1/$Port ) & Pid=$! ; \
       while [[ $( ps -p $Pid |wc -l ) -gt 0 && $C -lt $((Timeout*5)) ]]; do sleep .2; C=$((C+1)); done; \
@@ -948,7 +948,7 @@ function register_ssh_key {
   if [[ -n "$SudoUser" ]]; then AccessUser=$SudoUser; else AccessUser=$RemoteUser; fi
 
   # get the ssh password
-  read -sp "Password [$AccessUser]: " Pass
+  read -sp "Password [$AccessUser]: " Pass; echo
   test -z "$Pass" && err "A password is required to log in to the remote server"
 
   # this can be done by adding a conditional to the expect script instead of having it twice,
@@ -1055,6 +1055,69 @@ function scslog {
 #
 function shuf {
   perl -MList::Util=shuffle -le'printf for shuffle <>'
+}
+
+# execute a command on a remote server
+#
+# used to centralize ssh calls and make global configuration parameters practical
+#
+# required:
+#   "host"            : remote host
+#   "command"         : remote command to execute
+#
+# optional:
+#   -d                : disable strict host key checking
+#   -i </path/to/key> : identify file (key) (defaults to global identity file)
+#   -l <user>         : remote user (defaults to global remote user)
+#   -n                : Redirects stdin from /dev/null (actually, prevents reading from stdin).
+#   -o <option>       : additional ssh option
+#   -p <port>         : remote ssh port
+#   -q                : quiet mode -> suppress stdout and stderr
+#
+function ssh_remote_command {
+  local Command Insecure=0 Identity=$SCS_KeyFile Login=$SCS_RemoteUser Opt Port=22 Quiet=0 Remote SuppressStdin=0
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    -d) Insecure=1;;
+    -i) Identity="$2"; shift;;
+    -l) Login="$2"; shift;;
+    -n) SuppressStdin=1;;
+    -o) Opt="$2"; shift;;
+    -p) Port="$2"; shift;;
+    -q) Quiet=1;;
+    *) if [[ -z "$Remote" ]]; then Remote="$1"; elif [[ -z "$Command" ]]; then Command="$@"; shift; break; fi;;
+  esac; shift; done
+
+  # validate input
+  if [[ -z "$Command" ]]; then err "Missing command"; fi
+  if [[ -z "$Remote" ]]; then err "Missing host"; fi
+  if ! [[ -r "$Identity" ]]; then err "Invalid identity file"; fi
+
+  # translate settings
+  if [[ $SuppressStdin -eq 1 ]]; then SuppressStdin="-n "; else SuppressStdin=""; fi
+
+  if [[ -n "$Opt" && $Insecure -eq 0 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -z "$Opt" && $Insecure -eq 0 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -n "$Opt" && $Insecure -eq 1 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -z "$Opt" && $Insecure -eq 1 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -n "$Opt" && $Insecure -eq 0 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -z "$Opt" && $Insecure -eq 0 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -n "$Opt" && $Insecure -eq 1 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -z "$Opt" && $Insecure -eq 1 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  else
+    echo "Unexpected argument in ssh_remote_command"
+  fi
+
+  return $?
 }
 
 # Test an IP address for validity:
@@ -1391,6 +1454,21 @@ OPTIONS
 	pdir
 		Print the path to the executable directory (where this script is located).
 
+ENVIRONMENT
+	The below envrionment variables can be used to control some global settings.
+
+	SCS_CONF - equivilent of providing --config </path/to/config>
+
+	SCS_IDENTITY - path to the private key used to access remote systems over ssh
+
+	SCS_RELEASES - path to store generated releases
+
+	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
+
+	SCS_TEMP - directory to store temporary files. this normally includes the process id in the path.
+
+	SCS_TEMP_LARGE - directory to store LARGE temporary files, e.g. >1GB
+
 EXAMPLES
 
 RETURN CODE
@@ -1482,7 +1560,7 @@ Component:
     <value> [--unassign|--list]
   system
     <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--register-key|
-             --release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+             --release|--start-remote-build|--type|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -5303,7 +5381,7 @@ OPTIONS
 		Connect to the hypervisor and report back memory and disk utilization, and their respective values
 		as a percentage of the configured minimums for the host.
 
-	hypervisor <name> --register-key <remote-user> <private-key>
+	hypervisor <name> --register-key [--sudo <sudo_user>] <remote-user> <private-key>
 		Register your SSH public key on the hypervisor under the specified user account.  The remote user
 		account must exist and must be authorized for remote login.  You will be prompted for the user's
 		password to add the key.
@@ -5311,6 +5389,9 @@ OPTIONS
 		The <private-key> argument is the path on your machine to the SSH private key.  The public key
 		will be generated from this private key in order to validate both keys, and the private key can
 		not be encrypted.
+
+		If '--sudo' is provided then login with the sudo_user account and elevate privileges to
+		remote-user to set up the key.
 
 	hypervisor <name> --search <string>
 		Search a hypervisor for virtual machines matching the provided string.  The string will be passed to
@@ -5394,7 +5475,7 @@ function hypervisor_list {
           # [FORMAT:hypervisor]
           read -r HypervisorIP VMPath <<< "$( grep -E "^$N," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
           check_host_alive $HypervisorIP || continue
-          ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" >/dev/null 2>&1 && NL="$NL $N"
+          ssh_remote_command -d -q $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" && NL="$NL $N"
         done; LIST="$NL"; shift
         ;;
       *) err "Invalid argument";;
@@ -5473,10 +5554,10 @@ function hypervisor_locate_system {
     check_host_alive $HIP || continue
     # search
     if [ "$BASE_IMAGE" == "y" ]; then
-      VM=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |perl -pe 's/\.img//'" )
+      VM=$( ssh_remote_command -d $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |perl -pe 's/\.img//'" )
       if [ -z "$VM" ]; then STATE=""; else STATE="shut"; fi
     else
-      read VM STATE <<<"$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
+      read VM STATE <<<"$( ssh_remote_command -d $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
     fi
     test -z "$VM" && continue
     if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
@@ -5518,7 +5599,7 @@ function hypervisor_poll {
   # test the connection
   check_host_alive $IP || err "Hypervisor is not accessible at this time"
   # collect memory usage
-  FREEMEM=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
+  FREEMEM=$( ssh_remote_command -d $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
   MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |perl -pe 's/\..*//' )
   # optionally only return memory
   if [ "$2" == "--mem" ]; then
@@ -5527,7 +5608,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect disk usage
-  N=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
+  N=$( ssh_remote_command -d $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
   case "${N: -1}" in
     T) M="* 1024 * 1024";;
     G) M="* 1024";;
@@ -5545,7 +5626,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect load data
-  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP "uptime |perl -pe 's/.* load average: //'" )"
+  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh_remote_command -d $IP "uptime |perl -pe 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
 }
@@ -5592,14 +5673,14 @@ function hypervisor_qemu_uuid {
   test -z "$HVS" && exit 1
 
   # enumerate all addresses currently in use
-  for H in $HVS; do ssh -l $SCS_RemoteUser $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |perl -pe 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
+  for H in $HVS; do ssh_remote_command $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |perl -pe 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
 
   if [ $VALIDATE -eq 1 ]; then
     # MAC
     for M in $( grep mac $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate MAC Address '$M' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh -l $SCS_RemoteUser $H "cd ${XMLPATH}; grep '$M' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
+        R=$( ssh_remote_command $H "cd ${XMLPATH}; grep '$M' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
@@ -5608,7 +5689,7 @@ function hypervisor_qemu_uuid {
     for U in $( grep uuid $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate UUID '$U' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh -l $SCS_RemoteUser $H "cd ${XMLPATH}; grep '$U' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
+        R=$( ssh_remote_command $H "cd ${XMLPATH}; grep '$U' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
@@ -5689,17 +5770,26 @@ function hypervisor_rank {
 function hypervisor_register_key {
   local IP
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
-  if [ $# -ne 3 ]; then hypervisor_register_key_help >&2; exit 1; fi
+  if [[ $# -ne 3 && $# -ne 5 ]]; then hypervisor_register_key_help >&2; exit 1; fi
   IP=$( hypervisor_show $1 --brief |grep Address |cut -d' ' -f3 )
   valid_ip $IP || err "The specified hypervisor has an invalid management address."
-  register_ssh_key --host "$IP" --user "$2" --key "$3"
+  if [ $# -eq 5 ]; then
+    if [ "$2" != "--sudo" ]; then hypervisor_register_key_help >&2; exit 1; fi
+    register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+  else
+    register_ssh_key --host "$IP" --user "$2" --key "$3"
+  fi
 }
 function hypervisor_register_key_help { cat <<_EOF
-Usage: $0 hypervisor <name> --register-key <user-name> <private-key-file>
+Usage: $0 hypervisor <name> --register-key [--sudo <sudo_user>] <user-name> <private-key-file>
 
 Register an existing public/private key pair for key-based authentication
 to a remote hypervisor under the specified user account.  You must have
 the password and authorization to log in to the remote server.
+
+If --sudo is provided, log into the hypervisor as <sudo_user> and use
+the provided password (you will be prompted for it) to elevate
+privileges to access the target account.
 _EOF
 }
 
@@ -5751,7 +5841,7 @@ function hypervisor_search {
   # validate search string
   test -z "$2" && err "Missing search operand"
   # search
-  local LIST=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
+  local LIST=$( ssh_remote_command -d $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
   test -z "$LIST" && return 1
   printf -- "$LIST\n"
 }
@@ -5847,6 +5937,7 @@ function system_byname {
     --release)             system_release $1;;
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
+    --uptime)              system_uptime $1;;
     --vars)                system_vars $1;;
     --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
     --vm-disks)            system_vm_disks $1;;
@@ -5873,13 +5964,13 @@ function system_audit {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # test connectivity
-  check_host_alive $1 || err "System $1 is not accessible at this time"
+  check_host_alive $System || err "System $System is not accessible at this time"
 
   # generate the release
   echo "Generating release..."
-  FILE=$( system_release $1 |tail -n1 )
+  FILE=$( system_release $System |tail -n1 )
   test -s "$FILE" || err "Error generating release"
 
   # extract release to local directory
@@ -5903,9 +5994,9 @@ function system_audit {
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |perl -pe 's%^\./%%' ); do
     mkdir -p $TMP/release/ACTUAL/$( dirname $F )
-    scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
+    scp -i $SCS_KeyFile -p $SCS_RemoteUser@$System:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh_remote_command -d $System "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
 
   # review differences
   echo "Analyzing configuration..."
@@ -6121,14 +6212,14 @@ function system_convert {
 
     # shut off vm if running
     if [ $DryRun -eq 0 ]; then
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
     else
       echo ssh -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
     fi
   done
 
   # enumerate disk images
-  List="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+  List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
 
   case "$curType->$newType" in
 
@@ -6138,12 +6229,12 @@ function system_convert {
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
           scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
-          ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File" >/dev/null 2>&1
+          ssh_remote_command -d -q $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         else
           echo ssh -l $SCS_RemoteUser $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         fi
       done
-      if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
+      if [ $DryRun -eq 0 ]; then List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
 
       # undefine vm
       for HV in $HypervisorAll; do
@@ -6153,7 +6244,7 @@ function system_convert {
 
         # undefine vm
         if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+          ssh_remote_command -d -q $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
         else
           echo ssh -l $SCS_RemoteUser $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
         fi
@@ -6173,7 +6264,7 @@ function system_convert {
 
       # verify no other systems overlay on this one
       for File in $List; do
-        Count=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'" )
+        Count=$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'" )
         if [ $DryRun -eq 0 ]; then
           if [ $Count -gt 0 ]; then errlog "found $Count system overlay images on '$File': aborting"; exit 1; fi
         else
@@ -6185,12 +6276,12 @@ function system_convert {
       # move images out of backing folder
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
+          ssh_remote_command -d $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         else
           echo ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         fi
       done
-      List="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+      List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
 
       #  - lookup the build network for this system
       network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
@@ -6234,7 +6325,7 @@ function system_convert {
   #    scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
   # need ... buildip/mask, gateway, dns, interface
         scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
-        ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+        ssh_remote_command -d -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
         if [ $? -ne 0 ]; then
           echo ssh -n -l $SCS_RemoteUser $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
           err "Error creating VM!"
@@ -6256,7 +6347,7 @@ function system_convert {
 
       if [ $DryRun -eq 0 ]; then
         # start new virtual machine
-        ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HypervisorIP "virsh start $NAME" >/dev/null 2>&1
+        ssh_remote_command -d -n -q $HypervisorIP "virsh start $NAME"
       fi
 
       # update system configuration
@@ -6377,7 +6468,7 @@ function system_deploy {
   if [ -z "$FILE" ]; then printf -- "Error generating release for '$System'\n"; exit 1; fi
   if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
   printf -- "Copying release to remote system...\n"
-  scp $FILE $System: >/dev/null 2>&1
+  scp -i $SCS_KeyFile $FILE $SCS_RemoteUser@$System: >/dev/null 2>&1
   if [ $? -ne 0 ]; then printf -- "Error copying release to '$System'\n"; exit 1; fi
   printf -- "Cleaning up...\n"
   rm -f $FILE
@@ -6385,7 +6476,7 @@ function system_deploy {
     printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"tar xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh -l $SCS_RemoteUser $System "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
+    ssh_remote_command $System "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -6437,14 +6528,14 @@ function system_deprovision {
     check_host_alive $HVIP || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
     # get disks
     if [ "$BASE_IMAGE" == "y" ]; then
-      LIST="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
+      LIST="$( ssh_remote_command -d $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
     else
       LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
     fi
     scslog "removing from $HV: $LIST"
     # destroy
     if [ $DRY_RUN -ne 1 ]; then
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
     else
       echo ssh -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
       test -z "$HVFIRST" && HVFIRST="$HV"
@@ -6453,7 +6544,7 @@ function system_deprovision {
     for F in $LIST; do
       if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
       if [ $DRY_RUN -ne 1 ]; then
-        ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HVIP "test -f $F && chattr -i $F && rm -f $F"
+        ssh_remote_command -d -n $HVIP "test -f $F && chattr -i $F && rm -f $F"
       else
         echo ssh -n -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "test -f $F && chattr -i $F && rm -f $F"
       fi
@@ -6516,7 +6607,7 @@ function system_distribute {
   if [[ "$HypervisorIP" == "" || "$VMPath" == "" ]]; then err "Error loading hypervisor configuration"; fi
 
   # enumerate disk images
-  List="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "find ${VMPath}/${BACKING_FOLDER} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+  List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath}/${BACKING_FOLDER} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
   if [ $DryRun -ne 0 ]; then printf -- "Located system files:\n%s\n" $List; fi
 
   # list hypervisors
@@ -6546,14 +6637,14 @@ function system_distribute {
     check_host_alive $HVIP || continue
 
     # test if a remote to remote transfer is possible
-    ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
+    ssh_remote_command -d $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
 
     if [ $DryRun -ne 0 ]; then
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}"
     fi
 
     for File in $List; do
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "test -f ${HVPath}/${BACKING_FOLDER}$( basename $File )"
+      ssh_remote_command -d $HVIP "test -f ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       if [ $? -eq 0 ]; then
         scslog -v "system already exists on $HV"
         continue
@@ -6569,11 +6660,11 @@ function system_distribute {
       else
         scslog -v "transferring to ${HV}..."
         if [ $LocalTransfer -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )" >/dev/null 2>&1
+          ssh_remote_command -d -q $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )"
         else
           srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
         fi
-        ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        ssh_remote_command -d $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       fi
     done
 
@@ -6607,8 +6698,8 @@ NAME
 
 SYNOPSIS
 	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
-	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|--vars|
-	                    --vm-add-disk|--vm-disks]
+	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|
+	                    --uptime|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
 	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
@@ -6751,6 +6842,9 @@ OPTIONS
 	system <value> --type
 		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
 		'overlay'.
+
+	system <value> --uptime
+		Connect to the remote system and run 'uptime'. This is purely diagnostic.
 
 	system <value> --vars
 		Assemble the complete list of variables defined for the system.  This is exactly what is compiled
@@ -7039,15 +7133,15 @@ _EOF
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
     if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then perl -i -pe "s/kernel-PAE/kernel/" ${TMP}/${NAME}.cfg; fi
     #  - send custom kickstart file over to the local sm-web repo/mirror
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
-    scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
+    ssh_remote_command -d -n -q $REPO_ADDR "mkdir -p $REPO_PATH"
+    scp -i $SCS_KeyFile -B ${TMP}/${NAME}.cfg $SCS_RemoteUser@$REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
     KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
 
     #  - kick off provision system
     echo "Creating virtual machine..."
     scslog "starting system build for $NAME on $Hypervisor at $BUILDIP"
     scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    ssh_remote_command -d -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
     if [ $? -ne 0 ]; then
       echo ssh -n -l $SCS_RemoteUser $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
       err "Error creating VM!"
@@ -7151,14 +7245,14 @@ function system_provision_phase2 {
     scslog "starting system build for $NAME on $HV at $BUILDIP"
     echo "Creating virtual machine..."
     scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    ssh_remote_command -d -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
     if [ $? -ne 0 ]; then
       echo ssh -n -l $SCS_RemoteUser $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
 
     # check for secondary disks
-    List="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
+    List="$( ssh_remote_command -d $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
     for File in $List; do
       if [ "$File" == "${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img" ]; then continue; fi
       system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |perl -pe 's/^'${OVERLAY}'\.//; s/\.img$//' )" --backing $File
@@ -7166,7 +7260,7 @@ function system_provision_phase2 {
     done
 
     # start new virtual machine
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HV "virsh start $NAME" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $HV "virsh start $NAME"
 
     if ! [ -z "$DHCP" ]; then
 
@@ -7178,7 +7272,7 @@ function system_provision_phase2 {
       while [ -z "$DHCPIP" ]; do
         check_abort
         sleep 5
-        DHCPIP="$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |tr '\n' ' ' |perl -pe 's/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
+        DHCPIP="$( ssh_remote_command -d $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |tr '\n' ' ' |perl -pe 's/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
 	if [[ -n "$DHCPIP" && "$( exit_status valid_ip "$DHCPIP" )" -ne 0 ]]; then
           errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
         fi
@@ -7191,8 +7285,8 @@ function system_provision_phase2 {
         read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status check_host_alive $DHCPIP )" -ne 0 ]; do sleep 5; check_abort; done
-        while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-        ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1
+        while [ "$( exit_status ssh_remote_command -d -n $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+        ssh_remote_command -d -n -q $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt"
         scslog "successfully moved system to assigned build address"
       fi
     fi
@@ -7202,7 +7296,7 @@ function system_provision_phase2 {
   sleep 15
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME"
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -7213,7 +7307,7 @@ function system_provision_phase2 {
   scslog "waiting for $NAME at $BUILDIP"
   while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
-  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status ssh_remote_command -d -n $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
 
   #  - load the role
@@ -7231,11 +7325,11 @@ function system_provision_phase2 {
   if [ -z "$OVERLAY" ]; then
     #  - clean up kickstart file
     check_host_alive $REPO_ADDR
-    [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+    [ $? -eq 0 ] && ssh_remote_command -d -q $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg"
   fi
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME"
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -7246,7 +7340,7 @@ function system_provision_phase2 {
   while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
   purge_known_hosts --ip $BUILDIP
-  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status ssh_remote_command -d -n $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
 
   # deploy system configuration
@@ -7255,10 +7349,10 @@ function system_provision_phase2 {
   if [ -z "$FILE" ]; then errlog "Error generating release for '$NAME'"; return 1; fi
   if ! [ -f "$FILE" ]; then errlog "Unable to read release file for '$NAME'"; return 1; fi
   scslog "copying release to remote system..."
-  scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
+  scp -i $SCS_KeyFile -q -o "StrictHostKeyChecking no" $FILE $SCS_RemoteUser@$BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
 
   # !!FIXME!!
   #  * - ship over latest code release
@@ -7274,9 +7368,9 @@ function system_provision_phase2 {
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
       read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-      ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
+      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
     else
-      ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
+      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
     fi
     sleep 5
     # update ip assignment
@@ -7289,14 +7383,14 @@ function system_provision_phase2 {
 
   if [ "$BASE_IMAGE" == "y" ]; then
     # flush hardware address, ssh host keys, and device mappings to anonymize system
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt"
   else
     # power down vm
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $BUILDIP "halt" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $BUILDIP "halt"
   fi
 
   # wait for power off
-  ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done"
   scslog "successfully stopped $NAME"
 
   #  - check for abort
@@ -7306,13 +7400,13 @@ function system_provision_phase2 {
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
     scslog "changing system network interface from '$HV_BUILD_INT' to '$HV_FINAL_INT'"
     echo "ssh -n -l $SCS_RemoteUser $HVIP \"sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HVIP "sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $HVIP "sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml"
   fi
 
   if [ "$BASE_IMAGE" != "y" ]; then
     #  - start vm
     scslog "starting $NAME on $HV"
-    ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $HVIP "virsh start $NAME" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $HVIP "virsh start $NAME"
 
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
@@ -7324,7 +7418,7 @@ function system_provision_phase2 {
       sleep 15
       while [ "$( exit_status check_host_alive $IP )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "ssh connection succeeded to $NAME"
-      while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+      while [ "$( exit_status ssh_remote_command -d -n $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "$NAME verified UP"
     else
       scslog "$NAME is configured to use DHCP and can not be traced at this time"
@@ -7366,8 +7460,8 @@ function system_push_build_scripts {
   fi
   cat ~/.ssh/known_hosts >~/.ssh/known_hosts.$$
   perl -i -ne "print unless /$( printf -- "$1" |perl -pe 's/\./\\./g' )/" ~/.ssh/known_hosts
-  ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $1 mkdir ESG 2>/dev/null
-  scp -p -r "$SRCDIR" $1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
+  ssh_remote_command -d -n $1 mkdir ESG 2>/dev/null
+  scp -i $SCS_KeyFile -p -r "$SRCDIR" $SCS_RemoteUser@$1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
   cat ~/.ssh/known_hosts.$$ >~/.ssh/known_hosts
   /bin/rm ~/.ssh/known_hosts.$$
   return 0
@@ -7813,10 +7907,10 @@ function system_start_remote_build {
   # kick-off install and return
   if [ -z "$3" ]; then
     scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown >/dev/null 2>&1 </dev/null &"
-    ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   else
     scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
-    ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   fi
 }
 
@@ -7888,7 +7982,7 @@ function system_update {
   # handle single or overlay -> backing image
   if [[ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" && "$BASE_IMAGE" == "y" && $( exit_status valid_ip $IP ) -eq 0 && $( exit_status check_host_alive $IP ) -eq 0 ]]; then
 
-    if [ "$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP "hostname" )" != "$NAME" ]; then
+    if [ "$( ssh_remote_command -d $IP "hostname" )" != "$NAME" ]; then
       scslog "refusing to change system type since the system at the registered IP does not match the host name"
       echo "refusing to change system type since the system at the registered IP does not match the host name" >&2
       BASE_IMAGE=$ORIGBASE_IMAGE
@@ -7897,7 +7991,7 @@ function system_update {
       NETNAME=$( network_list --match $IP )
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
-      ssh -o "StrictHostKeyChecking no" -n -l $SCS_RemoteUser $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1
+      ssh_remote_command -d -n -q $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt"
       #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
       #scslog "successfully stopped $NAME"
       sleep 15
@@ -7977,6 +8071,13 @@ function system_update_push_hosts {
   ) 202>>/usr/local/etc/lpad/hosts/managed-hosts
 
   return 0
+}
+
+# connect to the remote system and run uptime
+#
+function system_uptime {
+  system_exists "$1" || err "Unknown or missing system name"
+  ssh_remote_command $1 uptime
 }
 
 # generate all system variables and settings
@@ -8064,21 +8165,21 @@ function system_vm_disk_create {
   [ "$HypervisorEnabled" == "y" ] || err "The primary hypervisor for this system is not enabled"
 
   if ! [ -z "$Backing" ]; then
-    ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "test -f $Backing" >/dev/null 2>&1
+    ssh_remote_command -d -q $HypervisorIP "test -f $Backing"
     if [ $? -ne 0 ]; then err "Specified backing disk does not exist"; fi
   fi
 
   [ -z "$Disk" ] && Disk="${VMPath}/${VM}.${Alias}.img"
-  ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "test -f $Disk" >/dev/null 2>&1
+  ssh_remote_command -d -q $HypervisorIP "test -f $Disk"
   if [ $? -eq 0 ]; then
     if [ $Destroy -eq 1 ]; then
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "/bin/rm -f $Disk" >/dev/null 2>&1
+      ssh_remote_command -d -q $HypervisorIP "/bin/rm -f $Disk"
     elif [ $Existing -eq 0 ]; then
       err "The specified disk already exists on $Hypervisor"
     fi
   fi
 
-  DevID=$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed -e \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
+  DevID=$( ssh_remote_command -d $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed -e \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
   NewDevID="$( printf -- "${DevID}" |perl -pe 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
 
   if [ $Existing -eq 0 ]; then
@@ -8089,7 +8190,7 @@ function system_vm_disk_create {
       echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
       echo
     else
-      ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
       test $? -eq 0 || err "Error creating disk"
     fi
   fi
@@ -8107,7 +8208,7 @@ function system_vm_disk_create {
 _EOF
 
   else
-    cat <<_EOF |ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "cat >/tmp/$VM.scs_add_disk.$$.xml"
+    cat <<_EOF |ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser -i $SCS_KeyFile $HypervisorIP "cat >/tmp/$VM.scs_add_disk.$$.xml"
 <disk type='file' device='disk'>
   <driver name='qemu' type='qcow2' cache='writeback'/>
   <source file='${Disk}'/>
@@ -8115,7 +8216,7 @@ _EOF
 </disk>
 _EOF
 
-    ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent" >/dev/null 2>&1
+    ssh_remote_command -d -q $HypervisorIP "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent"
     test $? -eq 0 || err "Error attaching device - see $Hypervisor:/tmp/$VM.scs_add_disk.$$.xml"
     echo "Successfully attached disk"
     scslog "attached $Size disk '$Alias' to $VM on $Hypervisor"
@@ -8155,7 +8256,7 @@ function system_vm_disks {
     if [ "$XMLPATH" == "/domain/devices/disk/source/" ]; then
       printf -- '%s\n' "$ATTRIBUTES" |perl -pe "s/'//g; s/file=//"
     fi
-  done <<< "$( ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $IP virsh dumpxml $1 )"
+  done <<< "$( ssh_remote_command -d $IP virsh dumpxml $1 )"
 }
 
 
@@ -8209,7 +8310,7 @@ OSLIST="centos4,centos5,centos6"
 PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
-RELEASEDIR=/bkup1/scs-release             ; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
+RELEASEDIR=${SCS_RELEASES:=/bkup1/scs-release}; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
@@ -8220,17 +8321,20 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
+# default private key for systems management (ssh/scp)
+SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
+#
 # remote user on all systems for management access
-SCS_RemoteUser=root
+SCS_RemoteUser=${SCS_REMOTE_USER:=root}
 #
 # application version
 SCS_Version="1.0.0"
 #
 # path to the temp file for patching configuration files
-TMP=/tmp/scs.$$
+TMP=${SCS_TEMP:=/tmp/scs.$$}
 #
 # path to a large local folder for temporary file transfers
-TMPLarge=/bkup1                           ; test -d $TMPLarge || TMPLarge=~/scs-large-tmp
+TMPLarge=${SCS_TEMP_LARGE:=/bkup1}        ; test -d $TMPLarge || TMPLarge=~/scs-large-tmp
 
 
 #Section: MAIN
