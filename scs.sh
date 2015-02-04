@@ -58,9 +58,6 @@
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
 #
-# Locks are taken by using git branches. This should be revisited and improved - the current method cleanly avoids most merge conflicts.
-#
-# A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
 # A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
 #
 # A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an
@@ -322,7 +319,6 @@
 #
 # TO DO:
 #   - bug fix:
-#     - renaming a build should update systems using that build
 #     - deleting a build should prompt/list systems using that build
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
@@ -2634,11 +2630,12 @@ function build_show {
 }
 
 function build_update {
+  local ORIGNAME NAME ROLE DESC OS ARCH DISK RAM PARENT C P
   start_modify
   generic_choose build "$1" C && shift
   # [FORMAT:build]
-  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
-  get_input NAME "Build" --default "$NAME"
+  IFS="," read -r ORIGNAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
+  get_input NAME "Build" --default "$ORIGNAME"
   get_input ROLE "Role" --default "$ROLE" --null
   get_yn P "Child Build [$PARENT] (y/n)?"
   if [ $? -eq 0 ]; then generic_choose build "" PARENT; else PARENT=""; fi
@@ -2657,6 +2654,13 @@ function build_update {
   # [FORMAT:build]
   perl -i -pe "my \$str = '${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}'; s/^$C,.*/\$str/" ${CONF}/build
   commit_file build
+  # handle rename
+  if [[ "$NAME" != "$ORIGNAME" ]]; then
+    # [FORMAT:system]
+    perl -i -pe "s/([^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/system
+    # [FORMAT:application]
+    perl -i -pe "s/([^,]*,[^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/application
+  fi
 }
 
 
