@@ -319,7 +319,6 @@
 #
 # TO DO:
 #   - bug fix:
-#     - deleting a build should prompt/list systems using that build
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
@@ -2433,6 +2432,37 @@ function build_create {
 }
 
 function build_delete {
+  build_exists "$1" || err "Missing or invalid build name"
+  local InUse=0
+  # prompt if the build is in use before deleting it
+  # [FORMAT:application]
+  grep -qE "^([^,]*,){2}$1," ${CONF}/application
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is in use for the following applications:\n'
+    # [FORMAT:application]
+    grep -E "^([^,]*,){2}$1," ${CONF}/application |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  # [FORMAT:system]
+  grep -qE "^([^,]*),$1," ${CONF}/system
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is in use for the following systems:\n'
+    # [FORMAT:system]
+    grep -E "^([^,]*),$1," ${CONF}/system |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  # [FORMAT:build]
+  grep -qE "^([^,]*,){7}$1\$" ${CONF}/build
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is a parent for the following builds:\n'
+    # [FORMAT:build]
+    grep -E "^([^,]*,){7}$1\$" ${CONF}/build |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  if [[ $InUse -eq 1 ]]; then
+    get_yn R "Are you sure you want to delete build $1 (y/n)?" || return 1
+  fi
+  # execute delete operation
   generic_delete build $1
 }
 
@@ -2660,6 +2690,8 @@ function build_update {
     perl -i -pe "s/([^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/system
     # [FORMAT:application]
     perl -i -pe "s/([^,]*,[^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/application
+    # [FORMAT:build]
+    perl -i -pe "s/(.*),$ORIGNAME\$/\\1,$NAME/" ${CONF}/build
   fi
 }
 
