@@ -3630,7 +3630,7 @@ function file_edit {
     echo "Validating template instances..."
     NEWPATCHES=(); NEWENVIRON=()
     pushd $CONF/template >/dev/null 2>&1
-    for E in $( find . -mindepth 2 -type f -name $C -print0 |xargs -0 -n1 dirname |perl -pe 's/^\.\///' ); do
+    for E in $( find . -mindepth 2 -type f -name $C -print0 |xargs -0 -n1 dirname 2>/dev/null |perl -pe 's/^\.\///' ); do
       echo -n "${E}... "
       cat /tmp/app-config.$$ >/tmp/app-config.$$.1
       patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
@@ -4999,7 +4999,7 @@ function parse_template {
       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |perl -pe "s/^$NAME //" )
-    perl -i -pe "my \$str = '${VAL//&/\&}'; s/{% ${NAME} %}/\$str/" $1
+    perl -i -pe "my \$str = '${VAL}'; s/{% ${NAME} %}/\$str/" $1
   done
   return $RETVAL
 }
