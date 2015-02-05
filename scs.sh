@@ -7467,7 +7467,8 @@ function system_push_build_scripts {
   cat ~/.ssh/known_hosts >~/.ssh/known_hosts.$$
   perl -i -ne "print unless /$( printf -- "$1" |perl -pe 's/\./\\./g' )/" ~/.ssh/known_hosts
   ssh_remote_command -d -n $1 mkdir ESG 2>/dev/null
-  scp -i $SCS_KeyFile -p -r "$SRCDIR" $SCS_RemoteUser@$1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
+  echo "running command: scp -i $SCS_KeyFile -o \"StrictHostKeyChecking no\" -p -r \"$SRCDIR\" $SCS_RemoteUser@$1:ESG/" >>$SCS_Background_Log 2>&1
+  scp -i $SCS_KeyFile -o "StrictHostKeyChecking no" -p -r "$SRCDIR" $SCS_RemoteUser@$1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
   cat ~/.ssh/known_hosts.$$ >~/.ssh/known_hosts
   /bin/rm ~/.ssh/known_hosts.$$
   return 0
