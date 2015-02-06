@@ -6030,6 +6030,8 @@ function system_audit {
           get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
           test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
           test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+        else
+          diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
         fi
       fi
 
