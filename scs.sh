@@ -6031,7 +6031,7 @@ function system_audit {
           test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
           test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
         else
-          diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+          diff $TMP/release/{REFERENCE,ACTUAL}/$F
         fi
       fi
 
