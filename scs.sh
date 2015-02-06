@@ -363,6 +363,8 @@
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
+#     - automatically register the current ssh key on a remote system when it is built (kickstart likely?)
+#     - stop supporting centos 5?  mount disk images to deploy initial config and install packages?
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -923,10 +925,11 @@ function read_dom () {
 #  --sudo <name>         user to access server and elevate privileges
 #
 function register_ssh_key {
-  local PrivateKey PublicKey Pass System RemoteUser SudoUser AccessUser
+  local PrivateKey PublicKey Pass System RemoteUser SudoUser AccessUser Debug=0
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
+    --debug) Debug=1;;
     --host) System="$2";;
     --key) PrivateKey="$2";;
     --sudo) SudoUser="$2";;
@@ -954,8 +957,8 @@ function register_ssh_key {
   if [[ -n "$SudoUser" ]]; then
     expect -c "
 set timeout 10
-exp_internal 0
-log_user 0
+exp_internal $Debug
+log_user $Debug
 match_max 100000
 spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $AccessUser $System
 expect {
@@ -965,8 +968,11 @@ expect {
 }
 expect -regexp \".*(\\\$|#).*\"
 send -- \"sudo su - $RemoteUser\\r\"
-expect \".*?assword for $AccessUser:*\"
-send -- \"$Pass\\r\"
+expect {
+  \".*?assword for $AccessUser:*\" { send -- \"$Pass\\r\" }
+  eof { exit }
+  timeout { exit }
+}
 expect -regexp \".*(\\\$|#).*\"
 send -- \"grep -q \\\"$PublicKey\\\" .ssh/authorized_keys 2>/dev/null\\r\"
 expect -regexp \".*(\\\$|#).*\"
@@ -980,8 +986,8 @@ expect eof
   else
     expect -c "
 set timeout 10
-exp_internal 0
-log_user 0
+exp_internal $Debug
+log_user $Debug
 match_max 100000
 spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $AccessUser $System
 expect {
@@ -5539,7 +5545,8 @@ function hypervisor_locate_system {
 
   # variable scope
   local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
-        VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate
+        VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate \
+        Cache
 
   # load the system
   # [FORMAT:system]
@@ -5578,9 +5585,11 @@ function hypervisor_locate_system {
   # check if there is a preferred HV already
   # [FORMAT:hv-system]
   PREF="$( grep -E "^$NAME,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
-  start_modify
   # [FORMAT:hv-system]
-  perl -i -ne "print unless /^${NAME},/" ${CONF}/hv-system >/dev/null 2>&1
+  Cache="$( grep -E "^$NAME," ${CONF}/hv-system |perl -pe 's/[^,]*,([^,]*),.*/\1/' |tr '\n' ' ' |perl -pe 's/ $//' )"
+
+  # [FORMAT:hv-system]
+  #perl -i -ne "print unless /^${NAME},/" ${CONF}/hv-system >/dev/null 2>&1
 
   # set defaults
   for HV in $LIST; do
@@ -5599,8 +5608,17 @@ function hypervisor_locate_system {
     fi
     test -z "$VM" && continue
     if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
-    printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+    # check the cache
+    printf -- ' %s ' "$Cache" |grep -q " $HV "
+    if [[ $? -ne 0 ]]; then
+      printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+    else
+      Cache="$( printf -- '%s' "$Cache" |perl -pe "s/ ?$HV ?//" )"
+    fi
   done
+
+  # remove hosts that were not found
+  for HV in $Cache; do perl -i -ne "print unless /[^,]*,$HV,/" ${CONF}/hv-system >/dev/null 2>&1; done
 
   # check results
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
@@ -5808,14 +5826,22 @@ function hypervisor_rank {
 function hypervisor_register_key {
   local IP
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
-  if [[ $# -ne 3 && $# -ne 5 ]]; then hypervisor_register_key_help >&2; exit 1; fi
+  if [[ $# -lt 3 && $# -gt 6 ]]; then hypervisor_register_key_help >&2; exit 1; fi
   IP=$( hypervisor_show $1 --brief |grep Address |cut -d' ' -f3 )
   valid_ip $IP || err "The specified hypervisor has an invalid management address."
   if [ $# -eq 5 ]; then
     if [ "$2" != "--sudo" ]; then hypervisor_register_key_help >&2; exit 1; fi
-    register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    if [[ "$6" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5" --debug
+    else
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    fi
   else
-    register_ssh_key --host "$IP" --user "$2" --key "$3"
+    if [[ "$4" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --user "$2" --key "$3" --debug
+    else
+      register_ssh_key --host "$IP" --user "$2" --key "$3"
+    fi
   fi
 }
 function hypervisor_register_key_help { cat <<_EOF
@@ -7514,14 +7540,22 @@ function system_push_build_scripts {
 function system_register_key {
   local IP
   system_exists "$1" || err "Unknown or missing system name."
-  if [[ $# -ne 3 && $# -ne 5 ]]; then system_register_key_help >&2; exit 1; fi
+  if [[ $# -lt 3 && $# -gt 6 ]]; then system_register_key_help >&2; exit 1; fi
   IP=$( system_show $1 --brief |grep ^IP: |cut -d' ' -f2 )
   valid_ip $IP || err "The specified system has an invalid IP address."
   if [ $# -eq 5 ]; then
     if [ "$2" != "--sudo" ]; then system_register_key_help >&2; exit 1; fi
-    register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    if [[ "$6" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5" --debug
+    else
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    fi
   else
-    register_ssh_key --host "$IP" --user "$2" --key "$3"
+    if [[ "$4" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --user "$2" --key "$3" --debug
+    else
+      register_ssh_key --host "$IP" --user "$2" --key "$3"
+    fi
   fi
 }
 function system_register_key_help { cat <<_EOF
@@ -7887,8 +7921,20 @@ function system_show {
   # if overlay is null then there is no overlay
   test -z "$OVERLAY" && OVERLAY="N/A"
   # output the status/summary
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\nLast Build: $( date +'%c' -d @${SystemBuildDate} 2>/dev/null )\n"
+  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLast Build: %s\n" \
+    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
   test $BRIEF -eq 1 && return
+  # show other systems using this as a base image
+  if [[ "$BASE_IMAGE" == "y" ]]; then
+    # [FORMAT:system]
+    NUM=$( grep -cE "^([^,]*,){7}$NAME," ${CONF}/system )
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo -e "\nThere ${A} ${NUM} overlay${S}."
+    if [ $NUM -gt 0 ]; then
+      # [FORMAT:system]
+      grep -E "^([^,]*,){7}$NAME," ${CONF}/system |perl -pe 's/,.*//; s/^/   /'
+    fi
+  fi
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     NUM=$( build_application_list "$BUILD" |wc -l |awk '{print $1}' )
