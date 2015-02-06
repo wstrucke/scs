@@ -5972,7 +5972,7 @@ function system_audit {
 
   # generate the release
   echo "Generating release..."
-  FILE=$( system_release $System |tail -n1 )
+  FILE=$( system_release $System |tail -n1 |perl -pe 's/\.bsx/.tgz/' )
   test -s "$FILE" || err "Error generating release"
 
   # extract release to local directory
@@ -6477,10 +6477,10 @@ function system_deploy {
   printf -- "Cleaning up...\n"
   rm -f $FILE
   if [ $Install -eq 0 ]; then
-    printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"tar xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh\"\n\n"
+    printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"/bin/bash /root/$( basename $FILE )\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh_remote_command $System "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
+    ssh_remote_command $System "/bin/bash /root/$( basename $FILE )"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -7360,7 +7360,7 @@ function system_provision_phase2 {
   scp -i $SCS_KeyFile -q -o "StrictHostKeyChecking no" $FILE $SCS_RemoteUser@$BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh_remote_command -d -n -q $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
+  ssh_remote_command -d -n -q $BUILDIP "/bin/bash /root/$( basename $FILE )"
 
   # !!FIXME!!
   #  * - ship over latest code release
@@ -7682,14 +7682,16 @@ function system_list_unformatted {
 function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate AllFiles HasRoutes=0
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
+        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP/release $RELEASEDIR
+  MyDate="$( date +'%Y%m%d-%H%M%S' )"
   AUDITSCRIPT="$TMP/release/scs-audit.sh"
-  RELEASEFILE="$NAME-release-$( date +'%Y%m%d-%H%M%S' ).tgz"
-  RELEASESCRIPT="$TMP/release/scs-install.sh"
+  RELEASEFILE="$NAME-release-$MyDate.tgz"
+  RELEASESCRIPT="$TMP/$NAME-release-$MyDate.bsx"
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
@@ -7702,6 +7704,8 @@ function system_release {
   # create the installation script
   printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on $( date )\n#\n\n" >$RELEASESCRIPT
   printf -- "# safety first\ntest \"\$( hostname )\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
+  printf -- "# self-extracting archive\nexport TMPDIR=/root/scs-release-$MyDate\nmkdir -m0700 \$TMPDIR\n" >>$RELEASESCRIPT
+  printf -- "ARCHIVE=\$( awk '/^__ARCHIVE_BELOW__/ {print NR + 1; exit 0; }' \$0 )\n\n" >>$RELEASESCRIPT
   printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
   touch ${RELEASESCRIPT}.tail
 
@@ -7806,6 +7810,11 @@ function system_release {
     [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
     printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
 
+    # self-extracting archive
+    printf -- "# extract\ntail -n+\$ARCHIVE \$0 |tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzv -C \$TMPDIR\n#rm -rf \$TMPDIR\n\n" >>$RELEASESCRIPT
+# exit now
+printf -- "exit 0\n\n" >>$RELEASESCRIPT
+
     # finalize installation script
     printf -- "\nlogger -t scs \"installation complete\"\n" >>${RELEASESCRIPT}.tail
     cat ${RELEASESCRIPT}.tail >>$RELEASESCRIPT
@@ -7816,7 +7825,14 @@ function system_release {
     pushd $TMP/release >/dev/null 2>&1
     tar czf $RELEASEDIR/$RELEASEFILE *
     popd >/dev/null 2>&1
-    printf -- "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE\n"
+
+    # add archive to script
+    printf -- "\n\nexit 0\n\n__ARCHIVE_BELOW__\n" >>$RELEASESCRIPT
+    cat $RELEASEDIR/$RELEASEFILE>>$RELEASESCRIPT
+    #rm -f $RELEASEDIR/$RELEASEFILE
+    mv $RELEASESCRIPT $RELEASEDIR/
+
+    printf -- "Complete. Generated release:\n$RELEASEDIR/$NAME-release-$MyDate.bsx\n"
   else
     # some operations (such as system_provision) require the release file, even if it's empty
     pushd $TMP/release >/dev/null 2>&1
@@ -7824,6 +7840,9 @@ function system_release {
     popd >/dev/null 2>&1
     printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
   fi
+
+#  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
+#  printf -- "\n\n# install
 }
 
 # output list of resources assigned to a system
