@@ -7683,7 +7683,7 @@ function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
-        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate
+        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
@@ -7696,8 +7696,12 @@ function system_release {
   FILES=()
   AllFiles=()
 
+  pushd $CONF >/dev/null 2>&1
+  Branch=$( git branch |grep ^* |cut -d' ' -f2 )
+  popd >/dev/null 2>&1
+
   # create the audit script
-  printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on $( date )\n#\n\n" >$AUDITSCRIPT
+  printf -- "#!/bin/bash\n# scs audit script for $NAME [$Branch], generated on $( hostname ) at $MyDate\n#\n\n" >$AUDITSCRIPT
   printf -- "# warn if not target host\ntest \"\$( hostname )\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
   printf -- "PASS=0\n" >>$AUDITSCRIPT
 
@@ -7706,7 +7710,7 @@ function system_release {
   printf -- "# safety first\ntest \"\$( hostname )\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
   printf -- "# self-extracting archive\nexport TMPDIR=/root/scs-release-$MyDate\nmkdir -m0700 \$TMPDIR\n" >>$RELEASESCRIPT
   printf -- "ARCHIVE=\$( awk '/^__ARCHIVE_BELOW__/ {print NR + 1; exit 0; }' \$0 )\n\n" >>$RELEASESCRIPT
-  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
+  printf -- "logger -t scs \"starting installation for ${LOC}:${EN} $NAME [$Branch], generated on $MyDate\"\n\n" >>$RELEASESCRIPT
   touch ${RELEASESCRIPT}.tail
 
   # create the stat file
@@ -7806,14 +7810,26 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\n#test -d /var/backups || mkdir -p /var/backups\n#tar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
+    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\ntar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
     [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
     printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
 
     # self-extracting archive
-    printf -- "# extract\ntail -n+\$ARCHIVE \$0 |tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzv -C \$TMPDIR\n#rm -rf \$TMPDIR\n\n" >>$RELEASESCRIPT
-# exit now
-printf -- "exit 0\n\n" >>$RELEASESCRIPT
+    printf -- "# extract\ntail -n+\$ARCHIVE \$0 |tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xz -C \$TMPDIR\n" >>$RELEASESCRIPT
+
+    # do not replace symlinks (which happens with a direct tar xzf)
+    #
+    # rsync options being used for your convenience:
+    #
+    #       -c, --checksum              skip based on checksum, not mod-time & size
+    #       -r, --recursive             recurse into directories
+    #       -l, --links                 copy symlinks as symlinks
+    #       -p, --perms                 preserve permissions
+    #       -g, --group                 preserve group
+    #       -o, --owner                 preserve owner (super-user only)
+    #
+    printf -- "/usr/bin/rsync -crlpgo \$TMPDIR/ / >/dev/null 2>&1\n" >>$RELEASESCRIPT
+    printf -- "rm -rf \$TMPDIR\n\n" >>$RELEASESCRIPT
 
     # finalize installation script
     printf -- "\nlogger -t scs \"installation complete\"\n" >>${RELEASESCRIPT}.tail
@@ -7840,9 +7856,6 @@ printf -- "exit 0\n\n" >>$RELEASESCRIPT
     popd >/dev/null 2>&1
     printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
   fi
-
-#  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
-#  printf -- "\n\n# install
 }
 
 # output list of resources assigned to a system
