@@ -7824,11 +7824,9 @@ function system_release {
     #       -c, --checksum              skip based on checksum, not mod-time & size
     #       -r, --recursive             recurse into directories
     #       -l, --links                 copy symlinks as symlinks
-    #       -p, --perms                 preserve permissions
-    #       -g, --group                 preserve group
-    #       -o, --owner                 preserve owner (super-user only)
+    #       -K, --keep-dirlinks         treat symlinked dir on receiver as dir
     #
-    printf -- "/usr/bin/rsync -crlpgo \$TMPDIR/ / >/dev/null 2>&1\n" >>$RELEASESCRIPT
+    printf -- "/usr/bin/rsync -crlK \$TMPDIR/ / >/dev/null 2>&1\n" >>$RELEASESCRIPT
     printf -- "rm -rf \$TMPDIR\n\n" >>$RELEASESCRIPT
 
     # finalize installation script
