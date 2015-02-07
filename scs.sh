@@ -6498,10 +6498,10 @@ function system_deploy {
   printf -- "Cleaning up...\n"
   rm -f $FILE
   if [ $Install -eq 0 ]; then
-    printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"/bin/bash /root/$( basename $FILE )\"\n\n"
+    printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"/bin/bash /root/$( basename $FILE ) --install\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh_remote_command $System "/bin/bash /root/$( basename $FILE )"
+    ssh_remote_command $System "/bin/bash /root/$( basename $FILE ) --install"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
