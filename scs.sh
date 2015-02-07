@@ -7225,7 +7225,9 @@ _EOF
     nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     scslog "starting phase 2 in foreground process"
-    echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
+    echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \
+         \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \
+         \"$RAM\" \"$MAC\" \"$UUID\"" >&2
     system_provision_phase2 "$NAME" "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
   fi
 
@@ -7312,10 +7314,15 @@ function system_provision_phase2 {
     #  - kick off provision system
     scslog "starting system build for $NAME on $HV at $BUILDIP"
     echo "Creating virtual machine..."
-    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} \
+            --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS \
+            --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+
     ssh_remote_command -d -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n -l $SCS_RemoteUser $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+      echo ssh -n -l $SCS_RemoteUser $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} \
+           --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS \
+           --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
 
