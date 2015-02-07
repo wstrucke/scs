@@ -847,6 +847,25 @@ function mask2cdr {
   return 0
 }
 
+# md5sum (linux) is not necessarily available
+#
+# required:
+#   $1 file1
+#   $2 file2
+#   etc...
+#
+function md5s {
+  local RetCode=0
+  if [[ -x /usr/bin/md5sum ]]; then
+    /usr/bin/md5sum $@ 2>/dev/null |cut -d' ' -f1
+  elif [[ -x /sbin/md5 ]]; then
+    /sbin/md5 -q $@ 2>/dev/null
+  else
+    echo "md5sum not available" >&2; RetCode=1
+  fi
+  return $RetCode
+}
+
 function octal2perm {
   local N="$1" R=r W=w X=x
   if ! [ -z "$2" ]; then local R=s W=s X=t; fi
@@ -3591,10 +3610,10 @@ function file_edit {
       cat $CONF/template/$C >$TMP/$C.ORIG
     fi
     # open the patched file for editing
-    vim $TMP/$C
+    $EditProgram $TMP/$C
     wait
     # do nothing further if there were no changes made
-    if [ $( md5sum $TMP/$C{.ORIG,} 2>/dev/null |cut -d' ' -f1 |uniq |wc -l |awk '{print $1}' ) -eq 1 ]; then
+    if [ $( md5s $TMP/$C{.ORIG,} |uniq |wc -l |awk '{print $1}' ) -eq 1 ]; then
       echo "No changes were made."; exit 0
     fi
     # generate a new patch file against the original template
@@ -3618,7 +3637,7 @@ function file_edit {
   else
     # create a copy of the template to edit
     cat $CONF/template/$C >/tmp/app-config.$$
-    vim /tmp/app-config.$$
+    $EditProgram /tmp/app-config.$$
     wait
     # prompt for verification
     echo -e "Please review the change:\n"
@@ -5972,19 +5991,21 @@ function system_audit {
 
   # generate the release
   echo "Generating release..."
-  FILE=$( system_release $System |tail -n1 |perl -pe 's/\.bsx/.tgz/' )
+  FILE=$( system_release $System |tail -n1 |perl -pe 's/\.bsx/.cpio.gz/' )
   test -s "$FILE" || err "Error generating release"
 
-  # extract release to local directory
+  # prepare the release directory
   echo "Extracting..."
   mkdir -p $TMP/release/{REFERENCE,ACTUAL}
-  tar xzf $FILE -C $TMP/release/REFERENCE/ || err "Error extracting release to local directory"
-
-  # clean up temporary release archive
-  rm -f $FILE
 
   # switch to the release root
   pushd $TMP/release/REFERENCE >/dev/null 2>&1
+
+  # extract release to local directory
+  gzip -dc $FILE |cpio -idm 2>/dev/null || err "Error extracting release to local directory"
+
+  # clean up temporary release archive
+  rm -f $FILE
 
   # move the stat file out of the way
   mv scs-stat ../
@@ -6023,7 +6044,7 @@ function system_audit {
         fi
       fi
 
-      if [[ $SkipCheck -eq 0 && $( md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
+      if [[ $SkipCheck -eq 0 && $( md5s $TMP/release/{REFERENCE,ACTUAL}/$F |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
         if [[ $SkipPrompt -ne 1 ]]; then
@@ -7679,6 +7700,11 @@ function system_list_unformatted {
   fi
 }
 
+# generate the complete deployment archive and self-extracting installation script for a system
+#
+# requires:
+#   $1  system name
+#
 function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
@@ -7690,7 +7716,7 @@ function system_release {
   mkdir -p $TMP/release $RELEASEDIR
   MyDate="$( date +'%Y%m%d-%H%M%S' )"
   AUDITSCRIPT="$TMP/release/scs-audit.sh"
-  RELEASEFILE="$NAME-release-$MyDate.tgz"
+  RELEASEFILE="$NAME-release-$MyDate.cpio.gz"
   RELEASESCRIPT="$TMP/$NAME-release-$MyDate.bsx"
   STATFILE="$TMP/release/scs-stat"
   FILES=()
@@ -7707,9 +7733,25 @@ function system_release {
 
   # create the installation script
   printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on $( date )\n#\n\n" >$RELEASESCRIPT
-  printf -- "# safety first\ntest \"\$( hostname )\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
-  printf -- "# self-extracting archive\nexport TMPDIR=/root/scs-release-$MyDate\nmkdir -m0700 \$TMPDIR\n" >>$RELEASESCRIPT
-  printf -- "ARCHIVE=\$( awk '/^__ARCHIVE_BELOW__/ {print NR + 1; exit 0; }' \$0 )\n\n" >>$RELEASESCRIPT
+  printf -- "# usage\n#\nfunction usage {\n  echo \"Usage: \$0 [--audit|--extract </path/>|--install]\"\n  exit 1\n}\n\n" >>$RELEASESCRIPT
+  printf -- "# set defaults\nAudit=0\nExtract=\"\"\nInstall=0\n\n" >>$RELEASESCRIPT
+  printf -- "while [[ \$# -gt 0 ]]; do case \$1 in\n  --audit) Audit=1;;\n  --extract) Extract=\"\$2\";;\n  --install) Install=1;;\nesac; shift; done\n\n" >>$RELEASESCRIPT
+  printf -- "# safety first\nif [[ \"\$( hostname )\" != \"$NAME\" && -z \"\$Extract\" ]]; then exit 2; fi\n\n" >>$RELEASESCRIPT
+  printf -- "# validate settings\nif [[ ( \$(( \$Audit + \$Install )) -eq 0 || \$(( \$Audit + \$Install )) -gt 1 ) && -z \"\$Extract\" ]]; then usage; fi\n" >>$RELEASESCRIPT
+  printf -- "if [[ \"\$Extract\" == \"/\" ]]; then echo \"Invalid extraction path.\"; exit 1; fi\n\n" >>$RELEASESCRIPT
+  printf -- "# self-extracting archive\nif [[ -n \"\$Extract\" ]]; then TMPDIR=\"\$Extract\"; else TMPDIR=/root/scs-release-$MyDate; fi\nexport TMPDIR\nmkdir -m0700 \$TMPDIR >/dev/null 2>&1\n" >>$RELEASESCRIPT
+  printf -- "ARCHIVE=\$( awk '/^__PAYLOAD__/ {print NR + 1; exit 0; }' \$0 )\n\n" >>$RELEASESCRIPT
+
+  # the script needs to know where it is to read itself
+  printf -- "# get absolute path to self\npushd \$( dirname \$0 ) >/dev/null\nSCRIPTPATH=\"\$( pwd -P )/\$( basename \$0)\"\npopd >/dev/null\n\n" >>$RELEASESCRIPT
+
+  # self-extracting archive
+  printf -- "# extract\ncd \$TMPDIR\ntail -n+\$ARCHIVE \$SCRIPTPATH |gzip -dc - |cpio -idm 2>/dev/null\ncd - >/dev/null 2>&1\n" >>$RELEASESCRIPT
+  printf -- "# exit here if extract only\nif [[ -n \"\$Extract\" ]]; then\n  echo \"Archive successfully extracted to \$TMPDIR\"\n  exit 0\nfi\n\n" >>$RELEASESCRIPT
+
+  # audit only function
+  printf -- "# audit option\nif [[ \$Audit -eq 1 ]]; then\n  cd /\n  /bin/bash \$TMPDIR/scs-audit.sh\n  Result=\$?\n  rm -rf \$TMPDIR\n  cd - >/dev/null 2>&1\n  exit \$Result\nfi\n\n" >>$RELEASESCRIPT
+
   printf -- "logger -t scs \"starting installation for ${LOC}:${EN} $NAME [$Branch], generated on $MyDate\"\n\n" >>$RELEASESCRIPT
   touch ${RELEASESCRIPT}.tail
 
@@ -7789,9 +7831,19 @@ function system_release {
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
         # audit
-        printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
-        printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
-        printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        if [[ "$FTYPE" == "directory" ]]; then
+          printf -- "if [ -d \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        elif [[ "$FTYPE" == "symlink" ]]; then
+          printf -- "if [ -L \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT root:root\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT root:root' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        else
+          printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        fi
         if [ "$FTYPE" == "symlink" ]; then
           printf -- "# set permissions on '$FNAME'\nchown -h root:root /$FPTH\n" >>${RELEASESCRIPT}.tail
         else
@@ -7814,8 +7866,8 @@ function system_release {
     [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
     printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
 
-    # self-extracting archive
-    printf -- "# extract\ntail -n+\$ARCHIVE \$0 |tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xz -C \$TMPDIR\n" >>$RELEASESCRIPT
+    # do not deploy stat/audit scripts
+    printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
 
     # do not replace symlinks (which happens with a direct tar xzf)
     #
@@ -7837,20 +7889,19 @@ function system_release {
 
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
-    tar czf $RELEASEDIR/$RELEASEFILE *
+    find . -depth -print0 |cpio -o0 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
 
     # add archive to script
-    printf -- "\n\nexit 0\n\n__ARCHIVE_BELOW__\n" >>$RELEASESCRIPT
+    printf -- "\n\nexit 0\n\n__PAYLOAD__\n" >>$RELEASESCRIPT
     cat $RELEASEDIR/$RELEASEFILE>>$RELEASESCRIPT
-    #rm -f $RELEASEDIR/$RELEASEFILE
     mv $RELEASESCRIPT $RELEASEDIR/
 
     printf -- "Complete. Generated release:\n$RELEASEDIR/$NAME-release-$MyDate.bsx\n"
   else
     # some operations (such as system_provision) require the release file, even if it's empty
     pushd $TMP/release >/dev/null 2>&1
-    tar czf $RELEASEDIR/$RELEASEFILE --files-from /dev/null
+    find . -depth -print0 | cpio -o0 | gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
     printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
   fi
@@ -8331,6 +8382,9 @@ DEF_MEM=1024
 # site domain name (for hosts)
 DOMAIN_NAME=2checkout.com
 #
+# use the user's default editor if one is set
+EditProgram=${EDITOR:=vim}
+#
 # tcp ports to check to validate an ip address is not allocated (space seperated list)
 #   tcp/22 (ssh) is always checked
 IP_Check_Ports="80 443 8080 8443"
@@ -8389,6 +8443,12 @@ TMPLarge=${SCS_TEMP_LARGE:=/bkup1}        ; test -d $TMPLarge || TMPLarge=~/scs-
 GitVer=$( git version 2>/dev/null |perl -pe 's/.* ([0-9\.]*)( .*|$)/\1/' )
 HostOS=$( [[ "$( uname -v )" =~ "Darwin" ]] && echo mac || echo linux )
 USERNAME=""
+
+if [[ "$HostOS" == "mac" ]]; then
+  # turn off special handling of ._* files in tar, etc.
+  export COPYFILE_DISABLE=true
+  export COPY_EXTENDED_ATTRIBUTES_DISABLE=true
+fi
 
 # precaution
 if [[ -z "$TMP" || "$TMP" == "/" ]]; then echo "Invalid temporary directory. Please use a variation of '/tmp/scs.\$\$'." >&2; exit 1; fi
