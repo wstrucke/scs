@@ -7381,7 +7381,7 @@ function system_provision_phase2 {
   scp -i $SCS_KeyFile -q -o "StrictHostKeyChecking no" $FILE $SCS_RemoteUser@$BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh_remote_command -d -n -q $BUILDIP "/bin/bash /root/$( basename $FILE )"
+  ssh_remote_command -d -n -q $BUILDIP "/bin/bash /root/$( basename $FILE ) --install"
 
   # !!FIXME!!
   #  * - ship over latest code release
