@@ -7853,7 +7853,7 @@ function system_release {
         if [ "$FTYPE" == "symlink" ]; then
           printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |perl -pe 's/binary$/file/' >>$STATFILE
         else
-          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |perl -pe 's/binary$/file/' >>$STATFILE
+          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |perl -pe 's/(binary|copy|download)$/file/' >>$STATFILE
         fi
       fi
     done
