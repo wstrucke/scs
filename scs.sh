@@ -906,8 +906,8 @@ function purge_known_hosts {
   if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
-  if [[ -n "$name" ]]; then perl -i -ne "print unless /$( printf -- "$name" |perl -pe 's/\./\\./g' )/" $kh; fi
-  if [[ -n "$ipaddy" ]]; then perl -i -ne "print unless /$( printf -- "$ipaddy" |perl -pe 's/\./\\./g' )/" $kh; fi
+  if [[ -n "$name" ]]; then perl -i -ne "print unless /$( printf -- "$name" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
+  if [[ -n "$ipaddy" ]]; then perl -i -ne "print unless /$( printf -- "$ipaddy" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
   ) 200>>$kh
 
@@ -7255,6 +7255,10 @@ _EOF
     hypervisor_locate_system $NAME >/dev/null 2>&1
 
   fi
+
+  # clear any host entry
+  purge_known_hosts --name "$NAME" --ip "$IP"
+  purge_known_hosts --ip "$BUILDIP"
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
