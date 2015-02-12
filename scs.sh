@@ -58,9 +58,6 @@
 #     <location>/network                                   file to list networks available at the location
 #     <location>/<environment>                             file
 #
-# Locks are taken by using git branches. This should be revisited and improved - the current method cleanly avoids most merge conflicts.
-#
-# A constant is a variable with a static value globally, per environment, or per application in an environment. (Scope)
 # A constant has a globally unique name with a fixed value in the scope it is defined in and is in only one scope (never duplicated).
 #
 # A resource is a pre-defined type with a globally unique value (e.g. an IP address).  That value can be assigned to either a host or an
@@ -216,7 +213,7 @@
 #   ----vlan            network vlan tag/number (numeric)
 #   ----description     description of the network
 #   ----repo_address    ip address or hostname of the repository/mirror for installing an OS or related packages for the network
-#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in 
+#   ----repo_fs_path    absolute path on the build server to a web accessible folder scs can place kickstart configs in
 #                         (no trailing slash), e.g. /var/web/building/scs
 #   ----repo_path_url   absolute path from the client web browser to the repo_fs_path, no leading or trailing slash, e.g. 'building/scs'
 #   ----build           'y' or 'n', yes if this network has DHCP with PXE to boot into a network install image
@@ -296,7 +293,7 @@
 #   ----default-build   'y' or 'n', should this be the DEFAULT network at the location for builds
 #
 # External requirements:
-#   Packages: coreutils awk git iputils nc ncurses openssh perl sed which
+#   Packages: coreutils awk git iputils nc ncurses openssh perl which expect
 #     NOTE - requires GNU netcat, *NOT* Nmap Ncat!!
 #   Specifically:
 #     coreutils: echo, head, nohup, tail, tr, shuf, sort, wc
@@ -305,10 +302,23 @@
 #     openssh: ssh, ssh-keygen
 #   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
 #
+# Code Guidelines:
+#   1. Do not use sed, at all, anywhere.  The implementation is inconsistent between Linux/UNIX/BSD/etc...
+#   2. Keep function names alphabetically sorted in each section to ease management.
+#   3. Space out lines of code and comment appropriately.  This includes vertical alignment where appropriate.
+#   4. When you see a bug or missing feature implement it right away, add a !!FIXME!!, or a TO DO (below).
+#   5. Every time a configuration file is read or written include the appropriate [FORMAT:...] identifier.
+#      These are located in the "Data storage" section (above) and ease "schema" changes to the storage
+#      files.
+#   6. Program defensively. Always assume a function will be called with bad data or invalid parameters.
+#   7. Avoid code reuse; try to leverage generic functions to simplify development and improve legibility.
+#   8. Use CamelCase variables to avoid conflicts with environment variables.
+#   9. Always localize variables.  Assume at some point each function will be called from other functions
+#      as more functionality is abstracted.
+#   10. Leverage bash built-ins over external programs to improve compatibility.
+#
 # TO DO:
 #   - bug fix:
-#     - renaming a build should update systems using that build
-#     - deleting a build should prompt/list systems using that build
 #     - functions that validate input and are called from subshells should fail instead of prompting in the subshell
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
@@ -317,6 +327,7 @@
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - renaming an application does not update all of the configuration files
+#     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -331,7 +342,7 @@
 #     - rewrite modules in a proper programming language
 #     - add file groups
 #     - store vm uuid with system to use as a sanity check when manipulating remote vms
-#     - generate unique ssh keys (in root authorized keys) for each system to use as a sanity check when managing them
+#     - fingerprint each system to use as a sanity check when managing them
 #     - all systems should use the same backing image, and instead of a larger disk get a second disk with a unique LVM name
 #     - cluster y/n for application in environment
 #     - file 'patch' for cluster y/n (in addition to environment patch)
@@ -346,10 +357,14 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
-#     - use more environment variables and add help section detailing the options
 #     - make locking an optional behavior
+#     - flock is not available on darwin (... or would have to be built ...)
 #     - application show should list systems linked to the application and the environment for the systems
 #     - need to be able to define number of processors for a build or system
+#     - add support to system module to show and manage snapshots on hypervisors
+#     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
+#     - automatically register the current ssh key on a remote system when it is built (kickstart likely?)
+#     - stop supporting centos 5?  mount disk images to deploy initial config and install packages?
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -361,12 +376,12 @@
 #
 
 #Section: UTILITY
- #     # ####### ### #       ### ####### #     # 
- #     #    #     #  #        #     #     #   #  
- #     #    #     #  #        #     #      # #   
- #     #    #     #  #        #     #       #    
- #     #    #     #  #        #     #       #    
- #     #    #     #  #        #     #       #    
+ #     # ####### ### #       ### ####### #     #
+ #     #    #     #  #        #     #     #   #
+ #     #    #     #  #        #     #      # #
+ #     #    #     #  #        #     #       #
+ #     #    #     #  #        #     #       #
+ #     #    #     #  #        #     #       #
   #####     #    ### ####### ###    #       #
 
 # convert subnet mask bits into a network mask
@@ -415,12 +430,16 @@ function check_abort {
 #   $3  timeout (default is 2 seconds)
 #
 function check_host_alive {
-  local Port Timeout
+  local Port Timeout Pid C=0 Result=0
   if [ $# -eq 0 ]; then return 1; fi
-  if [ $? -eq 2 ]; then Port=$2; else Port=22; fi
-  if [ $? -eq 3 ]; then Timeout=$3; else Timeout=2; fi
+  if [ $# -eq 2 ]; then Port=$2; else Port=22; fi
+  if [ $# -eq 3 ]; then Timeout=$3; else Timeout=2; fi
   if [ "$HostOS" == "mac" ]; then
-    ( ( exec 3<>/dev/tcp/$1/$Port ) & sleep $Timeout; kill $! &>/dev/null ) || return 0 && return 1
+    ( ( exec 3<>/dev/tcp/$1/$Port ) & Pid=$! ; \
+      while [[ $( ps -p $Pid |wc -l ) -gt 0 && $C -lt $((Timeout*5)) ]]; do sleep .2; C=$((C+1)); done; \
+      if [[ $( ps -p $Pid |wc -l ) -gt 0 ]]; then Result=1; kill $Pid; fi; \
+    ) >/dev/null 2>&1
+    return $Result
   else
     nc -z -w $Timeout $1 $Port &>/dev/null && return 0 || return 1
   fi
@@ -598,7 +617,7 @@ function generic_choose {
     eval $1_list \"$4\"
     printf -- "\n"
     get_input I "Please specify $AN $1"
-    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1" 
+    grep -qE "$M$I," ${CONF}/$1 || err "Unknown $1"
     printf -- "\n"
     eval $3="$I"
     return 1
@@ -616,14 +635,14 @@ function generic_delete {
   if [ -z "$2" ]; then
     eval ${1}_list
     printf -- "\n"
-    get_input C "$( printf -- $1 |sed -e "s/\b\(.\)/\u\1/g" ) to Delete"
+    get_input C "$( printf -- $1 |perl -pe "s/\b\(.\)/\u\1/g" ) to Delete"
   else
     C="$2"
   fi
   grep -qE "^$C," ${CONF}/$1 || err "Unknown $1"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" != "y" ]; then return 1; fi
-  sed -e '/^'$C',/d' -i ${CONF}/$1
+  perl -i -ne "print unless /^$C,/" ${CONF}/$1
   commit_file $1
   return 0
 }
@@ -826,6 +845,25 @@ function mask2cdr {
   return 0
 }
 
+# md5sum (linux) is not necessarily available
+#
+# required:
+#   $1 file1
+#   $2 file2
+#   etc...
+#
+function md5s {
+  local RetCode=0
+  if [[ -x /usr/bin/md5sum ]]; then
+    /usr/bin/md5sum $@ 2>/dev/null |cut -d' ' -f1
+  elif [[ -x /sbin/md5 ]]; then
+    /sbin/md5 -q $@ 2>/dev/null
+  else
+    echo "md5sum not available" >&2; RetCode=1
+  fi
+  return $RetCode
+}
+
 function octal2perm {
   local N="$1" R=r W=w X=x
   if ! [ -z "$2" ]; then local R=s W=s X=t; fi
@@ -854,7 +892,7 @@ function purge_known_hosts {
   if [ $# -eq 0 ]; then return; fi
 
   local name ipaddy kh
-  kh=/root/.ssh/known_hosts
+  kh=~/.ssh/known_hosts
 
   while [ $# -gt 0 ]; do case $1 in
     --name) grep -q "$2" $kh && name=$2; shift;;
@@ -869,8 +907,8 @@ function purge_known_hosts {
   if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
-  test -z "$name" || sed -e "/$( printf -- "$name" |sed -e 's/\./\\./g' )/d" -i $kh
-  test -z "$ipaddy" || sed -e "/$( printf -- "$ipaddy" |sed -e 's/\./\\./g' )/d" -i $kh
+  if [[ -n "$name" ]]; then perl -i -ne "print unless /$( printf -- "$name" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
+  if [[ -n "$ipaddy" ]]; then perl -i -ne "print unless /$( printf -- "$ipaddy" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
   ) 200>>$kh
 
@@ -899,40 +937,93 @@ function read_dom () {
 # register ssh public key on a remote host
 #
 # requires:
-#  $1	remote host name or ip
-#  $2	remote user name
-#  $3	local path to ssh private key
+#  --host <name>         remote host name or ip
+#  --user <name>         remote user name
+#  --key </path/to/key>  local path to ssh private key
+#
+# optional:
+#  --sudo <name>         user to access server and elevate privileges
 #
 function register_ssh_key {
-  local PublicKey Pass
-  if [ $# -ne 3 ]; then err "Invalid arguments provided to register_ssh_key"; fi
-  check_host_alive $1 || err "Unable to connect to remote host"
+  local PrivateKey PublicKey Pass System RemoteUser SudoUser AccessUser Debug=0
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    --debug) Debug=1;;
+    --host) System="$2";;
+    --key) PrivateKey="$2";;
+    --sudo) SudoUser="$2";;
+    --user) RemoteUser="$2";;
+    *) err "Invalid argument provided to register_ssh_key";;
+  esac; shift 2; done
+
+  if [[ -z "$PrivateKey" || -z "$System" || -z "$RemoteUser" ]]; then err "Invalid arguments provided to register_ssh_key"; fi
+  check_host_alive $System || err "Unable to connect to remote host"
 
   # validate and load private key
-  test -s "$3" || err "Unable to access private key file"
-  PublicKey=$( ssh-keygen -y -P '' -q -f "$3" 2>/dev/null )
+  test -s "$PrivateKey" || err "Unable to access private key file"
+  PublicKey=$( ssh-keygen -y -P '' -q -f "$PrivateKey" 2>/dev/null )
   if [ $? -eq 1 ]; then err "Unable to load private key file"; fi
 
+  if [[ -n "$SudoUser" ]]; then AccessUser=$SudoUser; else AccessUser=$RemoteUser; fi
+
   # get the ssh password
-  read -sp "Password [$2]: " Pass
+  read -sp "Password [$AccessUser]: " Pass; echo
   test -z "$Pass" && err "A password is required to log in to the remote server"
 
-  expect -c "
+  # this can be done by adding a conditional to the expect script instead of having it twice,
+  #  but I don't feel like looking up and escaping the syntax for that right now...
+  #
+  if [[ -n "$SudoUser" ]]; then
+    expect -c "
 set timeout 10
-exp_internal 0
-log_user 0
+exp_internal $Debug
+log_user $Debug
 match_max 100000
-spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $2 $1
-expect \"*?assword:*\"
-send -- \"$Pass\r\"
+spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $AccessUser $System
+expect {
+  \"*?assword:*\" { send -- \"$Pass\\r\" }
+  eof { exit }
+  timeout { exit }
+}
 expect -regexp \".*(\\\$|#).*\"
-send -- \"grep -q \\\"$PublicKey\\\" .ssh/authorized_keys 2>/dev/null\r\"
+send -- \"sudo su - $RemoteUser\\r\"
+expect {
+  \".*?assword for $AccessUser:*\" { send -- \"$Pass\\r\" }
+  eof { exit }
+  timeout { exit }
+}
 expect -regexp \".*(\\\$|#).*\"
-send -- \"if \[ \\\$? -eq 1 \]; then echo \\\"$PublicKey\\\" >>.ssh/authorized_keys; fi\r\"
+send -- \"grep -q \\\"$PublicKey\\\" .ssh/authorized_keys 2>/dev/null\\r\"
 expect -regexp \".*(\\\$|#).*\"
-send -- \"exit\r\"
+send -- \"if \[ \\\$? -eq 1 \]; then echo \\\"$PublicKey\\\" >>.ssh/authorized_keys; fi\\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"exit\\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"exit\\r\"
 expect eof
 "
+  else
+    expect -c "
+set timeout 10
+exp_internal $Debug
+log_user $Debug
+match_max 100000
+spawn ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=keyboard-interactive,password -l $AccessUser $System
+expect {
+  \"*?assword:*\" { send -- \"$Pass\\r\" }
+  eof { exit }
+  timeout { exit }
+}
+expect -regexp \".*(\\\$|#).*\"
+send -- \"grep -q \\\"$PublicKey\\\" .ssh/authorized_keys 2>/dev/null\\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"if \[ \\\$? -eq 1 \]; then echo \\\"$PublicKey\\\" >>.ssh/authorized_keys; fi\\r\"
+expect -regexp \".*(\\\$|#).*\"
+send -- \"exit\\r\"
+expect eof
+"
+  fi
 }
 
 # replace piped input with commas in a string
@@ -1099,6 +1190,69 @@ function shuf {
   perl -MList::Util=shuffle -le'printf for shuffle <>'
 }
 
+# execute a command on a remote server
+#
+# used to centralize ssh calls and make global configuration parameters practical
+#
+# required:
+#   "host"            : remote host
+#   "command"         : remote command to execute
+#
+# optional:
+#   -d                : disable strict host key checking
+#   -i </path/to/key> : identify file (key) (defaults to global identity file)
+#   -l <user>         : remote user (defaults to global remote user)
+#   -n                : Redirects stdin from /dev/null (actually, prevents reading from stdin).
+#   -o <option>       : additional ssh option
+#   -p <port>         : remote ssh port
+#   -q                : quiet mode -> suppress stdout and stderr
+#
+function ssh_remote_command {
+  local Command Insecure=0 Identity=$SCS_KeyFile Login=$SCS_RemoteUser Opt Port=22 Quiet=0 Remote SuppressStdin=0
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    -d) Insecure=1;;
+    -i) Identity="$2"; shift;;
+    -l) Login="$2"; shift;;
+    -n) SuppressStdin=1;;
+    -o) Opt="$2"; shift;;
+    -p) Port="$2"; shift;;
+    -q) Quiet=1;;
+    *) if [[ -z "$Remote" ]]; then Remote="$1"; elif [[ -z "$Command" ]]; then Command="$@"; shift; break; fi;;
+  esac; shift; done
+
+  # validate input
+  if [[ -z "$Command" ]]; then err "Missing command"; fi
+  if [[ -z "$Remote" ]]; then err "Missing host"; fi
+  if ! [[ -r "$Identity" ]]; then err "Invalid identity file"; fi
+
+  # translate settings
+  if [[ $SuppressStdin -eq 1 ]]; then SuppressStdin="-n "; else SuppressStdin=""; fi
+
+  if [[ -n "$Opt" && $Insecure -eq 0 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -z "$Opt" && $Insecure -eq 0 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -n "$Opt" && $Insecure -eq 1 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -z "$Opt" && $Insecure -eq 1 && $Quiet -eq 0 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command"
+  elif [[ -n "$Opt" && $Insecure -eq 0 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -z "$Opt" && $Insecure -eq 0 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -n "$Opt" && $Insecure -eq 1 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -o "$Opt" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  elif [[ -z "$Opt" && $Insecure -eq 1 && $Quiet -eq 1 ]]; then
+    ssh -o "PasswordAuthentication no" -o "StrictHostKeyChecking no" -l $Login -p $Port -i $Identity $SuppressStdin$Remote "$Command" >/dev/null 2>&1
+  else
+    echo "Unexpected argument in ssh_remote_command"
+  fi
+
+  return $?
+}
+
 # Test an IP address for validity:
 # Usage:
 #      valid_ip IP_ADDRESS
@@ -1152,13 +1306,13 @@ function valid_mask() {
 }
 
 #Section: HELP
- #     # ####### #       ######  
- #     # #       #       #     # 
- #     # #       #       #     # 
- ####### #####   #       ######  
- #     # #       #       #       
- #     # #       #       #       
- #     # ####### ####### # 
+ #     # ####### #       ######
+ #     # #       #       #     #
+ #     # #       #       #     #
+ ####### #####   #       ######
+ #     # #       #       #
+ #     # #       #       #
+ #     # ####### ####### #
 
 # help wrapper
 #
@@ -1435,6 +1589,21 @@ OPTIONS
 	pdir
 		Print the path to the executable directory (where this script is located).
 
+ENVIRONMENT
+	The below envrionment variables can be used to control some global settings.
+
+	SCS_CONF - equivilent of providing --config </path/to/config>
+
+	SCS_IDENTITY - path to the private key used to access remote systems over ssh
+
+	SCS_RELEASES - path to store generated releases
+
+	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
+
+	SCS_TEMP - directory to store temporary files. this normally includes the process id in the path.
+
+	SCS_TEMP_LARGE - directory to store LARGE temporary files, e.g. >1GB
+
 EXAMPLES
 
 RETURN CODE
@@ -1525,7 +1694,8 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--register-key|
+             --release|--start-remote-build|--type|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -1539,13 +1709,13 @@ _EOF
 
 
 #Section GIT/VCS
-  #####  ### #######       # #     #  #####   #####  
- #     #  #     #         #  #     # #     # #     # 
- #        #     #        #   #     # #       #       
- #  ####  #     #       #    #     # #        #####  
- #     #  #     #      #      #   #  #             # 
- #     #  #     #     #        # #   #     # #     # 
-  #####  ###    #    #          #     #####   ##### 
+  #####  ### #######       # #     #  #####   #####
+ #     #  #     #         #  #     # #     # #     #
+ #        #     #        #   #     # #       #
+ #  ####  #     #       #    #     # #        #####
+ #     #  #     #      #      #   #  #             #
+ #     #  #     #     #        # #   #     # #     #
+  #####  ###    #    #          #     #####   #####
 
 # cancel changes and switch back to master
 #
@@ -1653,7 +1823,7 @@ function delete_file {
         popd >/dev/null 2>&1
       fi
     done; fi
-    git commit -m'removing file $1' >/dev/null 2>&1
+    #git commit -m'removing file $1' >/dev/null 2>&1
   fi
   popd >/dev/null 2>&1
 }
@@ -1895,12 +2065,12 @@ function stop_modify {
 
 
 #Section: APPLICATION
-    #    ######  ######  #       ###  #####     #    ####### ### ####### #     # 
-   # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    # 
-  #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   # 
- #     # ######  ######  #        #  #       #     #    #     #  #     # #  #  # 
- ####### #       #       #        #  #       #######    #     #  #     # #   # # 
- #     # #       #       #        #  #     # #     #    #     #  #     # #    ## 
+    #    ######  ######  #       ###  #####     #    ####### ### ####### #     #
+   # #   #     # #     # #        #  #     #   # #      #     #  #     # ##    #
+  #   #  #     # #     # #        #  #        #   #     #     #  #     # # #   #
+ #     # ######  ######  #        #  #       #     #    #     #  #     # #  #  #
+ ####### #       #       #        #  #       #######    #     #  #     # #   # #
+ #     # #       #       #        #  #     # #     #    #     #  #     # #    ##
  #     # #       #       ####### ###  #####  #     #    #    ### ####### #     #
 
 # manage global application constants
@@ -1929,7 +2099,7 @@ function application_constant_define {
   if [ $? -eq 0 ]; then
     # already defined, update value
     # [FORMAT:value/by-app/constant]
-    sed -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' -i ${CONF}/value/by-app/$APP
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/by-app/constant]
@@ -1946,7 +2116,7 @@ function application_constant_undefine {
   generic_choose constant "$1" C
   test -f ${CONF}/value/by-app/$APP || return 0
   start_modify
-  sed -e '/^'"$C"',.*/d' -i ${CONF}/value/by-app/$APP
+  perl -i -ne "print unless /^$C,.*/" ${CONF}/value/by-app/$APP
   commit_file ${CONF}/value/by-app/$APP
 }
 
@@ -1993,13 +2163,13 @@ function application_delete {
   generic_delete application $APP || return
   # delete from file-map as well
   # [FORMAT:file-map]
-  sed -e "/^[^,]*,$APP,.*\$/d" -i $CONF/file-map
+  perl -i -ne "print unless /^[^,]*,$APP,.*\$/" $CONF/file-map
   # [FORMAT:resource]
   for C in $( grep -E '^([^,]*,){2}application,([^,:]*:){2}'$APP',.*' resource |awk 'BEGIN{FS=","}{print $2}' ); do
     # [FORMAT:resource]
     IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$C," ${CONF}/resource )"
     # [FORMAT:resource]
-    sed -e 's/[^,]*,'$C',.*/'${TYPE}','${VAL//,/}',,not assigned,'"${NAME//,/}"','"${DESC}"'/' -i ${CONF}/resource
+    perl -i -pe "s/[^,]*,$C,.*/${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}/" ${CONF}/resource
   done
   if [ -f "$CONF/value/by-app/$APP" ]; then delete_file value/by-app/$APP; fi
   for C in $( ls $CONF/env ); do if [ -f "$CONF/env/$C/by-app/$APP" ]; then delete_file env/$C/by-app/$APP; fi; done
@@ -2290,7 +2460,7 @@ function application_file_remove {
   # [FORMAT:file-map]
   grep -qE "^$F,$APP," $CONF/file-map || err "Error - requested file is not associated with $APP."
   # [FORMAT:file-map]
-  sed -e "/^$F,$APP,/d" -i $CONF/file-map
+  perl -i -ne "print unless /^$F,$APP,/" $CONF/file-map
   commit_file file-map
 }
 function application_file_remove_help { cat <<_EOF
@@ -2348,7 +2518,7 @@ function application_update {
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   get_yn CLUSTER "LVS Support (y/n)"
   # [FORMAT:application]
-  sed -e 's/^'$APP',.*/'${NAME}','${ALIAS}','${BUILD}','${CLUSTER}'/' -i ${CONF}/application
+  perl -i -pe "s/^$APP,.*/${NAME},${ALIAS},${BUILD},${CLUSTER}/" ${CONF}/application
   # handle rename
   if [ "$NAME" != "$APP "]; then
      echo "Rename not implemented" >&2 
@@ -2358,13 +2528,13 @@ function application_update {
 
 
 #Section: BUILD
- ######  #     # ### #       ######  
- #     # #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- ######  #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- #     # #     #  #  #       #     # 
- ######   #####  ### ####### ######  
+ ######  #     # ### #       ######
+ #     # #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ ######  #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ #     # #     #  #  #       #     #
+ ######   #####  ### ####### ######
 
 # return all applications linked to a build
 #
@@ -2400,6 +2570,37 @@ function build_create {
 }
 
 function build_delete {
+  build_exists "$1" || err "Missing or invalid build name"
+  local InUse=0
+  # prompt if the build is in use before deleting it
+  # [FORMAT:application]
+  grep -qE "^([^,]*,){2}$1," ${CONF}/application
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is in use for the following applications:\n'
+    # [FORMAT:application]
+    grep -E "^([^,]*,){2}$1," ${CONF}/application |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  # [FORMAT:system]
+  grep -qE "^([^,]*),$1," ${CONF}/system
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is in use for the following systems:\n'
+    # [FORMAT:system]
+    grep -E "^([^,]*),$1," ${CONF}/system |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  # [FORMAT:build]
+  grep -qE "^([^,]*,){7}$1\$" ${CONF}/build
+  if [[ $? -eq 0 ]]; then
+    InUse=1
+    printf -- 'Warning: build is a parent for the following builds:\n'
+    # [FORMAT:build]
+    grep -E "^([^,]*,){7}$1\$" ${CONF}/build |perl -pe 's/^([^,]*),.*/\1/; s/^/  /'
+  fi
+  if [[ $InUse -eq 1 ]]; then
+    get_yn R "Are you sure you want to delete build $1 (y/n)?" || return 1
+  fi
+  # execute delete operation
   generic_delete build $1
 }
 
@@ -2497,7 +2698,7 @@ function build_lineage_unformatted {
     LINEAGE="$1"
     for Build in $BuildList; do
       [ "$Build" == "$1" ] && continue
-      LocalLineage="$( build_lineage $Build |sed -e 's/^.* '$1' /'$1' /' )"
+      LocalLineage="$( build_lineage $Build |perl -pe "s/^.* $1 /$1 /" )"
       printf -- " -> ${LocalLineage} -> " |grep -q " -> $1 -> " && LINEAGE="${LINEAGE}\t${LocalLineage}"
     done
     printf -- "$LINEAGE" |tr '\t' '\n'
@@ -2534,7 +2735,7 @@ function build_list {
 function build_list_format_tree {
   local LINE
   local IFS=$'\n'
-  for LINE in $( build_list_unformatted $@ ); do 
+  for LINE in $( build_list_unformatted $@ ); do
     IFS=',' read -r B D <<< "$LINE"
     printf -- "$( build_lineage_unformatted $B )\t$D\n"
   done |LC_ALL=C sort |perl -pe 's/([^,]*,)/"    \\" . ("-" x (length($1)-4)) . "> "/gei' |perl -pe 's/(\s+\\-+>\s+\\)/" " x length($1) . "\\"/gei' |column -s$'\t' -t
@@ -2597,11 +2798,12 @@ function build_show {
 }
 
 function build_update {
+  local ORIGNAME NAME ROLE DESC OS ARCH DISK RAM PARENT C P
   start_modify
   generic_choose build "$1" C && shift
   # [FORMAT:build]
-  IFS="," read -r NAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
-  get_input NAME "Build" --default "$NAME"
+  IFS="," read -r ORIGNAME ROLE DESC OS ARCH DISK RAM PARENT <<< "$( grep -E "^$C," ${CONF}/build )"
+  get_input NAME "Build" --default "$ORIGNAME"
   get_input ROLE "Role" --default "$ROLE" --null
   get_yn P "Child Build [$PARENT] (y/n)?"
   if [ $? -eq 0 ]; then generic_choose build "" PARENT; else PARENT=""; fi
@@ -2618,18 +2820,27 @@ function build_update {
   get_input RAM "Memory Size (in MB, Default ${DEF_MEM})" --null --regex '^[1-9][0-9]*$' --default "$RAM"
   get_input DESC "Description" --default "$DESC" --nc --null
   # [FORMAT:build]
-  sed -e s$'\001''^'"$C"',.*'$'\001'"${NAME}"','"${ROLE}"','"${DESC//,/}"','"${OS}"','"${ARCH}"','"${DISK}"','"${RAM}"','"${PARENT}"$'\001' -i ${CONF}/build
+  perl -i -pe "my \$str = '${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}'; s/^$C,.*/\$str/" ${CONF}/build
   commit_file build
+  # handle rename
+  if [[ "$NAME" != "$ORIGNAME" ]]; then
+    # [FORMAT:system]
+    perl -i -pe "s/([^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/system
+    # [FORMAT:application]
+    perl -i -pe "s/([^,]*,[^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/application
+    # [FORMAT:build]
+    perl -i -pe "s/(.*),$ORIGNAME\$/\\1,$NAME/" ${CONF}/build
+  fi
 }
 
 
 #Section: CONSTANT
-  #####  ####### #     #  #####  #######    #    #     # ####### 
- #     # #     # ##    # #     #    #      # #   ##    #    #    
- #       #     # # #   # #          #     #   #  # #   #    #    
- #       #     # #  #  #  #####     #    #     # #  #  #    #    
- #       #     # #   # #       #    #    ####### #   # #    #    
- #     # #     # #    ## #     #    #    #     # #    ##    #    
+  #####  ####### #     #  #####  #######    #    #     # #######
+ #     # #     # ##    # #     #    #      # #   ##    #    #
+ #       #     # # #   # #          #     #   #  # #   #    #
+ #       #     # #  #  #  #####     #    #     # #  #  #    #
+ #       #     # #   # #       #    #    ####### #   # #    #
+ #     # #     # #    ## #     #    #    #     # #    ##    #
   #####  ####### #     #  #####     #    #     # #     #    #
 
 function constant_create {
@@ -2663,7 +2874,7 @@ function constant_delete {
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
         grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
-        if [ $? -eq 0 ]; then sed -e "/^$1,/d" -i ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
       fi
     done
   done
@@ -2674,7 +2885,7 @@ function constant_delete {
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
         grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
-        if [ $? -eq 0 ]; then sed -e "/^$1,/d" -i ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
       fi
     done
   done
@@ -2684,7 +2895,7 @@ function constant_delete {
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
       grep -qE "^$NAME," "${CONF}/env/$i/constant"
-      if [ $? -eq 0 ]; then sed -e "/^$1,/d" -i ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
     fi
   done
 
@@ -2693,14 +2904,14 @@ function constant_delete {
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
       grep -qE "^$NAME," "${CONF}/value/by-app/$i"
-      if [ $? -eq 0 ]; then sed -e "/^$1,/d" -i ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
     fi
   done
 
   # 5. global
   # [FORMAT:value/constant]
   grep -qE "^$NAME," ${CONF}/value/constant
-  if [ $? -eq 0 ]; then sed -e "/^$1,/d" -i ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+  if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
 }
 
 # general constant help
@@ -2916,18 +3127,18 @@ function constant_update {
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   # [FORMAT:constant]
-  sed -e 's/^'$C',.*/'${NAME}','"${DESC}"'/' -i ${CONF}/constant
+  perl -i -pe "s/^$C,.*/${NAME},${DESC}/" ${CONF}/constant
   commit_file constant
 }
 
 
 #Section: ENVIRONMENT
- ####### #     # #     # ### ######  ####### #     # #     # ####### #     # ####### 
- #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #    
- #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #    
- #####   #  #  # #     #  #  ######  #     # #  #  # #  #  # #####   #  #  #    #    
- #       #   # #  #   #   #  #   #   #     # #   # # #     # #       #   # #    #    
- #       #    ##   # #    #  #    #  #     # #    ## #     # #       #    ##    #    
+ ####### #     # #     # ### ######  ####### #     # #     # ####### #     # #######
+ #       ##    # #     #  #  #     # #     # ##    # ##   ## #       ##    #    #
+ #       # #   # #     #  #  #     # #     # # #   # # # # # #       # #   #    #
+ #####   #  #  # #     #  #  ######  #     # #  #  # #  #  # #####   #  #  #    #
+ #       #   # #  #   #   #  #   #   #     # #   # # #     # #       #   # #    #
+ #       #    ##   # #    #  #    #  #     # #    ## #     # #       #    ##    #
  ####### #     #    #    ### #     # ####### #     # #     # ####### #     #    #
 
 # manipulate applications at a specific environment at a specific location
@@ -2984,7 +3195,7 @@ function environment_application_define_constant {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/app]
-    sed -e 's/^'"$C"',.*/'"$C"','"$VAL"'/' -i ${CONF}/env/$ENV/by-app/$APP
+    perl -i -pe "s/^$C,.*/$C,$VAL/" ${CONF}/env/$ENV/by-app/$APP
   else
     # not defined, add
     # [FORMAT:value/env/app]
@@ -3000,7 +3211,7 @@ function environment_application_undefine_constant {
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/app]
-  sed -e '/^'"$C"',.*/d' -i ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
+  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
   commit_file ${CONF}/env/$ENV/by-app/$APP
 }
 
@@ -3034,7 +3245,7 @@ function environment_application_byname_assign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',application,'$LOC':'$ENV':'$APP','"$NAME"','"$DESC"'/' -i ${CONF}/resource
+  perl -i -pe "s/^[^,]*,${RES},.*/${TYPE},${VAL},application,${LOC}:${ENV}:${APP},${NAME},${DESC}/" ${CONF}/resource
   commit_file resource
 }
 
@@ -3059,7 +3270,7 @@ function environment_application_byname_unassign {
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$RES," ${CONF}/resource )"
   # [FORMAT:resource]
-  sed -e 's/^[^,]*,'$RES',.*/'$TYPE','$VAL',,not assigned,'"$NAME"','"$DESC"'/' -i ${CONF}/resource
+  perl -i -pe "s/^[^,]*,${RES},.*/${TYPE},${VAL},,not assigned,${NAME},${DESC}/" ${CONF}/resource
   commit_file resource
 }
 
@@ -3100,7 +3311,7 @@ function environment_application_remove {
   printf -- "Removing $APP from $LOC $ENV, deleting all configurations, files, resources, constants, et cetera...\n"
   get_yn RL "Are you sure (y/n)?"; test "$RL" != "y" && return
   # unassign the application
-  sed -e "/^$APP\$/d" -i $CONF/$LOC/$ENV
+  perl -i -ne "print unless /^${APP}\$/" $CONF/$LOC/$ENV
   # !!FIXME!!
   # so... this says it's going to unassign resources and whatnot.  we should actually do that here...
   commit_file $LOC/$ENV
@@ -3129,7 +3340,7 @@ function environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/env/constant]
-    sed -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' -i ${CONF}/env/$ENV/constant
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
   else
     # not defined, add
     # [FORMAT:value/env/constant]
@@ -3145,7 +3356,7 @@ function environment_constant_undefine {
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C
   # [FORMAT:value/env/constant]
-  sed -e '/^'"$C"',.*/d' -i ${CONF}/env/$ENV/constant
+  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/constant
   commit_file ${CONF}/env/$ENV/constant
 }
 
@@ -3183,7 +3394,7 @@ function environment_delete {
   generic_delete environment $1 || return
   cd $CONF >/dev/null 2>&1 || return
   test -d env/$1 && git rm -r env/$1
-  sed -e "/^$1,/d" -i $CONF/hv-environment
+  perl -i -ne "print unless /^$1,/" $CONF/hv-environment
   commit_file hv-environment
 }
 
@@ -3369,7 +3580,7 @@ function environment_update {
   # force uppercase for site alias
   ALIAS=$( printf -- "$ALIAS" | tr 'a-z' 'A-Z' )
   # [FORMAT:environment]
-  sed -e 's/^'$C',.*/'${NAME}','${ALIAS}','"${DESC}"'/' -i ${CONF}/environment
+  perl -i -pe "s/^$C,.*/${NAME},${ALIAS},${DESC}/" ${CONF}/environment
   # handle rename
   if [ "$NAME" != "$C" ]; then
     pushd ${CONF} >/dev/null 2>&1
@@ -3386,13 +3597,13 @@ function environment_update {
 
 
 #Section: FILE
- ####### ### #       ####### 
- #        #  #       #       
- #        #  #       #       
- #####    #  #       #####   
- #        #  #       #       
- #        #  #       #       
- #       ### ####### ####### 
+ ####### ### #       #######
+ #        #  #       #
+ #        #  #       #
+ #####    #  #       #####
+ #        #  #       #
+ #        #  #       #
+ #       ### ####### #######
 
 # output a (text) file contents to stdout
 #
@@ -3497,7 +3708,7 @@ function file_create {
     test -d template || mkdir template >/dev/null 2>&1
     touch template/${NAME}
     git add template/${NAME} >/dev/null 2>&1
-    git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
+    #git commit -m"template created by ${USERNAME}" file template/${NAME} >/dev/null 2>&1 || err "Error committing new template to repository"
     popd >/dev/null 2>&1
   elif [ "$TYPE" == "binary" ]; then
     printf -- "\nPlease copy the binary file to: $CONF/env/<environment>/binary/$NAME\n"
@@ -3514,13 +3725,13 @@ function file_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:file]
-    sed -e '/^'$C',/d' -i ${CONF}/file
+    perl -i -ne "print unless /^$C,/" ${CONF}/file
     # [FORMAT:file-map]
-    sed -e '/^'$C',/d' -i ${CONF}/file-map
+    perl -i -ne "print unless /^$C,/" ${CONF}/file-map
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm -f {} \; >/dev/null 2>&1
     git add file file-map >/dev/null 2>&1
-    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
+    #git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1 || err "Error committing removal to repository"
     find env/ -type f -name $C -exec rm -f {} \; >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
@@ -3554,10 +3765,10 @@ function file_edit {
       cat $CONF/template/$C >$TMP/$C.ORIG
     fi
     # open the patched file for editing
-    vim $TMP/$C
+    $EditProgram $TMP/$C
     wait
     # do nothing further if there were no changes made
-    if [ $( md5sum $TMP/$C{.ORIG,} 2>/dev/null |cut -d' ' -f1 |uniq |wc -l |awk '{print $1}' ) -eq 1 ]; then
+    if [ $( md5s $TMP/$C{.ORIG,} |uniq |wc -l |awk '{print $1}' ) -eq 1 ]; then
       echo "No changes were made."; exit 0
     fi
     # generate a new patch file against the original template
@@ -3568,7 +3779,7 @@ function file_edit {
     echo -e "Please confirm the change to the patch:\n"
     diff -c $CONF/template/$ENV/$C $TMP/$C.patch
     echo -e "\n\n"
-    get_yn Q "Look OK? (y/n)" 
+    get_yn Q "Look OK? (y/n)"
     test "$Q" != "y" && err "Aborted!"
     # write the new patch file
     cat $TMP/$C.patch >$CONF/template/$ENV/$C
@@ -3581,7 +3792,7 @@ function file_edit {
   else
     # create a copy of the template to edit
     cat $CONF/template/$C >/tmp/app-config.$$
-    vim /tmp/app-config.$$
+    $EditProgram /tmp/app-config.$$
     wait
     # prompt for verification
     echo -e "Please review the change:\n"
@@ -3593,7 +3804,7 @@ function file_edit {
     echo "Validating template instances..."
     NEWPATCHES=(); NEWENVIRON=()
     pushd $CONF/template >/dev/null 2>&1
-    for E in $( find . -mindepth 2 -type f -name $C -printf '%h\n' |perl -pe 's/^\.\///' ); do
+    for E in $( find . -mindepth 2 -type f -name $C -print0 |xargs -0 -n1 dirname 2>/dev/null |perl -pe 's/^\.\///' ); do
       echo -n "${E}... "
       cat /tmp/app-config.$$ >/tmp/app-config.$$.1
       patch -p0 /tmp/app-config.$$.1 <$E/$C >/dev/null 2>&1
@@ -3630,11 +3841,11 @@ function file_edit {
       cat ${NEWPATCHES[i]} >${NEWENVIRON[i]}/$C
     done
     popd >/dev/null 2>&1
-    pushd ${CONF} >/dev/null 2>&1
-    if [ $( git status -s template/${C} |wc -l |awk '{print $1}' ) -ne 0 ]; then
-      git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
-    fi
-    popd >/dev/null 2>&1
+    #pushd ${CONF} >/dev/null 2>&1
+    #if [ $( git status -s template/${C} |wc -l |awk '{print $1}' ) -ne 0 ]; then
+    #  git commit -m"template updated by ${USERNAME}" template/${C} >/dev/null 2>&1 || err "Error committing template change"
+    #fi
+    #popd >/dev/null 2>&1
   fi
 }
 function file_edit_help {
@@ -3814,7 +4025,7 @@ function file_show {
       fi
     done
   fi
-  
+
   printf -- 'Linked Applications:\n'
   if [ "$( grep -c "^$1," ${CONF}/file-map )" -eq 0 ]; then
     printf -- '  None\n'
@@ -3873,15 +4084,15 @@ function file_update {
     popd >/dev/null 2>&1
     # update map
     # [FORMAT:file-map]
-    $extsed -e 's%^'$C',(.*)%'${NAME}',\1%' -i ${CONF}/file-map
+    perl -i -pe "s%^$C,(.*)%${NAME},\1%" ${CONF}/file-map
   fi
   # [FORMAT:file]
-  sed -e "s%^$C,.*%$NAME,$PTH,$TYPE,$OWNER,$GROUP,$OCTAL,$TARGET,$DESC%" -i $CONF/file
+  perl -i -pe "s%^$C,.*%${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}%" $CONF/file
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
     find template/ -type f -name $C -exec git rm {} \; >/dev/null 2>&1
-    git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
+    #git commit -m"template removed by ${USERNAME}" >/dev/null 2>&1
     popd >/dev/null 2>&1
   fi
   commit_file file file-map
@@ -3889,12 +4100,12 @@ function file_update {
 
 
 #Section: LOCATION
- #       #######  #####     #    ####### ### ####### #     # 
- #       #     # #     #   # #      #     #  #     # ##    # 
- #       #     # #        #   #     #     #  #     # # #   # 
- #       #     # #       #     #    #     #  #     # #  #  # 
- #       #     # #       #######    #     #  #     # #   # # 
- #       #     # #     # #     #    #     #  #     # #    ## 
+ #       #######  #####     #    ####### ### ####### #     #
+ #       #     # #     #   # #      #     #  #     # ##    #
+ #       #     # #        #   #     #     #  #     # # #   #
+ #       #     # #       #     #    #     #  #     # #  #  #
+ #       #     # #       #######    #     #  #     # #   # #
+ #       #     # #     # #     #    #     #  #     # #    ##
  ####### #######  #####  #     #    #    ### ####### #     #
 
 function location_create {
@@ -3941,7 +4152,7 @@ function location_environment_assign {
   pushd $CONF >/dev/null 2>&1
   touch ${LOC}/$ENV
   git add ${LOC}/$ENV >/dev/null 2>&1
-  git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
+  #git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
 
@@ -3954,7 +4165,7 @@ function location_environment_constant {
   case "$C" in
     --define) location_environment_constant_define "$LOC" "$ENV" $@;;
     --undefine) location_environment_constant_undefine "$LOC" "$ENV" $@;;
-    *) location_environment_constant_list "$LOC" "$ENV";; 
+    *) location_environment_constant_list "$LOC" "$ENV";;
   esac
 }
 
@@ -3969,7 +4180,7 @@ function location_environment_constant_define {
   if [ $? -eq 0 ]; then
     # already define, update value
     # [FORMAT:value/loc/constant]
-    sed -e s$'\001''^'"$C"',.*'$'\001'"$C"','"${VAL//&/\&}"$'\001' -i $CONF/env/$ENV/by-loc/$LOC
+    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
   else
     # not defined, add
     # [FORMAT:value/loc/constant]
@@ -3982,7 +4193,7 @@ function location_environment_constant_undefine {
   start_modify
   generic_choose constant "$1" C
   # [FORMAT:value/loc/constant]
-  sed -e '/^'"$C"',.*/d' -i $CONF/env/$2/by-loc/$1
+  perl -i -ne "print unless /^$C,.*/" $CONF/env/$2/by-loc/$1
   commit_file $CONF/env/$2/by-loc/$1
 }
 
@@ -4019,7 +4230,7 @@ function location_environment_unassign {
   # unassign the environment
   pushd $CONF >/dev/null 2>&1
   test -f ${LOC}/$ENV && git rm -rf ${LOC}/$ENV >/dev/null 2>&1
-  git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
+  #git commit -m"${USERNAME} removed $ENV from $LOC" >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
 
@@ -4091,12 +4302,12 @@ function location_update {
   get_input NAME "Name" --nc --default "$NAME"
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:location]
-  sed -e 's/^'$C',.*/'${CODE}','"${NAME}"','"${DESC}"'/' -i ${CONF}/location
+  perl -i -pe "s/^$C,.*/${CODE},${NAME},${DESC}/" ${CONF}/location
   # handle rename
   if [ "$CODE" != "$C" ]; then
     pushd $CONF >/dev/null 2>&1
     test -d $C && git mv $C $CODE >/dev/null 2>&1
-    sed -e 's/^'$C',/'$CODE',/' -i network
+    perl -i -pe "s/^$C,/${CODE},/" network
     popd >/dev/null 2>&1
   fi
   commit_file location
@@ -4104,12 +4315,12 @@ function location_update {
 
 
 #Section: NETWORK
- #     # ####### ####### #     # ####### ######  #    # 
- ##    # #          #    #  #  # #     # #     # #   #  
- # #   # #          #    #  #  # #     # #     # #  #   
- #  #  # #####      #    #  #  # #     # ######  ###    
- #   # # #          #    #  #  # #     # #   #   #  #   
- #    ## #          #    #  #  # #     # #    #  #   #  
+ #     # ####### ####### #     # ####### ######  #    #
+ ##    # #          #    #  #  # #     # #     # #   #
+ # #   # #          #    #  #  # #     # #     # #  #
+ #  #  # #####      #    #  #  # #     # ######  ###
+ #   # # #          #    #  #  # #     # #   #   #  #
+ #    ## #          #    #  #  # #     # #    #  #   #
  #     # #######    #     ## ##  ####### #     # #    #
 
 # network functions
@@ -4188,9 +4399,9 @@ function network_create {
     # [FORMAT:location/network]
     IFS="," read -r Z A DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -e 's%^('${LOC}','${Z}','${A}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' -i ${CONF}/network
+    perl -i -pe "s%^(${LOC},${Z},${A},.*),y,y(,[^,]*){2}\$%\1,y,n\2%" ${CONF}/network
     # [FORMAT:network]
-    sed -e 's/,y$/,n/' -i ${CONF}/${LOC}/network
+    perl -i -pe 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -4212,9 +4423,9 @@ function network_delete {
   if [ "$RL" == "y" ]; then
     # [FORMAT:network]
     IFS="," read -r LOC ZONE ALIAS NET DISC <<< "$( grep -E "^${C//-/,}," ${CONF}/network )"
-    sed -e '/^'${C//-/,}',/d' -i ${CONF}/network
-    sed -e '/^'${ZONE}','${ALIAS}',/d' -i ${CONF}/${LOC}/network
-    sed -e '/^'${C//-/,}',/d' -i ${CONF}/hv-network
+    perl -i -ne "print unless /^${C//-/,},/" ${CONF}/network
+    perl -i -ne "print unless /^${ZONE},${ALIAS},/" ${CONF}/${LOC}/network
+    perl -i -ne "print unless /^${C//-/,},/" ${CONF}/hv-network
     if [ -f ${CONF}/net/${NET} ]; then delete_file net/${NET}; fi
     if [ -f ${CONF}/net/${NET}-routes ]; then delete_file net/${NET}-routes; fi
   fi
@@ -4283,7 +4494,7 @@ function network_edit_routes {
 	get_input NET "  Target Network" --default "$NET"
         get_input NETMASK "  Target Network Mask" --default "$NETMASK"
 	get_input GATEWAY "  Gateway" --default "$GATEWAY"
-	sed -e "${V}d" -i $TMP/${1}-routes
+        perl -i -ne "print if \$. != $V" $TMP/${1}-routes
         # [FORMAT:net/routes]
         printf -- '%s net %s netmask %s gw %s\n' $DEVICE $NET $NETMASK $GATEWAY >>$TMP/${1}-routes
 	;;
@@ -4291,7 +4502,7 @@ function network_edit_routes {
 	V=${OPT:1}
 #	if [ "$V" != "$( printf -- '$V' |perl -pe 's/[^0-9]*//g' )" ]; then echo "validation error 1: '$V' is not '$( printf -- '$V' |perl -pe 's/[^0-9]*//g' )'"; sleep 1; continue; fi
 	if [[ $V -le 0 || $V -gt $I ]]; then echo "validation error 2"; sleep 1; continue; fi
-	sed -e "${V}d" -i $TMP/${1}-routes
+        perl -i -ne "print if \$. != $V" $TMP/${1}-routes
 	;;
     esac
   done
@@ -4402,13 +4613,13 @@ function network_ip_assign {
   if [[ $FORCE -eq 0 && "$ASSN" == "" && $( exit_status network_ip_check $IP ) -ne 0 ]]; then
     # mark the address as reserved
     # [FORMAT:net/network]
-    sed -e "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" -i ${CONF}/net/${FILENAME}
+    perl -i -pe "s/^$( ip2dec $IP ),.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
     echo "The requested IP is in use."
     RET=1
   else
     # assign
     # [FORMAT:net/network]
-    sed -e s$'\001'"^$( ip2dec $IP ),.*"$'\001'"$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME"$'\001' -i ${CONF}/net/${FILENAME}
+    perl -i -pe "my \$str = '$A,$B,n,$D,$Hostname,,${Comment//,/-},,$USERNAME'; s/^$( ip2dec $IP ),.*/\$str/" ${CONF}/net/${FILENAME}
     RET=0
   fi
 
@@ -4593,7 +4804,7 @@ function network_ip_scan {
       # [FORMAT:net/network]
       IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
       # [FORMAT:net/network]
-      sed -e "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" -i ${CONF}/net/${FILENAME}
+      perl -i -pe "s/^$i,.*/$A,$B,y,$D,$E,$F,auto-reserved: address in use,$H,$I/" ${CONF}/net/${FILENAME}
       echo "Found device at $( dec2ip $i )"
     fi
   done
@@ -4617,7 +4828,7 @@ function network_ip_unassign {
   # [FORMAT:net/network]
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # [FORMAT:net/network]
-  sed -e "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" -i ${CONF}/net/${FILENAME}
+  perl -i -pe "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
   git add ${CONF}/net/${FILENAME}
   commit_file ${CONF}/net/${FILENAME}
 }
@@ -4745,7 +4956,7 @@ function network_ipam_remove_range {
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
       # get the file name
       FILENAME=$( get_network $( dec2ip $i ) 24 )
-      sed -e "/^$i,/d" -i ${CONF}/net/$FILENAME 2>/dev/null
+      perl -i -ne "print unless /^$i,/" ${CONF}/net/$FILENAME 2>/dev/null
     done
     git add ${CONF}/net/$FILENAME >/dev/null 2>&1
     commit_file ${CONF}/net/$FILENAME
@@ -4890,23 +5101,23 @@ function network_update {
     # [FORMAT:location/network]
     IFS="," read -r ZP AP DISC <<< "$( grep -E ',y$' ${CONF}/${LOC}/network |grep -vE "^${ZONE},${ALIAS}," )"
     # [FORMAT:network]
-    $extsed -e 's%^('${LOC}','${ZP}','${AP}',.*),y,y(,[^,]*){2}$%\1,y,n\2%' -i ${CONF}/network
+    perl -i -pe "s%^(${LOC},${ZP},${AP},.*),y,y(,[^,]*){2}\$%\1,y,n\2%" ${CONF}/network
     # [FORMAT:location/network]
-    sed -e 's/,y$/,n/' -i ${CONF}/${LOC}/network
+    perl -i -pe 's/,y$/,n/' ${CONF}/${LOC}/network
   fi
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
   # [FORMAT:network]
-  sed -e 's%^'${C//-/,}',.*%'${LOC}','${ZONE}','${ALIAS}','${NET}','${MASK}','${BITS}','${GW}','${HAS_ROUTES}','${DNS}','${VLAN}','"${DESC}"','${REPO_ADDR}','"${REPO_PATH}"','"${REPO_URL}"','${BUILD}','${DEFAULT_BUILD}','${NTP}','${DHCP}'%' -i ${CONF}/network
+  perl -i -pe "s%^${C//-/,},.*%${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}%" ${CONF}/network
   #   --format: zone,alias,network/cidr,build,default-build\n
   if [ "$LOC" == "$L" ]; then
     # location is not changing, safe to update in place
     # [FORMAT:location/network]
-    sed -e 's%^'${Z}','${A}',.*%'${ZONE}','${ALIAS}','${NET}'\/'${BITS}','${BUILD}','${DEFAULT_BUILD}'%' -i ${CONF}/${LOC}/network
+    perl -i -pe "s%^${Z},${A},.*%${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}%" ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network
   else
     # location changed, remove from old location and add to new
     # [FORMAT:location/network]
-    sed -e '/^'${ZONE}','${ALIAS}',/d' -i ${CONF}/${L}/network
+    perl -i -ne "print unless /^${ZONE},${ALIAS},/" ${CONF}/${L}/network
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
     # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
@@ -4917,12 +5128,12 @@ function network_update {
 
 
 #Section: TEMPLATE
- ####### ####### #     # ######  #          #    ####### ####### 
-    #    #       ##   ## #     # #         # #      #    #       
-    #    #       # # # # #     # #        #   #     #    #       
-    #    #####   #  #  # ######  #       #     #    #    #####   
-    #    #       #     # #       #       #######    #    #       
-    #    #       #     # #       #       #     #    #    #       
+ ####### ####### #     # ######  #          #    ####### #######
+    #    #       ##   ## #     # #         # #      #    #
+    #    #       # # # # #     # #        #   #     #    #
+    #    #####   #  #  # ######  #       #     #    #    #####
+    #    #       #     # #       #       #######    #    #
+    #    #       #     # #       #       #     #    #    #
     #    ####### #     # #       ####### #     #    #    #######
 
 # locate template variables and replace with actual data
@@ -4954,7 +5165,7 @@ function parse_template {
       if [ $SHOWERROR -eq 1 ]; then printf -- "Error: Undefined variable $NAME\n" >&2; fi
       if [ $VERBOSE -eq 1 ]; then
         printf -- "  Missing Variable: '$NAME'\n" >&2
-        sed -e s$'\001'"{% $NAME %}"$'\001'""$'\001' -i $1
+        perl -i -pe "s/{% ${NAME} %}//" $1
         RETVAL=1
         continue
       else
@@ -4962,19 +5173,19 @@ function parse_template {
       fi
     fi
     local VAL=$( grep -E "^$NAME " $2 |perl -pe "s/^$NAME //" )
-    sed -e s$'\001'"{% $NAME %}"$'\001'"${VAL//&/\&}"$'\001' -i $1
+    perl -i -pe "my \$str = '${VAL}'; s/{% ${NAME} %}/\$str/" $1
   done
   return $RETVAL
 }
 
 
 #Section: RESOURCE
- ######  #######  #####  ####### #     # ######   #####  ####### 
- #     # #       #     # #     # #     # #     # #     # #       
- #     # #       #       #     # #     # #     # #       #       
- ######  #####    #####  #     # #     # ######  #       #####   
- #   #   #             # #     # #     # #   #   #       #       
- #    #  #       #     # #     # #     # #    #  #     # #       
+ ######  #######  #####  ####### #     # ######   #####  #######
+ #     # #       #     # #     # #     # #     # #     # #
+ #     # #       #       #     # #     # #     # #       #
+ ######  #####    #####  #     # #     # ######  #       #####
+ #   #   #             # #     # #     # #   #   #       #
+ #    #  #       #     # #     # #     # #    #  #     # #
  #     # #######  #####  #######  #####  #     #  #####  #######
 
 # manage or list resource assignments
@@ -4995,7 +5206,7 @@ function resource_byval {
 #
 # requires:
 #   $1  resource
-# 
+#
 # optional:
 #   $2  system
 #
@@ -5009,7 +5220,7 @@ function resource_byval_assign {
   generic_choose system "$2" HOST
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -e 's/^(ip,'$1'),,not assigned,(.*)$/\1,host,'$HOST',\2/' -i ${CONF}/resource
+  perl -i -pe "s/^(ip,$1),,not assigned,(.*)\$/\1,host,$HOST,\2/" ${CONF}/resource
   commit_file resource
 }
 
@@ -5017,7 +5228,7 @@ function resource_byval_assign {
 #
 # requires:
 #   $1  resource
-# 
+#
 function resource_byval_unassign {
   start_modify
   # input validation
@@ -5029,7 +5240,7 @@ function resource_byval_unassign {
   test "$RL" != "y" && return
   # update the assignment in the resource file
   # [FORMAT:resource]
-  $extsed -e 's/^(.*ip,'$1'),(host|application),[^,]*,(.*)$/\1,,not assigned,\2/' -i ${CONF}/resource
+  perl -i -pe "s/^(.*ip,$1),(host|application),[^,]*,(.*)\$/\1,,not assigned,\2/" ${CONF}/resource
   commit_file resource
 }
 
@@ -5058,7 +5269,7 @@ function resource_delete {
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
     # [FORMAT:resource]
-    sed -e '/^[^,]*,'${C}',/d' -i ${CONF}/resource
+    perl -i -ne "print unless /^[^,]*,${C},/" ${CONF}/resource
   fi
   commit_file resource
 }
@@ -5144,7 +5355,7 @@ function resource_list_unformatted {
 function resource_show {
   test $# -eq 1 || err "Provide the resource value"
   # [FORMAT:resource]
-  grep -qE "^[^,]*,$1," ${CONF}/resource || err "Unknown resource" 
+  grep -qE "^[^,]*,$1," ${CONF}/resource || err "Unknown resource"
   # [FORMAT:resource]
   IFS="," read -r TYPE VAL ASSIGN_TYPE ASSIGN_TO NAME DESC <<< "$( grep -E "^[^,]*,$1," ${CONF}/resource )"
   printf -- "Name: $NAME\nType: $TYPE\nValue: $VAL\nDescription: $DESC\nAssigned to $ASSIGN_TYPE: $ASSIGN_TO\n"
@@ -5165,7 +5376,7 @@ function resource_update {
   fi
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
-  sed -e 's/^[^,]*,'$C',.*/'${TYPE}','${VAL//,/}','"$ASSIGN_TYPE"','"$ASSIGN_TO"','"${NAME//,/}"','"${DESC}"'/' -i ${CONF}/resource
+  perl -i -pe "s/^[^,]*,$C,.*/${TYPE},${VAL//,/},${ASSIGN_TYPE},${ASSIGN_TO},${NAME//,/},${DESC}/" ${CONF}/resource
   commit_file resource
 }
 
@@ -5224,6 +5435,7 @@ function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
   if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
   if [ "$1" == "--rank" ]; then hypervisor_rank ${@:2}; echo; return; fi
+  if [ "$1" == "--uuid" ]; then hypervisor_qemu_uuid -q; return; fi
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   case "$2" in
     --add-environment) hypervisor_add_environment $1 ${@:3};;
@@ -5259,9 +5471,9 @@ function hypervisor_delete {
   generic_delete hypervisor $1 || return
   # also delete from hv-environment and hv-network
   # [FORMAT:hv-environment]
-  sed -e "/^[^,]*,$1\$/d" -i $CONF/hv-environment
+  perl -i -ne "print unless /^[^,]*,$1\$/" $CONF/hv-environment
   # [FORMAT:hv-network]
-  sed -e "/^[^,]*,$1,/d" -i $CONF/hv-network
+  perl -i -ne "print unless /^[^,]*,$1,/" $CONF/hv-network
   commit_file hv-environment hv-network
 }
 
@@ -5280,7 +5492,7 @@ NAME
 	Hypervisors
 
 SYNOPSIS
-	scs hypervisor --locate-system <system_name> [--quick] | --system-audit
+	scs hypervisor --locate-system <system_name> [--quick] | --system-audit | --rank | --uuid
 	scs hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--register-key|--search]
 
 DESCRIPTION
@@ -5327,8 +5539,20 @@ OPTIONS
 		system, provided a location is known.  If the system has never been found a full search will
 		be performed, which is the same behavior as if '--quick' was not specified.
 
+	hypervisor --rank [--avoid <string>] hypervisor1 hypervisor2 ...
+		Given a list of one or more registered hypervisors, rank them according to available resources
+		and return the top ranked system.  This function is used internally to identify which
+		hypervisor a host should be deployed to, given a pre-selected list of compatible systems.
+
+		If --avoid is provided, the hypervisors will also be checked for a running system matching
+		the provided substring.  If a match is found that hypervisor will not be returned unless the
+		match is also found on all other provided hosts.
+
 	hypervisor --system-audit
 		System audit runs \`hypervisor --locate-system\` for every registered system.
+
+	hypervisor --uuid
+		Generate a globally unique id (guid) and mac address for a vm across all registered hypervisors.
 
 	hypervisor <name> --add-network
 		Link a registered network to a hypervisor on an interface.
@@ -5346,7 +5570,7 @@ OPTIONS
 		Connect to the hypervisor and report back memory and disk utilization, and their respective values
 		as a percentage of the configured minimums for the host.
 
-	hypervisor <name> --register-key <remote-user> <private-key>
+	hypervisor <name> --register-key [--sudo <sudo_user>] <remote-user> <private-key>
 		Register your SSH public key on the hypervisor under the specified user account.  The remote user
 		account must exist and must be authorized for remote login.  You will be prompted for the user's
 		password to add the key.
@@ -5354,6 +5578,9 @@ OPTIONS
 		The <private-key> argument is the path on your machine to the SSH private key.  The public key
 		will be generated from this private key in order to validate both keys, and the private key can
 		not be encrypted.
+
+		If '--sudo' is provided then login with the sudo_user account and elevate privileges to
+		remote-user to set up the key.
 
 	hypervisor <name> --search <string>
 		Search a hypervisor for virtual machines matching the provided string.  The string will be passed to
@@ -5437,7 +5664,7 @@ function hypervisor_list {
           # [FORMAT:hypervisor]
           read -r HypervisorIP VMPath <<< "$( grep -E "^$N," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4}' )"
           check_host_alive $HypervisorIP || continue
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" >/dev/null 2>&1 && NL="$NL $N"
+          ssh_remote_command -d -q $HypervisorIP "test -f ${VMPath}/${BACKING_FOLDER}${2}.img" && NL="$NL $N"
         done; LIST="$NL"; shift
         ;;
       *) err "Invalid argument";;
@@ -5463,7 +5690,8 @@ function hypervisor_locate_system {
 
   # variable scope
   local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
-        VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate
+        VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate \
+        Cache
 
   # load the system
   # [FORMAT:system]
@@ -5502,9 +5730,11 @@ function hypervisor_locate_system {
   # check if there is a preferred HV already
   # [FORMAT:hv-system]
   PREF="$( grep -E "^$NAME,[^,]*,y\$" ${CONF}/hv-system |awk 'BEGIN{FS=","}{print $2}' )"
-  start_modify
   # [FORMAT:hv-system]
-  sed -e '/^'$NAME',/d' -i ${CONF}/hv-system >/dev/null 2>&1
+  Cache="$( grep -E "^$NAME," ${CONF}/hv-system |perl -pe 's/[^,]*,([^,]*),.*/\1/' |tr '\n' ' ' |perl -pe 's/ $//' )"
+
+  # [FORMAT:hv-system]
+  #perl -i -ne "print unless /^${NAME},/" ${CONF}/hv-system >/dev/null 2>&1
 
   # set defaults
   for HV in $LIST; do
@@ -5516,15 +5746,24 @@ function hypervisor_locate_system {
     check_host_alive $HIP || continue
     # search
     if [ "$BASE_IMAGE" == "y" ]; then
-      VM=$( ssh -o "StrictHostKeyChecking no" $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |perl -pe 's/\.img//'" )
+      VM=$( ssh_remote_command -d $HIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.img 2>/dev/null |perl -pe 's/\.img//'" )
       if [ -z "$VM" ]; then STATE=""; else STATE="shut"; fi
     else
-      read VM STATE <<<"$( ssh -o "StrictHostKeyChecking no" $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
+      read VM STATE <<<"$( ssh_remote_command -d $HIP "virsh list --all |awk '{print \$2,\$3}' |grep -vE '^(Name|\$)'" |grep -E "^$NAME " )"
     fi
     test -z "$VM" && continue
     if [ "$STATE" == "shut" ]; then OFF="$HV"; else ON="$HV"; fi
-    printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+    # check the cache
+    printf -- ' %s ' "$Cache" |grep -q " $HV "
+    if [[ $? -ne 0 ]]; then
+      printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+    else
+      Cache="$( printf -- '%s' "$Cache" |perl -pe "s/ ?$HV ?//" )"
+    fi
   done
+
+  # remove hosts that were not found
+  for HV in $Cache; do perl -i -ne "print unless /[^,]*,$HV,/" ${CONF}/hv-system >/dev/null 2>&1; done
 
   # check results
   if ! [ -z "$OFF" ]; then FOUND="$OFF"; fi
@@ -5532,7 +5771,7 @@ function hypervisor_locate_system {
 
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
-  if ! [ -z "$PREF" ]; then sed -e 's/^'$NAME','$PREF',.*/'$NAME','$PREF',y/' -i ${CONF}/hv-system; fi
+  if [[ -n "$PREF" ]]; then perl -i -pe "s/^${NAME},${PREF},.*/${NAME},${PREF},y/" ${CONF}/hv-system; fi
   commit_file hv-system
 
   # output results and return status
@@ -5561,7 +5800,7 @@ function hypervisor_poll {
   # test the connection
   check_host_alive $IP || err "Hypervisor is not accessible at this time"
   # collect memory usage
-  FREEMEM=$( ssh -o "StrictHostKeyChecking no" $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
+  FREEMEM=$( ssh_remote_command -d $IP "free -m |head -n3 |tail -n1 |awk '{print \$NF}'" )
   MEMPCT=$( echo "scale=2;($FREEMEM / $MINMEM)*100" |bc |perl -pe 's/\..*//' )
   # optionally only return memory
   if [ "$2" == "--mem" ]; then
@@ -5570,7 +5809,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect disk usage
-  N=$( ssh -o "StrictHostKeyChecking no" $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
+  N=$( ssh_remote_command -d $IP "df -h $VMPATH |tail -n1 |awk '{print \$3}'" )
   case "${N: -1}" in
     T) M="* 1024 * 1024";;
     G) M="* 1024";;
@@ -5579,7 +5818,7 @@ function hypervisor_poll {
     b) M="/ 1024 / 1024";;
     *) err "Unknown size qualifer in '$N'";;
   esac
-  FREEDISK=$( echo "${N%?} $M" |bc |perl -pe 's/\..*//' ) 
+  FREEDISK=$( echo "${N%?} $M" |bc |perl -pe 's/\..*//' )
   DISKPCT=$( echo "scale=2;($FREEDISK / $MINDISK)*100" |bc |perl -pe 's/\..*//' )
   # optionally only return disk space
   if [ "$2" == "--disk" ]; then
@@ -5588,7 +5827,7 @@ function hypervisor_poll {
     return 0
   fi
   # collect load data
-  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh -o "StrictHostKeyChecking no" $IP "uptime |perl -pe 's/.* load average: //'" )"
+  IFS="," read -r ONE FIVE FIFTEEN <<< "$( ssh_remote_command -d $IP "uptime |perl -pe 's/.* load average: //'" )"
   # output results
   printf -- "Name: $NAME\nAvailable Disk (MB): $FREEDISK (${DISKPCT}%% of minimum)\nAvailable Memory (MB): $FREEMEM (${MEMPCT}%% of minimum)\n1-minute Load Avg: $ONE\n5-minute Load Ave: $FIVE\n15-minute Load Avg: $FIFTEEN\n"
 }
@@ -5603,7 +5842,7 @@ function hypervisor_poll {
 #
 function hypervisor_qemu_uuid {
   # variables
-  local ALL_HV="kvm-01 kvm-02 kvm-03 dc0pkvm-hv02 dc0pcore-hv01 dc0pcore-hv02 dc0pcore-hv03 dc1pcore-hv01 dc1pcore-hv02 dc1pcore-hv03"
+  local ALL_HV=$( hypervisor_list | tr '\n' ' ' )
   local HVS=""
   local TEMP="/tmp/kvm-uuid.$$"
   local XMLPATH="/etc/libvirt/qemu"
@@ -5612,7 +5851,7 @@ function hypervisor_qemu_uuid {
   local GENERATE=1
   local QUIET=0
   local DUPES=0
-  
+
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
     '-u') GENERATE=0;;
@@ -5620,7 +5859,7 @@ function hypervisor_qemu_uuid {
     '-q') VALIDATE=0; QUIET=1;;
     *) usage;;
   esac; shift; done
-  
+
   # validate all HVs are online and accessible
   for H in $ALL_HV; do
     if [ $VERBOSE -eq 1 ]; then echo -n "Verifying hypervisor is online... " >&2; fi
@@ -5631,48 +5870,48 @@ function hypervisor_qemu_uuid {
       HVS="$( printf -- "$HVS $H" |perl -pe 's/^ //' )"
     fi
   done
-  
+
   test -z "$HVS" && exit 1
-  
+
   # enumerate all addresses currently in use
-  for H in $HVS; do ssh $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |perl -pe 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
-  
+  for H in $HVS; do ssh_remote_command $H "grep -E '<(uuid|mac address)' ${XMLPATH}/*.xml"; done |sort |uniq |awk '{print $2,$3}' |perl -pe 's%[ \t]*[0-9]* <%%; s%'"'"'%%g; s%<?/[a-z]*>%%; s%( address=|>)% %' >$TEMP 2>/dev/null
+
   if [ $VALIDATE -eq 1 ]; then
     # MAC
     for M in $( grep mac $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate MAC Address '$M' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh $H "cd ${XMLPATH}; grep '$M' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
+        R=$( ssh_remote_command $H "cd ${XMLPATH}; grep '$M' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
-    
+
     # UUID
     for U in $( grep uuid $TEMP |sort |uniq -c |grep -vE '^ *1' |awk '{print $3}' ); do
       echo "**WARNING** Duplicate UUID '$U' found!"; DUPES=1
       for H in $HVS; do
-        R=$( ssh $H "cd ${XMLPATH}; grep '$U' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
+        R=$( ssh_remote_command $H "cd ${XMLPATH}; grep '$U' *.xml |perl -pe 's%\.xml.*%%'" |replace |perl -pe 's%,$%%' )
         if ! [ -z "$R" ]; then echo "  [$H] $R"; fi
       done
     done
   fi
-  
+
   if [ $GENERATE -eq 1 ]; then
     # find the next available MAC
     MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
     while [ $( grep -ic $MAC $TEMP ) -gt 0 ]; do
       MAC="54:52:00$( < /dev/urandom tr -dc a-f0-9 |head -c6 |perl -pe 's%(..)%:\1%g' )"
     done
-    
+
     # find the next available UUID
     UUID=$( uuidgen )
     while [ $( grep -ic $UUID $TEMP ) -gt 0 ]; do UUID=$( uuidgen ); done
-    
+
     test $QUIET -eq 0 && echo
     echo "UUID       : $UUID"
     echo "MAC Address: $MAC"
   fi
-  
+
   if [[ $VALIDATE -eq 1 && $DUPES -eq 1 ]]; then
     exit 1
   elif [ $VALIDATE -eq 1 ]; then
@@ -5732,17 +5971,34 @@ function hypervisor_rank {
 function hypervisor_register_key {
   local IP
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
-  if [ $# -ne 3 ]; then hypervisor_register_key_help >&2; exit 1; fi
+  if [[ $# -lt 3 && $# -gt 6 ]]; then hypervisor_register_key_help >&2; exit 1; fi
   IP=$( hypervisor_show $1 --brief |grep Address |cut -d' ' -f3 )
   valid_ip $IP || err "The specified hypervisor has an invalid management address."
-  register_ssh_key "$IP" "$2" "$3"
+  if [ $# -eq 5 ]; then
+    if [ "$2" != "--sudo" ]; then hypervisor_register_key_help >&2; exit 1; fi
+    if [[ "$6" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5" --debug
+    else
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    fi
+  else
+    if [[ "$4" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --user "$2" --key "$3" --debug
+    else
+      register_ssh_key --host "$IP" --user "$2" --key "$3"
+    fi
+  fi
 }
 function hypervisor_register_key_help { cat <<_EOF
-Usage: $0 hypervisor <name> --register-key <user-name> <private-key-file>
+Usage: $0 hypervisor <name> --register-key [--sudo <sudo_user>] <user-name> <private-key-file>
 
 Register an existing public/private key pair for key-based authentication
 to a remote hypervisor under the specified user account.  You must have
 the password and authorization to log in to the remote server.
+
+If --sudo is provided, log into the hypervisor as <sudo_user> and use
+the provided password (you will be prompted for it) to elevate
+privileges to access the target account.
 _EOF
 }
 
@@ -5756,7 +6012,7 @@ function hypervisor_remove_environment {
   grep -qE "^$ENV,$1\$" ${CONF}/hv-environment || return
   # remove mapping
   # [FORMAT:hv-environment]
-  sed -e '/^'$ENV','$1'/d' -i ${CONF}/hv-environment
+  perl -i -ne "print unless /^${ENV},$1/" ${CONF}/hv-environment
   commit_file hv-environment
 }
 
@@ -5778,7 +6034,7 @@ function hypervisor_remove_network {
   grep -qE "^$C,$1," ${CONF}/hv-network || return
   # remove mapping
   # [FORMAT:hv-network]
-  sed -e '/^'$C','$1',/d' -i ${CONF}/hv-network
+  perl -i -ne "print unless /^$C,$1,/" ${CONF}/hv-network
   commit_file hv-network
 }
 
@@ -5794,7 +6050,7 @@ function hypervisor_search {
   # validate search string
   test -z "$2" && err "Missing search operand"
   # search
-  local LIST=$( ssh -o "StrictHostKeyChecking no" $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
+  local LIST=$( ssh_remote_command -d $IP "virsh list |awk '{print \$2}' |grep -vE '^(Name|\$)'" |grep "$2" )
   test -z "$LIST" && return 1
   printf -- "$LIST\n"
 }
@@ -5851,24 +6107,24 @@ function hypervisor_update {
   get_input MINMEM "Memory Minimum (MB)" --regex '^[0-9]*$' --default "$MINMEM"
   get_yn ENABLED "Enabled (y/n)" --default "$ENABLED"
   # [FORMAT:hypervisor]
-  sed -e 's%^'$C',.*%'${NAME}','${IP}','${LOC}','${VMPATH}','${MINDISK}','${MINMEM}','${ENABLED}'%' -i ${CONF}/hypervisor
+  perl -i -pe "s%$C,.*%${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}%" ${CONF}/hypervisor
   if [ "$NAME" != "$C" ]; then
     # [FORMAT:hv-environment]
-    sed -e "s/,$C\$/,$NAME/" -i ${CONF}/hv-environment
+    perl -i -pe "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
-    $extsed -e 's%^([^,]*),'$C',(.*)$%\1,'$NAME',\2%' -i ${CONF}/hv-network
+    perl -i -pe "s%^([^,]*),$C,(.*)\$%\1,${NAME},\2%" ${CONF}/hv-network
   fi
   commit_file hypervisor hv-environment hv-network
 }
 
 
 #Section: SYSTEM
-  #####  #     #  #####  ####### ####### #     # 
- #     #  #   #  #     #    #    #       ##   ## 
- #         # #   #          #    #       # # # # 
-  #####     #     #####     #    #####   #  #  # 
-       #    #          #    #    #       #     # 
- #     #    #    #     #    #    #       #     # 
+  #####  #     #  #####  ####### ####### #     #
+ #     #  #   #  #     #    #    #       ##   ##
+ #         # #   #          #    #       # # # #
+  #####     #     #####     #    #####   #  #  #
+       #    #          #    #    #       #     #
+ #     #    #    #     #    #    #       #     #
   #####     #     #####     #    ####### #     #
 
 # system functions
@@ -5878,7 +6134,7 @@ function system_byname {
   system_exists "$1" || err "Unknown or missing system name"
   # function
   case "$2" in
-    --audit)               system_audit $1;;
+    --audit)               system_audit $1 ${@:3};;
     --check)               system_check $1 ${@:3};;
     --convert)             system_convert $1 ${@:3};;
     --deploy)              system_deploy $1 ${@:3};;
@@ -5886,46 +6142,72 @@ function system_byname {
     --distribute)          system_distribute $1 ${@:3};;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
+    --register-key)        system_register_key $1 ${@:3};;
     --release)             system_release $1;;
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
+    --uptime)              system_uptime $1;;
     --vars)                system_vars $1;;
     --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
     --vm-disks)            system_vm_disks $1;;
   esac
 }
 
+# audit a system against the generated configuration
+#
+# requires:
+#  $1  system name
+#
+# optional:
+#   --no-prompt   do not ask to review changes, just show differences
+#
 function system_audit {
   system_exists "$1" || err "Unknown or missing system name"
-  local VALID=0 SkipCheck
+  local VALID=0 SkipCheck SkipPrompt=0 System="$1"; shift
+
+  # process arguments
+  while [ $# -gt 0 ]; do case $1 in
+    --no-prompt) SkipPrompt=1;;
+    *) err "invalid argument";;
+  esac; shift; done
+
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # test connectivity
-  check_host_alive $1 || err "System $1 is not accessible at this time"
+  check_host_alive $System || err "System $System is not accessible at this time"
+
   # generate the release
   echo "Generating release..."
-  FILE=$( system_release $1 |tail -n1 )
+  FILE=$( system_release $System |tail -n1 |perl -pe 's/\.bsx/.cpio.gz/' )
   test -s "$FILE" || err "Error generating release"
-  # extract release to local directory
+
+  # prepare the release directory
   echo "Extracting..."
   mkdir -p $TMP/release/{REFERENCE,ACTUAL}
-  tar xzf $FILE -C $TMP/release/REFERENCE/ || err "Error extracting release to local directory"
-  # clean up temporary release archive
-  rm -f $FILE
+
   # switch to the release root
   pushd $TMP/release/REFERENCE >/dev/null 2>&1
+
+  # extract release to local directory
+  gzip -dc $FILE |cpio -idm 2>/dev/null || err "Error extracting release to local directory"
+
+  # clean up temporary release archive
+  rm -f $FILE
+
   # move the stat file out of the way
   mv scs-stat ../
+
   # remove scs deployment scripts for audit
   rm -f scs-*
+
   # pull down the files to audit
   echo "Retrieving current system configuration..."
   for F in $( find . -type f |perl -pe 's%^\./%%' ); do
     mkdir -p $TMP/release/ACTUAL/$( dirname $F )
-    scp -p $1:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
+    scp -i $SCS_KeyFile -p $SCS_RemoteUser@$System:/$F $TMP/release/ACTUAL/$F >/dev/null 2>&1
   done
-  ssh -o "StrictHostKeyChecking no" $1 "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
+  ssh_remote_command -d $System "stat -c '%N %U %G %a %F' $( awk '{print $1}' $TMP/release/scs-stat |tr '\n' ' ' ) 2>/dev/null |perl -pe 's/regular (empty )?file/file/; s/symbolic link/symlink/'" |perl -pe 's/[`'"'"']*//g' >$TMP/release/scs-actual
 
   # review differences
   echo "Analyzing configuration..."
@@ -5950,13 +6232,18 @@ function system_audit {
         fi
       fi
 
-      if [[ $SkipCheck -eq 0 && $( md5sum $TMP/release/{REFERENCE,ACTUAL}/$F |awk '{print $1}' |sort |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
+      if [[ $SkipCheck -eq 0 && $( md5s $TMP/release/{REFERENCE,ACTUAL}/$F |uniq |wc -l |awk '{print $1}' ) -gt 1 ]]; then
         VALID=1
         echo "Deployed file and reference do not match: $F"
-        get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
-        test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
-        test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+        if [[ $SkipPrompt -ne 1 ]]; then
+          get_yn DF "Do you want to review the differences (y/n/d) [Enter 'd' for diff only]?" --extra d
+          test "$DF" == "y" && vimdiff $TMP/release/{REFERENCE,ACTUAL}/$F
+          test "$DF" == "d" && diff -c $TMP/release/{REFERENCE,ACTUAL}/$F
+        else
+          diff $TMP/release/{REFERENCE,ACTUAL}/$F
+        fi
       fi
+
     elif [ $( file_size $TMP/release/REFERENCE/$F ) -eq 0 ]; then
       echo "Ignoring empty file $F"
     else
@@ -6095,7 +6382,7 @@ function system_convert {
 
   # get current type
   curType=$( system_type $NAME )
-  
+
   # get the network by the system IP
   if [ -z "$NETNAME" ]; then
     NETNAME=$( network_list --match $IP ); if [ -z "$NETNAME" ]; then err "Unable to identify a registered network for the system"; fi
@@ -6108,12 +6395,12 @@ function system_convert {
 
   # confirm operation (unless explicitly told not to)
   if [ $Confirm -ne 0 ]; then get_yn RL "Are you sure you want to convert $NAME from $curType to $newType (y/n)?" || return 0; fi
-  
+
   if [ $DryRun -eq 0 ]; then start_modify; else echo "Dry Run - No changes will be made"; fi
 
   # locate system
   Hypervisor=$( hypervisor_locate_system $NAME )
-  
+
   if [[ -z "$Hypervisor" && $Force -eq 1 ]]; then
     Hypervisor=$( hypervisor_locate_system $NAME --search-as-single )         ; if [ -z "$Hypervisor" ]; then err "Unable to locate hypervisor"; exit 1; fi
     HypervisorAll=$( hypervisor_locate_system $NAME --all --search-as-single ); if [ -z "$HypervisorAll" ]; then err "Unable to enumerate hypervisors"; exit 1; fi
@@ -6138,14 +6425,14 @@ function system_convert {
 
     # shut off vm if running
     if [ $DryRun -eq 0 ]; then
-      ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
     else
-      echo ssh $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
+      echo ssh -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; test -d ${HVPATH}/${BACKING_FOLDER} || mkdir -p ${HVPATH}/${BACKING_FOLDER}"
     fi
   done
 
   # enumerate disk images
-  List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+  List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
 
   case "$curType->$newType" in
 
@@ -6155,12 +6442,12 @@ function system_convert {
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
           scslog "moving '$File' to ${VMPath}/${BACKING_FOLDER}"
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File" >/dev/null 2>&1
+          ssh_remote_command -d -q $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         else
-          echo ssh $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
+          echo ssh -l $SCS_RemoteUser $HypervisorIP "mv $File ${VMPath}/${BACKING_FOLDER}; chattr +i ${VMPath}/${BACKING_FOLDER}/$File"
         fi
       done
-      if [ $DryRun -eq 0 ]; then List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
+      if [ $DryRun -eq 0 ]; then List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"; fi
 
       # undefine vm
       for HV in $HypervisorAll; do
@@ -6170,9 +6457,9 @@ function system_convert {
 
         # undefine vm
         if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml" >/dev/null 2>&1
+          ssh_remote_command -d -q $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
         else
-          echo ssh $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
+          echo ssh -l $SCS_RemoteUser $HVIP "virsh undefine $NAME; test -f /etc/libvirt/qemu/$NAME.xml && rm -f /etc/libvirt/qemu/$NAME.xml"
         fi
       done
 
@@ -6190,11 +6477,11 @@ function system_convert {
 
       # verify no other systems overlay on this one
       for File in $List; do
-        Count=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'" )
+        Count=$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'" )
         if [ $DryRun -eq 0 ]; then
           if [ $Count -gt 0 ]; then errlog "found $Count system overlay images on '$File': aborting"; exit 1; fi
         else
-          echo ssh $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'"
+          echo ssh -l $SCS_RemoteUser $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img' -exec qemu-img info {} \\; |grep ^backing |grep ${File} |wc -l |awk '{print \$1}'"
           echo "found $Count system overlay images on '$File': anything over 0 will normally cause an error"
         fi
       done
@@ -6202,12 +6489,12 @@ function system_convert {
       # move images out of backing folder
       for File in $List; do
         if [ $DryRun -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
+          ssh_remote_command -d $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         else
-          echo ssh -o "StrictHostKeyChecking no" $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
+          echo ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HypervisorIP "chattr -i ${File}; mv ${File} ${VMPath}/"
         fi
       done
-      List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+      List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
 
       #  - lookup the build network for this system
       network_list --build $LOC |grep -E '^available' | grep -qE " $NETNAME( |\$)"
@@ -6216,7 +6503,7 @@ function system_convert {
       else
         BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
       fi
-  
+
       #  - get the network interfaces on the hypervisor
       # [FORMAT:hv-network]
       HV_BUILD_INT=$( grep -E "^$BUILDNET,$Hypervisor," ${CONF}/hv-network |perl -pe 's/^[^,]*,[^,]*,//' )
@@ -6230,17 +6517,17 @@ function system_convert {
       # [FORMAT:build]
       IFS="," read -r OS ARCH RDISK RRAM RP <<< "$( grep -E "^$ROOT," ${CONF}/build |perl -pe 's/^[^,]*,[^,]*,[^,]*,//' )"
       test -z "$OS" && err "Error loading build"
-    
+
       # set disk/ram
       if [ -z "$DISK" ]; then DISK=$RDISK; fi
       if [ -z "$RAM" ]; then RAM=$RRAM; fi
-    
+
       #  - get disk size and memory
       test -z "$DISK" && DISK=$DEF_HDD
       test -z "$RAM" && RAM=$DEF_MEM
-    
+
       scslog "following validation for $NAME - assigned ram '$RAM' and disk '$DISK'"
-    
+
       #  - get globally unique mac address and uuid for the new server
       read -r UUID MAC <<< "$( hypervisor_qemu_uuid -q |perl -pe 's/^[^:]*: //' |tr '\n' ' ' )"
 
@@ -6251,13 +6538,13 @@ function system_convert {
   #    scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
   # need ... buildip/mask, gateway, dns, interface
         scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
-        ssh -o "StrictHostKeyChecking no" -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+        ssh_remote_command -d -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
         if [ $? -ne 0 ]; then
-          echo ssh -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+          echo ssh -n -l $SCS_RemoteUser $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
           err "Error creating VM!"
         fi
       else
-        echo ssh -n $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
+        echo ssh -n -l $SCS_RemoteUser $HypervisorIP "/usr/local/utils/kvm-install.sh --arch $ARCH --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --use-existing --disk-path ${VMPath}/${NAME}.img $NAME"
       fi
 
       # check for secondary disks
@@ -6273,7 +6560,7 @@ function system_convert {
 
       if [ $DryRun -eq 0 ]; then
         # start new virtual machine
-        ssh -o "StrictHostKeyChecking no" -n $HypervisorIP "virsh start $NAME" >/dev/null 2>&1
+        ssh_remote_command -d -n -q $HypervisorIP "virsh start $NAME"
       fi
 
       # update system configuration
@@ -6281,7 +6568,7 @@ function system_convert {
       IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
       # save changes
       # [FORMAT:system]
-      sed -e 's/^'$C',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','n','${OVERLAY}','${SystemBuildDate}'/' -i ${CONF}/system
+      perl -i -pe "s/^$C,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},n,${OVERLAY},${SystemBuildDate}/" ${CONF}/system
       commit_file system
 
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
@@ -6394,15 +6681,15 @@ function system_deploy {
   if [ -z "$FILE" ]; then printf -- "Error generating release for '$System'\n"; exit 1; fi
   if ! [ -f "$FILE" ]; then printf -- "Unable to read release file\n"; exit 1; fi
   printf -- "Copying release to remote system...\n"
-  scp $FILE $System: >/dev/null 2>&1
+  scp -i $SCS_KeyFile $FILE $SCS_RemoteUser@$System: >/dev/null 2>&1
   if [ $? -ne 0 ]; then printf -- "Error copying release to '$System'\n"; exit 1; fi
   printf -- "Cleaning up...\n"
   rm -f $FILE
   if [ $Install -eq 0 ]; then
-    printf -- "\nInstall like this:\n  ssh $System \"tar xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh\"\n\n"
+    printf -- "\nInstall like this:\n  ssh -l $SCS_RemoteUser $System \"/bin/bash /root/$( basename $FILE ) --install\"\n\n"
   else
     printf -- "Installing on remote server... "
-    ssh $System "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh"
+    ssh_remote_command $System "/bin/bash /root/$( basename $FILE ) --install"
     if [ $? -eq 0 ]; then echo "success"; else echo "error!"; fi
   fi
 }
@@ -6454,25 +6741,25 @@ function system_deprovision {
     check_host_alive $HVIP || err "Unable to connect to hypervisor '$HV'@'$HVIP'"
     # get disks
     if [ "$BASE_IMAGE" == "y" ]; then
-      LIST="$( ssh -o "StrictHostKeyChecking no" $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
+      LIST="$( ssh_remote_command -d $HVIP "ls ${VMPATH}/${BACKING_FOLDER}${NAME}.*img" )"
     else
       LIST="/etc/libvirt/qemu/$NAME.xml $( system_vm_disks $NAME )"
     fi
     scslog "removing from $HV: $LIST"
     # destroy
     if [ $DRY_RUN -ne 1 ]; then
-      ssh -o "StrictHostKeyChecking no" $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
     else
-      echo ssh $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
+      echo ssh -l $SCS_RemoteUser $HVIP "virsh destroy $NAME; sleep 1; virsh undefine $NAME"
       test -z "$HVFIRST" && HVFIRST="$HV"
     fi
     # delete files / cleanup
     for F in $LIST; do
       if [[ "$F" == "/" || "$F" == "" ]]; then continue; fi
       if [ $DRY_RUN -ne 1 ]; then
-        ssh -o "StrictHostKeyChecking no" -n $HVIP "test -f $F && chattr -i $F && rm -f $F"
+        ssh_remote_command -d -n $HVIP "test -f $F && chattr -i $F && rm -f $F"
       else
-        echo ssh -n -o "StrictHostKeyChecking no" $HVIP "test -f $F && chattr -i $F && rm -f $F"
+        echo ssh -n -o "StrictHostKeyChecking no" -l $SCS_RemoteUser $HVIP "test -f $F && chattr -i $F && rm -f $F"
       fi
     done
     HV=$( hypervisor_locate_system $NAME )
@@ -6513,6 +6800,8 @@ function system_distribute {
 
   if ! [ -z "$HVList" ]; then hypervisor_exists $HVList || err "Invalid hypervisor"; fi
 
+  if ! [[ -d $TMPLarge ]]; then mkdir $TMPLarge >/dev/null 2>&1 || err "Unable to create temporary folder"; fi
+
   # get the network by the system IP
   if [ "$IP" != "dhcp" ]; then
     Network=$( network_list --match $IP )
@@ -6531,7 +6820,7 @@ function system_distribute {
   if [[ "$HypervisorIP" == "" || "$VMPath" == "" ]]; then err "Error loading hypervisor configuration"; fi
 
   # enumerate disk images
-  List="$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "find ${VMPath}/${BACKING_FOLDER} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
+  List="$( ssh_remote_command -d $HypervisorIP "find ${VMPath}/${BACKING_FOLDER} -type f -regex '.*\\.img\$' | grep -E '/${NAME}(\\..+)?.img\$'" |tr '\n' ' ' )"
   if [ $DryRun -ne 0 ]; then printf -- "Located system files:\n%s\n" $List; fi
 
   # list hypervisors
@@ -6561,14 +6850,14 @@ function system_distribute {
     check_host_alive $HVIP || continue
 
     # test if a remote to remote transfer is possible
-    ssh -o "StrictHostKeyChecking no" $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
+    ssh_remote_command -d $HypervisorIP "ssh $HV uptime >/dev/null 2>&1" && LocalTransfer=0 || LocalTransfer=1
 
     if [ $DryRun -ne 0 ]; then
-      ssh -o "StrictHostKeyChecking no" $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HVIP "test -d ${HVPath}/${BACKING_FOLDER} || mkdir -p ${HVPath}/${BACKING_FOLDER}"
     fi
 
     for File in $List; do
-      ssh -o "StrictHostKeyChecking no" $HVIP "test -f ${HVPath}/${BACKING_FOLDER}$( basename $File )"
+      ssh_remote_command -d $HVIP "test -f ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       if [ $? -eq 0 ]; then
         scslog -v "system already exists on $HV"
         continue
@@ -6576,19 +6865,19 @@ function system_distribute {
       if [ $DryRun -ne 0 ]; then
         echo "redistributing $File from $Hypervisor to $HV..."
         if [ $LocalTransfer -eq 0 ]; then
-          echo "  ssh -o \"StrictHostKeyChecking no\" $HypervisorIP \"scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )\""
+          echo "  ssh -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $HypervisorIP \"scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )\""
         else
           echo "  srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File )"
         fi
-        echo "  ssh -o \"StrictHostKeyChecking no\" $HVIP \"chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )\""
+        echo "  ssh -o \"StrictHostKeyChecking no\" -l $SCS_RemoteUser $HVIP \"chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )\""
       else
         scslog -v "transferring to ${HV}..."
         if [ $LocalTransfer -eq 0 ]; then
-          ssh -o "StrictHostKeyChecking no" $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )" >/dev/null 2>&1
+          ssh_remote_command -d -q $HypervisorIP "scp ${File} $HV:${HVPath}/${BACKING_FOLDER}$( basename $File )"
         else
           srcp -t ${TMPLarge} $HypervisorIP:${File} $HVIP:${HVPath}/${BACKING_FOLDER}$( basename $File ) >/dev/null 2>&1
         fi
-        ssh -o "StrictHostKeyChecking no" $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
+        ssh_remote_command -d $HVIP "chattr +i ${HVPath}/${BACKING_FOLDER}$( basename $File )"
       fi
     done
 
@@ -6621,11 +6910,196 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--release|--start-remote-build|--type|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
+	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|
+	                    --uptime|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
+	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
+	manages, audits, and deploys the configured systems.
+
+	A system is associated directly or indirectly with all other resource types.  It is the 'thing' an assembled
+	configuration is deployed or installed to; it is built or managed and must be accessible from the management
+	server with a root ssh key.
 
 OPTIONS
+	system <value> --audit [--no-prompt]
+		Audit the generated system configuration with the deployed configuration.  This will only analyze the
+		managed files and directories configured for the system (see system show <name> for a complete list).
+		Both permissions and content are reviewed.  SCS will return PASS (exit code 0) if both file content
+		and permissions match exactly for all managed files.  SCS will return FAIL (exit code 1) if any file
+		differs from the generated value.
+
+		By default the user will be prompted to review the changes in vimdiff (y), diff (d), or skip (n).  If
+		the '--no-prompt' argument is provided the no user interaction is required.
+
+	system <value> --check [--verbose]
+		Run a check against the scs configuration to ensure a valid configuration can be generated for the
+		specified system.  This runs through the process of building the managed configuration files and
+		filling in variables wherever they appear.  This is useful for validating that all variables are
+		defined for a system in an environment.
+
+		If the '--verbose' (or -v) option is provided then all undefined variables will be enumerated so they
+		can be defined.  By default only the result of the operation is output.
+
+	system <value> --convert [--backing] [--distribute] [--dry-run] [--force] [--network <loc-zone-alias>]
+                                 [--no-prompt] [--overlay <backing_image>] [--single]
+		Convert a system to a different type.  This can be a highly dangerous operation if not used with care.
+		This function is mostly used by the system provisioning processes to create and manage backing images,
+		but is exposed through the UI to enable automation of various management processes.
+
+		Extreme care should be taken when change system types due to potential non-obvious dependencies.  If,
+		for example, an entire environment is build on a single backing image and that backing image is
+		converted to a system, all other systems will cease functioning.
+
+		System types include:
+
+			single	: Normal standalone virtual machine.
+
+			backing	: Backing image.  This is a disk image that is not attached to a virtual machine
+				  and designated for other system images to overlay on (using qemu).
+
+			overlay	: A virtual machine whose primary disk image is an overlay on another image.
+
+		--backing    : Convert TO a backing image
+
+		--distribute : Distribute converted image to hypervisors (this is pretty much for backing images)
+
+		--dry-run    : Do not make any actual changes, just show what would be done.
+
+		--force      : Force execution even when some validation checks fail.
+
+		--network    : Requires the network name; required in order to convert to overlay or single.
+
+		--no-prmopt  : Do not confirm change.
+
+		--overlay    : Convert TO an overlay (not implemented at this time)
+
+		--single     : Convert TO a single (normal virtual machine)
+
+	system <value> --deploy [--install]
+		Build the configuration for a system, package in a tarball, and scp to the remote system at /root/.
+
+		If the '--install' option is provided, automatically deploy the configuration files and permissions.
+
+	system <value> --deprovision [--dry-run] [--yes-i-am-sure]
+		Delete a deployed virtual-machine.  If it is running it is immediately destroyed and the permanently
+		removed.  This action should be used with extreme care.
+
+		The '--dry-run' option will execute without making any changes to the remote system.
+
+		The '--yes-i-am-sure' will bypass confirmation of the action.  This is very dangerous but useful for
+		scripting.
+
+	system <value> --distribute [--dry-run] [--hypervisor "<name1> <name2> ..."] [--location <name>]
+		Redistribute all attached disk images for a system to other hypervisors.  This should be used to
+		copy backing images to other hosts. SCS will try to do a remote to remote (direct) copy, but that
+		requires each hypervisor to have a root key set up for each other hypervisor.  If this fails then
+		the disk image(s) will be copied to the local system and then copied up to each destination host.
+
+		--dry-run    : Do not make changes, just show what would be done.
+
+		--hypervisor : A list of configured hypervisors can be provided to copy the image TO.
+
+		--location   : If provided, all hypervisors at the specified location will be loaded into the copy
+		               copy TO list.
+
+	system <value> --provision [--distribute] [--foreground] [--hypervisor <name>] [--network <loc-zone-alias>]
+		                   [--skip-distribute]
+		Provision (create/install) a configured virtual machine.  By default a hypervisor will be
+		automatically selected (if possible).  If the system is configured to be an overlay and the overlay
+		is not provisioned or is set to auto an overlay will be automatically built and/or selected as
+		needed.
+
+		--distribute : Automatically redistribute the built vm (useful for backing images) to other
+		               configured hypervisors at the same location after it is built
+
+		--foreground : Normally the provisioning process will detach and run in the background after all
+		               settings and configuration have been validated.  This option will keep the process
+		               in the foreground.  This can be useful for scripting.
+
+		--hypervisor : Force deployment on the specified hypervisor.  The hypervisor must be registered
+		               and enabled.  If this option is not specified a hypervisor will be chosen
+		               automatically for those available at the location and environment the system being
+		               deployed to.
+
+		--network    : If the system IP is set to auto the user will be prompted to provide the network
+		               in order for the IP to be automatically selected.  The network can be specified
+		               from the command line with this option to avoid the prompt.
+
+		--skip-distribute : If the build VM was to be automatically distributed to other hypervisors after
+		                    it is built, bypass and do not distribute it.
+
+	system <value> --push-build-scripts [/path/to/scripts]
+		Copy the system build scripts to the remote server.  By default they are pulled from the local
+		system at /home/wstrucke/ESG/system-builds.  The path to the scripts can be provided as an
+		argument if necessary or desired.  This function is called automatically during the system
+		provision process.
+
+	system <value> --register-key [--sudo <name>] <user> </path/to/private_key>
+		Register an existing public/private key pair for key-based authentication to a remote system under
+		the specified user account.  You must have the password and authorization to log in to the remote
+		server.
+
+		If --sudo is provided, log into the system as <sudo_user> and use the provided password (you will
+		be prompted for it) to elevate privileges to access the target account.
+
+	system <value> --release
+		Generate the release (configuration) in a tarball for the specified system.  The release is copied
+		to the scs release directory.
+
+	system <value> --start-remote-build <current_ip> [<role>]
+		Executes the system build scripts on the remote system at the provided IP address.  If a role is
+		provided it will be added as an argument to the role script.  The remote system will be instructed
+		to shut itself off after running the build.  This function is called during the system provision
+		process.
+
+		The build scripts are called at 'ESG/system-builds/role.sh' on the remote system.
+
+	system <value> --type
+		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
+		'overlay'.
+
+	system <value> --uptime
+		Connect to the remote system and run 'uptime'. This is purely diagnostic.
+
+	system <value> --vars
+		Assemble the complete list of variables defined for the system.  This is exactly what is compiled
+		on demand anytime a system configuration is built and can be referenced to identify what settings
+		are available.
+
+	system <value> --vm-add-disk [--alias <name>] [--backing </path/to/name.img>] [--disk </path/to/disk.img>] [--use-existing] [--hypervisor <name>] [--size <size_in_gb>] [--type <type>] [--destroy] [--dry-run]
+		Create a new disk on the hypervisor for a system and attach it (or attach an existing disk). This
+		function is called automatically by the system provision process for an overlay when the backing
+		system also has multiple disk images.
+
+		--alias   : Provide an alias for the disk image.  This is only used on the hypervisor file system
+		            as a component of the new image file name. (i.e. 'system.alias.img')
+
+		--backing : Specify an existing backing image for the new system.  If a backing image is specified
+		            then the disk size argument is ignored (since it must match the backing imge).
+
+		--disk    : Path to store the disk image at.  If an image exists at this location and use-existing
+		            or destroy is not specified then this will generate an error and fail.
+
+		--use-existing : When a disk image is provided (or inferred) and the image already exists, do not
+		                 overwrite and just attach it as-is to the system.
+
+		--hypervisor : Specify the hypervisor to connect to for this operation.  If this argument is not
+		               provided then the hypervisor will be determined automatically.
+
+		--size    : Size in GB of the created disk image.  The image will be thin-provisioned.
+
+		--type    : Override the default type of image to create.  Valid options include:
+		            'ide', 'scsi', 'usb', 'virtio', and 'xen'.
+
+		--destroy : If a disk image exists at the generated or specified path, remove it first.  Use with
+		            caution.
+
+		--dry-run : Do not make any changes, just output what would be done.
+
+	system <value> --vm-disks
+		Connect to the hypervisor for the system and list all configured disk images.
 
 EXAMPLES
 
@@ -6698,7 +7172,7 @@ function system_provision {
 
   # check redistribute
   if [[ -z "$REDIST" && "$BASE_IMAGE" == "y" ]]; then get_yn REDIST "Would you like to automatically distribute the built image to other active hypervisors (y/n)?"; else REDIST=n; fi
-  
+
   if [ "$IP" != "dhcp" ]; then
     # verify the system's IP is not in use
     network_ip_check $IP $NAME || err "System is alive; will not redeploy."
@@ -6723,7 +7197,7 @@ function system_provision {
     BUILDNET=$( network_list --build $LOC |grep -E '^default' |awk '{print $2}' )
   fi
   scslog "build network: $BUILDNET"
-  
+
   if [ -z "$OVERLAY" ]; then
     # this is a single or backing system build (not overlay)
 
@@ -6735,19 +7209,19 @@ function system_provision {
     valid_ip $DNS || err "Build network does not have a defined DNS server"
     valid_mask $NETMASK || err "Build network does not have a valid network mask"
     if [[ -z "$REPO_ADDR" || -z "$REPO_PATH" || -z "$REPO_URL" ]]; then err "Build network does not have a valid repository configured ($BUILDNET)"; fi
-  
+
     if [ -z "$Hypervisor" ]; then
       scslog "locating hypervisor"
       #  - locate available HVs
       LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
       test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
-    
+
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
       Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |perl -pe 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
     fi
     scslog "selected $Hypervisor"
-  
+
   else
 
     # this is an overlay build
@@ -6761,19 +7235,19 @@ function system_provision {
 
     if [ -z "$Hypervisor" ]; then
       # list hypervisors capable of hosting this system
-      # -- if none, build it ? 
+      # -- if none, build it ?
       LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --backing $OVERLAY --enabled | tr '\n' ' ' )
-  
+
       if [ -z "$LIST" ]; then
         # no hypervisors were found matching the specified criteria.  check if some match with all *except* overlay AND if the overlay system
         #   does not exist than just ignore and continue since the entire chain can be built later
         LIST=$( hypervisor_list --backing $OVERLAY --enabled | tr '\n' ' ' )
         test ! -z "$LIST" && err "The selected backing image '$OVERLAY' is built and deployed to set of hypervisors that does not intersect with those otherwise capable of building this server.  Please copy the overlay or select a different backing image."
-  
+
         LIST=$( hypervisor_list --network $NETNAME --network $BUILDNET --location $LOC --environment $EN --enabled | tr '\n' ' ' )
         test -z "$LIST" && err "There are no configured hypervisors capable of building this system"
       fi
-    
+
       #  - poll list of HVs for availability then rank for free storage, free mem, and load
       Hypervisor=$( hypervisor_rank --avoid $( printf -- $NAME |perl -pe 's/[0-9]+[abv]*$//' ) $LIST )
       test -z "$Hypervisor" && err "There are no available hypervisors at this time"
@@ -6871,22 +7345,22 @@ resource.sm-web $REPO_ADDR
 _EOF
 
     echo "Using build server at '$REPO_ADDR' for system $NAME@$BUILDIP in $BUILDNET" >>$SCS_Background_Log
-    parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const 
+    parse_template ${TMP}/${NAME}.cfg ${TMP}/${NAME}.const
 
     # hotfix for centos 5 -- this is the only package difference between i386 and x86_64
-    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then sed -e 's/kernel-PAE/kernel/' -i ${TMP}/${NAME}.cfg; fi
+    if [[ "$OS" == "centos5" && "$ARCH" == "x86_64" ]]; then perl -i -pe "s/kernel-PAE/kernel/" ${TMP}/${NAME}.cfg; fi
     #  - send custom kickstart file over to the local sm-web repo/mirror
-    ssh -o "StrictHostKeyChecking no" -n $REPO_ADDR "mkdir -p $REPO_PATH" >/dev/null 2>&1
-    scp -B ${TMP}/${NAME}.cfg $REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
+    ssh_remote_command -d -n -q $REPO_ADDR "mkdir -p $REPO_PATH"
+    scp -i $SCS_KeyFile -B ${TMP}/${NAME}.cfg $SCS_RemoteUser@$REPO_ADDR:$REPO_PATH/ >/dev/null 2>&1 || err "Unable to transfer kickstart configuration to build server ($REPO_ADDR:$REPO_PATH/${NAME}.cfg)"
     KS="http://${REPO_ADDR}/${REPO_URL}/${NAME}.cfg"
 
     #  - kick off provision system
     echo "Creating virtual machine..."
     scslog "starting system build for $NAME on $Hypervisor at $BUILDIP"
     scslog "Creating VM on $Hypervisor: /usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
-    ssh -o "StrictHostKeyChecking no" -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+    ssh_remote_command -d -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
+      echo ssh -n -l $SCS_RemoteUser $Hypervisor "/usr/local/utils/kvm-install.sh --arch $ARCH --disk $DISK --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --ks $KS $NAME"
       err "Error creating VM!"
     fi
 
@@ -6895,12 +7369,18 @@ _EOF
 
   fi
 
+  # clear any host entry
+  purge_known_hosts --name "$NAME" --ip "$IP"
+  purge_known_hosts --ip "$BUILDIP"
+
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
     nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     scslog "starting phase 2 in foreground process"
-    echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \"$RAM\" \"$MAC\" \"$UUID\"" >&2
+    echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \
+         \"$BUILDNET\" \"$NETNAME\" \"$REPO_ADDR\" \"$REPO_PATH\" \"$REDIST\" \"$ARCH\" \"$DISK\" \"$OS\" \
+         \"$RAM\" \"$MAC\" \"$UUID\"" >&2
     system_provision_phase2 "$NAME" "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID"
   fi
 
@@ -6911,9 +7391,9 @@ _EOF
   # update last build date
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
-  
+
   # [FORMAT:system]
-  sed -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','$( date +'%s' )'/' -i ${CONF}/system
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},$( date +'%s' )/" ${CONF}/system
 
   commit_file system
   return 0
@@ -6962,7 +7442,7 @@ function system_provision_phase2 {
 
   if ! [ -z "$OVERLAY" ]; then
     # this is an overlay system
- 
+
     #  - lookup network details for the build network (used in the kickstart configuration)
     #   --format: location,zone,alias,network,mask,cidr,gateway_ip,static_routes,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip\n
     # [FORMAT:network]
@@ -6987,15 +7467,20 @@ function system_provision_phase2 {
     #  - kick off provision system
     scslog "starting system build for $NAME on $HV at $BUILDIP"
     echo "Creating virtual machine..."
-    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
-    ssh -o "StrictHostKeyChecking no" -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+    scslog "Creating VM on $HV: /usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} \
+            --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS \
+            --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+
+    ssh_remote_command -d -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --quiet --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
     if [ $? -ne 0 ]; then
-      echo ssh -n $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
+      echo ssh -n -l $SCS_RemoteUser $HV "/usr/local/utils/kvm-install.sh --arch $ARCH --ip ${BUILDIP}/${NETMASK} \
+           --gateway $GATEWAY --dns $DNS --interface $HV_BUILD_INT --no-console --no-reboot --os $OS \
+           --ram $RAM --mac $MAC --uuid $UUID --no-install --base ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img $NAME"
       err "Error creating VM!"
     fi
 
     # check for secondary disks
-    List="$( ssh -o "StrictHostKeyChecking no" $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
+    List="$( ssh_remote_command -d $HV "ls ${VMPATH}/${BACKING_FOLDER}${OVERLAY}.*img" )"
     for File in $List; do
       if [ "$File" == "${VMPATH}/${BACKING_FOLDER}${OVERLAY}.img" ]; then continue; fi
       system_vm_disk_create $NAME --alias "$( printf -- "$( basename $File )" |perl -pe 's/^'${OVERLAY}'\.//; s/\.img$//' )" --backing $File
@@ -7003,24 +7488,24 @@ function system_provision_phase2 {
     done
 
     # start new virtual machine
-    ssh -o "StrictHostKeyChecking no" -n $HV "virsh start $NAME" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $HV "virsh start $NAME"
 
     if ! [ -z "$DHCP" ]; then
 
       DHCPIP=""
       scslog "attempting to trace DHCP IP"
-      echo "ssh $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |tr '\\n' ' ' |perl -pe 's/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
- 
+      echo "ssh -l $SCS_RemoteUser $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|\$)' |grep -av server-duid |tr '\\n' ' ' |perl -pe 's/}/}\\n/g' |grep -ai "$MAC" |awk '{print \$2}' |tail -n1" >>$SCS_Background_Log
+
       # get DHCP lease
       while [ -z "$DHCPIP" ]; do
         check_abort
         sleep 5
-        DHCPIP="$( ssh -o "StrictHostKeyChecking no" $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |tr '\n' ' ' |perl -pe 's/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
+        DHCPIP="$( ssh_remote_command -d $DHCP cat /var/lib/dhcpd/dhcpd.leases |grep -avE '^(#|$)' |grep -av server-duid |tr '\n' ' ' |perl -pe 's/}/}\n/g' |grep -ai "$MAC" |awk '{print $2}' |tail -n1 )"
 	if [[ -n "$DHCPIP" && "$( exit_status valid_ip "$DHCPIP" )" -ne 0 ]]; then
           errlog "found an invalid IP address in /var/lib/dhcpd/dhcpd.leases on server $DHCP for physical address $MAC, aborting"
         fi
       done
-      
+
       if ! [ -z "$DHCPIP" ]; then
         purge_known_hosts --ip $DHCPIP
         DHCPNETNAME=$( network_ip_locate $BUILDIP )
@@ -7028,8 +7513,8 @@ function system_provision_phase2 {
         read DHCPCIDR <<< "$( grep -E "^${DHCPNETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status check_host_alive $DHCPIP )" -ne 0 ]; do sleep 5; check_abort; done
-        while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-        ssh -o "StrictHostKeyChecking no" -n $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1
+        while [ "$( exit_status ssh_remote_command -d -n $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+        ssh_remote_command -d -n -q $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt"
         scslog "successfully moved system to assigned build address"
       fi
     fi
@@ -7039,7 +7524,7 @@ function system_provision_phase2 {
   sleep 15
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME"
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -7050,7 +7535,7 @@ function system_provision_phase2 {
   scslog "waiting for $NAME at $BUILDIP"
   while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
-  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status ssh_remote_command -d -n $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
 
   #  - load the role
@@ -7068,11 +7553,11 @@ function system_provision_phase2 {
   if [ -z "$OVERLAY" ]; then
     #  - clean up kickstart file
     check_host_alive $REPO_ADDR
-    [ $? -eq 0 ] && ssh -o "StrictHostKeyChecking no" $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg" >/dev/null 2>&1
+    [ $? -eq 0 ] && ssh_remote_command -d -q $REPO_ADDR "rm -f ${REPO_PATH}/${NAME}.cfg"
   fi
 
   #  - connect to hypervisor, wait until vm is off, then start it up again
-  ssh -o "StrictHostKeyChecking no" -n $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HV "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done; sleep 5; /usr/bin/virsh start $NAME"
   scslog "successfully started $NAME"
 
   #  - check for abort
@@ -7083,7 +7568,7 @@ function system_provision_phase2 {
   while [ "$( exit_status check_host_alive $BUILDIP )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "ssh connection succeeded to $NAME"
   purge_known_hosts --ip $BUILDIP
-  while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+  while [ "$( exit_status ssh_remote_command -d -n $BUILDIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
   scslog "$NAME verified UP"
 
   # deploy system configuration
@@ -7092,18 +7577,18 @@ function system_provision_phase2 {
   if [ -z "$FILE" ]; then errlog "Error generating release for '$NAME'"; return 1; fi
   if ! [ -f "$FILE" ]; then errlog "Unable to read release file for '$NAME'"; return 1; fi
   scslog "copying release to remote system..."
-  scp -q -o "StrictHostKeyChecking no" $FILE $BUILDIP: >/dev/null 2>&1
+  scp -i $SCS_KeyFile -q -o "StrictHostKeyChecking no" $FILE $SCS_RemoteUser@$BUILDIP: >/dev/null 2>&1
   if [ $? -ne 0 ]; then errlog "Error copying release to '$NAME'@$BUILDIP"; return 1; fi
   rm -f $FILE
-  ssh -o "StrictHostKeyChecking no" -n $BUILDIP "tar --atime-preserve --no-acls --no-xattrs --no-overwrite-dir -xzf /root/$( basename $FILE ) -C /; cd /; ./scs-install.sh" >/dev/null 2>&1
-  
+  ssh_remote_command -d -n -q $BUILDIP "/bin/bash /root/$( basename $FILE ) --install"
+
   # !!FIXME!!
   #  * - ship over latest code release
   #  - install code
 
   #  - check for abort
   check_abort
-  
+
   # update system ip as needed
   if [ "$BUILDIP" != "$IP" ]; then
     scslog "Changing $NAME system IP from $BUILDIP to $IP (not applying yet)"
@@ -7111,9 +7596,9 @@ function system_provision_phase2 {
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
       read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
+      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
     else
-      ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1" >/dev/null 2>&1
+      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
     fi
     sleep 5
     # update ip assignment
@@ -7126,14 +7611,14 @@ function system_provision_phase2 {
 
   if [ "$BASE_IMAGE" == "y" ]; then
     # flush hardware address, ssh host keys, and device mappings to anonymize system
-    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt"
   else
     # power down vm
-    ssh -o "StrictHostKeyChecking no" -n $BUILDIP "halt" >/dev/null 2>&1
+    ssh_remote_command -d -n -q $BUILDIP "halt"
   fi
 
   # wait for power off
-  ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
+  ssh_remote_command -d -n -q $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done"
   scslog "successfully stopped $NAME"
 
   #  - check for abort
@@ -7142,26 +7627,26 @@ function system_provision_phase2 {
   # update build interface as needed
   if [ "$HV_BUILD_INT" != "$HV_FINAL_INT" ]; then
     scslog "changing system network interface from '$HV_BUILD_INT' to '$HV_FINAL_INT'"
-    echo "ssh -n $HVIP \"sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
-    ssh -o "StrictHostKeyChecking no" -n $HVIP "sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml" >/dev/null 2>&1
+    echo "ssh -n -l $SCS_RemoteUser $HVIP \"sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml\"" >>$SCS_Background_Log
+    ssh_remote_command -d -n -q $HVIP "sed -e 's/'$HV_BUILD_INT'/'$HV_FINAL_INT'/g' -i /etc/libvirt/qemu/${NAME}.xml; virsh define /etc/libvirt/qemu/${NAME}.xml"
   fi
 
   if [ "$BASE_IMAGE" != "y" ]; then
     #  - start vm
     scslog "starting $NAME on $HV"
-    ssh -o "StrictHostKeyChecking no" -n $HVIP "virsh start $NAME" >/dev/null 2>&1
-   
+    ssh_remote_command -d -n -q $HVIP "virsh start $NAME"
+
     if [ "$IP" != "dhcp" ]; then
       #  - update /etc/hosts and push-hosts (system_update_push_hosts)
       scslog "updating hosts"
       system_update_push_hosts $NAME $IP >>$SCS_Background_Log 2>&1
       scslog "hosts updated"
-  
+
       #  - wait for vm to come up
       sleep 15
       while [ "$( exit_status check_host_alive $IP )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "ssh connection succeeded to $NAME"
-      while [ "$( exit_status ssh -n -o \"StrictHostKeyChecking no\" $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
+      while [ "$( exit_status ssh_remote_command -d -n $IP uptime )" -ne 0 ]; do sleep 5; check_abort; done
       scslog "$NAME verified UP"
     else
       scslog "$NAME is configured to use DHCP and can not be traced at this time"
@@ -7201,13 +7686,50 @@ function system_push_build_scripts {
     ping -c 2 -q $1 >/dev/null 2>&1
     check_host_alive $1 || return 5
   fi
-  cat /root/.ssh/known_hosts >/root/.ssh/known_hosts.$$
-  sed -e "/$( printf -- "$1" |perl -pe 's/\./\\./g' )/d" -i /root/.ssh/known_hosts
-  ssh -o "StrictHostKeyChecking no" $1 mkdir ESG 2>/dev/null
-  scp -p -r "$SRCDIR" $1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
-  cat /root/.ssh/known_hosts.$$ >/root/.ssh/known_hosts
-  /bin/rm /root/.ssh/known_hosts.$$
+  cat ~/.ssh/known_hosts >~/.ssh/known_hosts.$$
+  perl -i -ne "print unless /$( printf -- "$1" |perl -pe 's/\./\\./g' )/" ~/.ssh/known_hosts
+  ssh_remote_command -d -n $1 mkdir ESG 2>/dev/null
+  echo "running command: scp -i $SCS_KeyFile -o \"StrictHostKeyChecking no\" -p -r \"$SRCDIR\" $SCS_RemoteUser@$1:ESG/" >>$SCS_Background_Log 2>&1
+  scp -i $SCS_KeyFile -o "StrictHostKeyChecking no" -p -r "$SRCDIR" $SCS_RemoteUser@$1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
+  cat ~/.ssh/known_hosts.$$ >~/.ssh/known_hosts
+  /bin/rm ~/.ssh/known_hosts.$$
   return 0
+}
+
+# register an ssh key on a managed system
+#
+function system_register_key {
+  local IP
+  system_exists "$1" || err "Unknown or missing system name."
+  if [[ $# -lt 3 && $# -gt 6 ]]; then system_register_key_help >&2; exit 1; fi
+  IP=$( system_show $1 --brief |grep ^IP: |cut -d' ' -f2 )
+  valid_ip $IP || err "The specified system has an invalid IP address."
+  if [ $# -eq 5 ]; then
+    if [ "$2" != "--sudo" ]; then system_register_key_help >&2; exit 1; fi
+    if [[ "$6" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5" --debug
+    else
+      register_ssh_key --host "$IP" --sudo "$3" --user "$4" --key "$5"
+    fi
+  else
+    if [[ "$4" == "--debug" ]]; then
+      register_ssh_key --host "$IP" --user "$2" --key "$3" --debug
+    else
+      register_ssh_key --host "$IP" --user "$2" --key "$3"
+    fi
+  fi
+}
+function system_register_key_help { cat <<_EOF
+Usage: $0 system <name> --register-key [--sudo <sudo_user>] <user-name> <private-key-file>
+
+Register an existing public/private key pair for key-based authentication
+to a remote system under the specified user account.  You must have
+the password and authorization to log in to the remote server.
+
+If --sudo is provided, log into the system as <sudo_user> and use
+the provided password (you will be prompted for it) to elevate
+privileges to access the target account.
+_EOF
 }
 
 function system_resolve_autooverlay {
@@ -7240,14 +7762,14 @@ function system_resolve_autooverlay {
       system_resolve_autooverlay $ParentName
     fi
 
-  else      
+  else
     ParentName=$( printf -- "$BackingList" |awk '{print $1}' )
   fi
 
   # save changes
   # [FORMAT:system]
-  sed -e 's/^'$NAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${ParentName}','${SystemBuildDate}'/' -i ${CONF}/system
-  
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemBuildDate}/" ${CONF}/system
+
   commit_file system
 }
 
@@ -7385,30 +7907,59 @@ function system_list_unformatted {
   fi
 }
 
+# generate the complete deployment archive and self-extracting installation script for a system
+#
+# requires:
+#   $1  system name
+#
 function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate AllFiles HasRoutes=0
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
+        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP/release $RELEASEDIR
+  MyDate="$( date +'%Y%m%d-%H%M%S' )"
   AUDITSCRIPT="$TMP/release/scs-audit.sh"
-  RELEASEFILE="$NAME-release-$( date +'%Y%m%d-%H%M%S' ).tgz"
-  RELEASESCRIPT="$TMP/release/scs-install.sh"
+  RELEASEFILE="$NAME-release-$MyDate.cpio.gz"
+  RELEASESCRIPT="$TMP/$NAME-release-$MyDate.bsx"
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
 
+  pushd $CONF >/dev/null 2>&1
+  Branch=$( git branch |grep ^* |cut -d' ' -f2 )
+  popd >/dev/null 2>&1
+
   # create the audit script
-  printf -- "#!/bin/bash\n# scs audit script for $NAME, generated on $( date )\n#\n\n" >$AUDITSCRIPT
+  printf -- "#!/bin/bash\n# scs audit script for $NAME [$Branch], generated on $( hostname ) at $MyDate\n#\n\n" >$AUDITSCRIPT
   printf -- "# warn if not target host\ntest \"\$( hostname )\" == \"$NAME\" || echo \"WARNING - running on alternate system - can not reliably check ownership!\"\n\n" >>$AUDITSCRIPT
   printf -- "PASS=0\n" >>$AUDITSCRIPT
 
   # create the installation script
   printf -- "#!/bin/bash\n# scs installation script for $NAME, generated on $( date )\n#\n\n" >$RELEASESCRIPT
-  printf -- "# safety first\ntest \"\$( hostname )\" == \"$NAME\" || exit 2\n\n" >>$RELEASESCRIPT
-  printf -- "logger -t scs \"starting installation for $LOC $EN $NAME, generated on $( date )\"\n\n" >>$RELEASESCRIPT
+  printf -- "# usage\n#\nfunction usage {\n  echo \"Usage: \$0 [--audit|--extract </path/>|--install]\"\n  exit 1\n}\n\n" >>$RELEASESCRIPT
+  printf -- "# set defaults\nAudit=0\nExtract=\"\"\nInstall=0\n\n" >>$RELEASESCRIPT
+  printf -- "while [[ \$# -gt 0 ]]; do case \$1 in\n  --audit) Audit=1;;\n  --extract) Extract=\"\$2\";;\n  --install) Install=1;;\nesac; shift; done\n\n" >>$RELEASESCRIPT
+  printf -- "# safety first\nif [[ \"\$( hostname )\" != \"$NAME\" && -z \"\$Extract\" ]]; then exit 2; fi\n\n" >>$RELEASESCRIPT
+  printf -- "# validate settings\nif [[ ( \$(( \$Audit + \$Install )) -eq 0 || \$(( \$Audit + \$Install )) -gt 1 ) && -z \"\$Extract\" ]]; then usage; fi\n" >>$RELEASESCRIPT
+  printf -- "if [[ \"\$Extract\" == \"/\" ]]; then echo \"Invalid extraction path.\"; exit 1; fi\n\n" >>$RELEASESCRIPT
+  printf -- "# self-extracting archive\nif [[ -n \"\$Extract\" ]]; then TMPDIR=\"\$Extract\"; else TMPDIR=/root/scs-release-$MyDate; fi\nexport TMPDIR\nmkdir -m0700 \$TMPDIR >/dev/null 2>&1\n" >>$RELEASESCRIPT
+  printf -- "ARCHIVE=\$( awk '/^__PAYLOAD__/ {print NR + 1; exit 0; }' \$0 )\n\n" >>$RELEASESCRIPT
+
+  # the script needs to know where it is to read itself
+  printf -- "# get absolute path to self\npushd \$( dirname \$0 ) >/dev/null\nSCRIPTPATH=\"\$( pwd -P )/\$( basename \$0)\"\npopd >/dev/null\n\n" >>$RELEASESCRIPT
+
+  # self-extracting archive
+  printf -- "# extract\ncd \$TMPDIR\ntail -n+\$ARCHIVE \$SCRIPTPATH |gzip -dc - |cpio -idm 2>/dev/null\ncd - >/dev/null 2>&1\n" >>$RELEASESCRIPT
+  printf -- "# exit here if extract only\nif [[ -n \"\$Extract\" ]]; then\n  echo \"Archive successfully extracted to \$TMPDIR\"\n  exit 0\nfi\n\n" >>$RELEASESCRIPT
+
+  # audit only function
+  printf -- "# audit option\nif [[ \$Audit -eq 1 ]]; then\n  cd /\n  /bin/bash \$TMPDIR/scs-audit.sh\n  Result=\$?\n  rm -rf \$TMPDIR\n  cd - >/dev/null 2>&1\n  exit \$Result\nfi\n\n" >>$RELEASESCRIPT
+
+  printf -- "logger -t scs \"starting installation for ${LOC}:${EN} $NAME [$Branch], generated on $MyDate\"\n\n" >>$RELEASESCRIPT
   touch ${RELEASESCRIPT}.tail
 
   # create the stat file
@@ -7481,15 +8032,25 @@ function system_release {
         # add delete to command script
         printf -- "# delete '$FNAME' if it exists\n" >>${RELEASESCRIPT}.tail
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
-        # add audit check 
+        # add audit check
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
       fi
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
         # audit
-        printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
-        printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
-        printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        if [[ "$FTYPE" == "directory" ]]; then
+          printf -- "if [ -d \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        elif [[ "$FTYPE" == "symlink" ]]; then
+          printf -- "if [ -L \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT root:root\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT root:root' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        else
+          printf -- "if [ -f \"$FPTH\" ]; then\n" >>$AUDITSCRIPT
+          printf -- "  if [ \"\$( stat -c'%%a %%U:%%G' \"$FPTH\" )\" != \"$FOCT $FOWNER:$FGROUP\" ]; then PASS=1; echo \"'\$( stat -c'%%a %%U:%%G' \"$FPTH\" )' != '$FOCT $FOWNER:$FGROUP' on $FPTH\"; fi\n" >>$AUDITSCRIPT
+          printf -- "else\n  echo \"Error: $FPTH does not exist!\"\n  PASS=1\nfi\n" >>$AUDITSCRIPT
+        fi
         if [ "$FTYPE" == "symlink" ]; then
           printf -- "# set permissions on '$FNAME'\nchown -h root:root /$FPTH\n" >>${RELEASESCRIPT}.tail
         else
@@ -7499,7 +8060,7 @@ function system_release {
         if [ "$FTYPE" == "symlink" ]; then
           printf -- "/$FPTH -> $FTARGET root root 777 $FTYPE\n" |perl -pe 's/binary$/file/' >>$STATFILE
         else
-          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |perl -pe 's/binary$/file/' >>$STATFILE
+          printf -- "/$FPTH $FOWNER $FGROUP ${FOCT//^0/} $FTYPE\n" |perl -pe 's/(binary|copy|download)$/file/' >>$STATFILE
         fi
       fi
     done
@@ -7508,9 +8069,24 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\n#test -d /var/backups || mkdir -p /var/backups\n#tar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
+    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\ntar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
     [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
     printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
+
+    # do not deploy stat/audit scripts
+    printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
+
+    # do not replace symlinks (which happens with a direct tar xzf)
+    #
+    # rsync options being used for your convenience:
+    #
+    #       -c, --checksum              skip based on checksum, not mod-time & size
+    #       -r, --recursive             recurse into directories
+    #       -l, --links                 copy symlinks as symlinks
+    #       -K, --keep-dirlinks         treat symlinked dir on receiver as dir
+    #
+    printf -- "/usr/bin/rsync -crlK \$TMPDIR/ / >/dev/null 2>&1\n" >>$RELEASESCRIPT
+    printf -- "rm -rf \$TMPDIR\n\n" >>$RELEASESCRIPT
 
     # finalize installation script
     printf -- "\nlogger -t scs \"installation complete\"\n" >>${RELEASESCRIPT}.tail
@@ -7520,13 +8096,19 @@ function system_release {
 
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
-    tar czf $RELEASEDIR/$RELEASEFILE *
+    find . -depth -print0 |cpio -o0 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
-    printf -- "Complete. Generated release:\n$RELEASEDIR/$RELEASEFILE\n"
+
+    # add archive to script
+    printf -- "\n\nexit 0\n\n__PAYLOAD__\n" >>$RELEASESCRIPT
+    cat $RELEASEDIR/$RELEASEFILE>>$RELEASESCRIPT
+    mv $RELEASESCRIPT $RELEASEDIR/
+
+    printf -- "Complete. Generated release:\n$RELEASEDIR/$NAME-release-$MyDate.bsx\n"
   else
     # some operations (such as system_provision) require the release file, even if it's empty
     pushd $TMP/release >/dev/null 2>&1
-    tar czf $RELEASEDIR/$RELEASEFILE --files-from /dev/null
+    find . -depth -print0 | cpio -o0 | gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
     printf -- "No managed configuration files.\n%s\n" "$RELEASEDIR/$RELEASEFILE"
   fi
@@ -7560,8 +8142,20 @@ function system_show {
   # if overlay is null then there is no overlay
   test -z "$OVERLAY" && OVERLAY="N/A"
   # output the status/summary
-  printf -- "Name: $NAME\nBuild: $BUILD\nIP: $IP\nLocation: $LOC\nEnvironment: $EN\nVirtual: $VIRTUAL\nBase Image: $BASE_IMAGE\nOverlay: $OVERLAY\nLast Build: $( date +'%c' -d @${SystemBuildDate} 2>/dev/null )\n"
+  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLast Build: %s\n" \
+    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
   test $BRIEF -eq 1 && return
+  # show other systems using this as a base image
+  if [[ "$BASE_IMAGE" == "y" ]]; then
+    # [FORMAT:system]
+    NUM=$( grep -cE "^([^,]*,){7}$NAME," ${CONF}/system )
+    if [ $NUM -eq 1 ]; then A="is"; S=""; else A="are"; S="s"; fi
+    echo -e "\nThere ${A} ${NUM} overlay${S}."
+    if [ $NUM -gt 0 ]; then
+      # [FORMAT:system]
+      grep -E "^([^,]*,){7}$NAME," ${CONF}/system |perl -pe 's/,.*//; s/^/   /'
+    fi
+  fi
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     NUM=$( build_application_list "$BUILD" |wc -l |awk '{print $1}' )
@@ -7622,10 +8216,10 @@ function system_start_remote_build {
   # kick-off install and return
   if [ -z "$3" ]; then
     scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown >/dev/null 2>&1 </dev/null &"
-    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   else
     scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
-    ssh -o "StrictHostKeyChecking no" $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   fi
 }
 
@@ -7697,7 +8291,7 @@ function system_update {
   # handle single or overlay -> backing image
   if [[ "$ORIGBASE_IMAGE" != "$BASE_IMAGE" && "$BASE_IMAGE" == "y" && $( exit_status valid_ip $IP ) -eq 0 && $( exit_status check_host_alive $IP ) -eq 0 ]]; then
 
-    if [ "$( ssh -o "StrictHostKeyChecking no" $IP "hostname" )" != "$NAME" ]; then
+    if [ "$( ssh_remote_command -d $IP "hostname" )" != "$NAME" ]; then
       scslog "refusing to change system type since the system at the registered IP does not match the host name"
       echo "refusing to change system type since the system at the registered IP does not match the host name" >&2
       BASE_IMAGE=$ORIGBASE_IMAGE
@@ -7706,8 +8300,8 @@ function system_update {
       NETNAME=$( network_list --match $IP )
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
-      ssh -o "StrictHostKeyChecking no" -n $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt" >/dev/null 2>&1 
-      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1 
+      ssh_remote_command -d -n -q $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt"
+      #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
       #scslog "successfully stopped $NAME"
       sleep 15
       # this is a base_image - move built image file, deploy to other HVs (as needed), and undefine system
@@ -7723,7 +8317,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  sed -e 's/^'$ORIGNAME',.*/'${NAME}','${BUILD}','${IP}','${LOC}','${EN}','${VIRTUAL}','${BASE_IMAGE}','${OVERLAY}','${SystemBuildDate}'/' -i ${CONF}/system
+  perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemBuildDate}/" ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -7786,6 +8380,13 @@ function system_update_push_hosts {
   ) 202>>/usr/local/etc/lpad/hosts/managed-hosts
 
   return 0
+}
+
+# connect to the remote system and run uptime
+#
+function system_uptime {
+  system_exists "$1" || err "Unknown or missing system name"
+  ssh_remote_command $1 uptime
 }
 
 # generate all system variables and settings
@@ -7871,34 +8472,34 @@ function system_vm_disk_create {
   # [FORMAT:hypervisor]
   read HypervisorIP VMPath HypervisorEnabled <<<"$( grep -E "^$Hypervisor," ${CONF}/hypervisor |awk 'BEGIN{FS=","}{print $2,$4,$7}' )"
   [ "$HypervisorEnabled" == "y" ] || err "The primary hypervisor for this system is not enabled"
-  
+
   if ! [ -z "$Backing" ]; then
-    ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f $Backing" >/dev/null 2>&1
+    ssh_remote_command -d -q $HypervisorIP "test -f $Backing"
     if [ $? -ne 0 ]; then err "Specified backing disk does not exist"; fi
   fi
 
   [ -z "$Disk" ] && Disk="${VMPath}/${VM}.${Alias}.img"
-  ssh -o "StrictHostKeyChecking no" $HypervisorIP "test -f $Disk" >/dev/null 2>&1
+  ssh_remote_command -d -q $HypervisorIP "test -f $Disk"
   if [ $? -eq 0 ]; then
     if [ $Destroy -eq 1 ]; then
-      ssh -o "StrictHostKeyChecking no" $HypervisorIP "/bin/rm -f $Disk" >/dev/null 2>&1
+      ssh_remote_command -d -q $HypervisorIP "/bin/rm -f $Disk"
     elif [ $Existing -eq 0 ]; then
       err "The specified disk already exists on $Hypervisor"
     fi
   fi
 
-  DevID=$( ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed -e \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
+  DevID=$( ssh_remote_command -d $HypervisorIP "virsh dumpxml $VM |grep target |grep bus |sed -e \"s/.*dev='//; s/'.*//\" |sort |tail -n1" )
   NewDevID="$( printf -- "${DevID}" |perl -pe 's/.$//' )$( printf -- "${DevID: -1}" |tr 'a-y' 'b-z' )"
 
   if [ $Existing -eq 0 ]; then
     if ! [ -z "$Backing" ]; then Args="-b $Backing "; Size=""; else Size="${Size}G"; fi
-  
+
     if [ $DryRun -eq 1 ]; then
       echo "DRY-RUN: Create disk..."
       echo "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
       echo
     else
-      ssh -o "StrictHostKeyChecking no" $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}" >/dev/null 2>&1
+      ssh_remote_command -d -q $HypervisorIP "qemu-img create ${Args}-f qcow2 ${Disk} ${Size}"
       test $? -eq 0 || err "Error creating disk"
     fi
   fi
@@ -7916,7 +8517,7 @@ function system_vm_disk_create {
 _EOF
 
   else
-    cat <<_EOF |ssh -o "StrictHostKeyChecking no" $HypervisorIP "cat >/tmp/$VM.scs_add_disk.$$.xml"
+    cat <<_EOF |ssh -o "StrictHostKeyChecking no" -l $SCS_RemoteUser -i $SCS_KeyFile $HypervisorIP "cat >/tmp/$VM.scs_add_disk.$$.xml"
 <disk type='file' device='disk'>
   <driver name='qemu' type='qcow2' cache='writeback'/>
   <source file='${Disk}'/>
@@ -7924,7 +8525,7 @@ _EOF
 </disk>
 _EOF
 
-    ssh -o "StrictHostKeyChecking no" $HypervisorIP "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent" >/dev/null 2>&1
+    ssh_remote_command -d -q $HypervisorIP "virsh attach-device $VM /tmp/$VM.scs_add_disk.$$.xml --persistent"
     test $? -eq 0 || err "Error attaching device - see $Hypervisor:/tmp/$VM.scs_add_disk.$$.xml"
     echo "Successfully attached disk"
     scslog "attached $Size disk '$Alias' to $VM on $Hypervisor"
@@ -7964,18 +8565,18 @@ function system_vm_disks {
     if [ "$XMLPATH" == "/domain/devices/disk/source/" ]; then
       printf -- '%s\n' "$ATTRIBUTES" |perl -pe "s/'//g; s/file=//"
     fi
-  done <<< "$( ssh -o "StrictHostKeyChecking no" $IP virsh dumpxml $1 )"
+  done <<< "$( ssh_remote_command -d $IP virsh dumpxml $1 )"
 }
 
 
 #Section: SETTINGS
-  #####  ####### ####### ####### ### #     #  #####   #####  
- #     # #          #       #     #  ##    # #     # #     # 
- #       #          #       #     #  # #   # #       #       
-  #####  #####      #       #     #  #  #  # #  ####  #####  
-       # #          #       #     #  #   # # #     #       # 
- #     # #          #       #     #  #    ## #     # #     # 
-  #####  #######    #       #    ### #     #  #####   ##### 
+  #####  ####### ####### ####### ### #     #  #####   #####
+ #     # #          #       #     #  ##    # #     # #     #
+ #       #          #       #     #  # #   # #       #
+  #####  #####      #       #     #  #  #  # #  ####  #####
+       # #          #       #     #  #   # # #     #       #
+ #     # #          #       #     #  #    ## #     # #     #
+  #####  #######    #       #    ### #     #  #####   #####
 
 # settings
 #
@@ -8000,6 +8601,9 @@ DEF_MEM=1024
 # site domain name (for hosts)
 DOMAIN_NAME=2checkout.com
 #
+# use the user's default editor if one is set
+EditProgram=${EDITOR:=vim}
+#
 # tcp ports to check to validate an ip address is not allocated (space seperated list)
 #   tcp/22 (ssh) is always checked
 IP_Check_Ports="80 443 8080 8443"
@@ -8018,10 +8622,7 @@ OSLIST="centos4,centos5,centos6"
 PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 #
 # local path to store release archives
-RELEASEDIR=/bkup1/scs-release
-#
-# sed extended regular expressions depends on support...
-extsed="$( [ $( exit_status sed -r ) -eq 1 ] && printf -- 'sed -E' || printf -- 'sed -r' )"
+RELEASEDIR=${SCS_RELEASES:=/bkup1/scs-release}; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
@@ -8032,29 +8633,41 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
+# default private key for systems management (ssh/scp)
+SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
+#
+# remote user on all systems for management access
+SCS_RemoteUser=${SCS_REMOTE_USER:=root}
+#
 # application version
 SCS_Version="1.0.0"
 #
 # path to the temp file for patching configuration files
-TMP=/tmp/scs.$$
+TMP=${SCS_TEMP:=/tmp/scs.$$}
 #
 # path to a large local folder for temporary file transfers
-TMPLarge=/bkup1
+TMPLarge=${SCS_TEMP_LARGE:=/bkup1}        ; test -d $TMPLarge || TMPLarge=~/scs-large-tmp
 
 
 #Section: MAIN
- #     #    #    ### #     # 
- ##   ##   # #    #  ##    # 
- # # # #  #   #   #  # #   # 
- #  #  # #     #  #  #  #  # 
- #     # #######  #  #   # # 
- #     # #     #  #  #    ## 
+ #     #    #    ### #     #
+ ##   ##   # #    #  ##    #
+ # # # #  #   #   #  # #   #
+ #  #  # #     #  #  #  #  #
+ #     # #######  #  #   # #
+ #     # #     #  #  #    ##
  #     # #     # ### #     #
 
 # define global variables
 GitVer=$( git version 2>/dev/null |perl -pe 's/.* ([0-9\.]*)( .*|$)/\1/' )
 HostOS=$( [[ "$( uname -v )" =~ "Darwin" ]] && echo mac || echo linux )
 USERNAME=""
+
+if [[ "$HostOS" == "mac" ]]; then
+  # turn off special handling of ._* files in tar, etc.
+  export COPYFILE_DISABLE=true
+  export COPY_EXTENDED_ATTRIBUTES_DISABLE=true
+fi
 
 # precaution
 if [[ -z "$TMP" || "$TMP" == "/" ]]; then echo "Invalid temporary directory. Please use a variation of '/tmp/scs.\$\$'." >&2; exit 1; fi
