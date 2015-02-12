@@ -906,8 +906,8 @@ function purge_known_hosts {
   if [ $? -ne 0 ]; then err "Unable to obtain lock on $kh"; return; fi
   printf -- "updating local known hosts\n" >>$SCS_Background_Log
   cat $kh >$kh.$$
-  if [[ -n "$name" ]]; then perl -i -ne "print unless /$( printf -- "$name" |perl -pe 's/\./\\./g' )/" $kh; fi
-  if [[ -n "$ipaddy" ]]; then perl -i -ne "print unless /$( printf -- "$ipaddy" |perl -pe 's/\./\\./g' )/" $kh; fi
+  if [[ -n "$name" ]]; then perl -i -ne "print unless /$( printf -- "$name" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
+  if [[ -n "$ipaddy" ]]; then perl -i -ne "print unless /$( printf -- "$ipaddy" |perl -pe 's/\./\\./g' )[, ]/" $kh; fi
   diff $kh{.$$,} >>$SCS_Background_Log; rm -f $kh.$$
   ) 200>>$kh
 
@@ -5322,6 +5322,7 @@ function hypervisor_byname {
   if [ "$1" == "--locate-system" ]; then hypervisor_locate_system ${@:2}; return; fi
   if [ "$1" == "--system-audit" ]; then hypervisor_system_audit ${@:2}; return; fi
   if [ "$1" == "--rank" ]; then hypervisor_rank ${@:2}; echo; return; fi
+  if [ "$1" == "--uuid" ]; then hypervisor_qemu_uuid -q; return; fi
   hypervisor_exists "$1" || err "Unknown or missing hypervisor name."
   case "$2" in
     --add-environment) hypervisor_add_environment $1 ${@:3};;
@@ -5378,7 +5379,7 @@ NAME
 	Hypervisors
 
 SYNOPSIS
-	scs hypervisor --locate-system <system_name> [--quick] | --system-audit
+	scs hypervisor --locate-system <system_name> [--quick] | --system-audit | --rank | --uuid
 	scs hypervisor <name> [--add-network|--remove-network|--add-environment|--remove-environment|--poll|--register-key|--search]
 
 DESCRIPTION
@@ -5425,8 +5426,20 @@ OPTIONS
 		system, provided a location is known.  If the system has never been found a full search will
 		be performed, which is the same behavior as if '--quick' was not specified.
 
+	hypervisor --rank [--avoid <string>] hypervisor1 hypervisor2 ...
+		Given a list of one or more registered hypervisors, rank them according to available resources
+		and return the top ranked system.  This function is used internally to identify which
+		hypervisor a host should be deployed to, given a pre-selected list of compatible systems.
+
+		If --avoid is provided, the hypervisors will also be checked for a running system matching
+		the provided substring.  If a match is found that hypervisor will not be returned unless the
+		match is also found on all other provided hosts.
+
 	hypervisor --system-audit
 		System audit runs \`hypervisor --locate-system\` for every registered system.
+
+	hypervisor --uuid
+		Generate a globally unique id (guid) and mac address for a vm across all registered hypervisors.
 
 	hypervisor <name> --add-network
 		Link a registered network to a hypervisor on an interface.
@@ -5716,7 +5729,7 @@ function hypervisor_poll {
 #
 function hypervisor_qemu_uuid {
   # variables
-  local ALL_HV="kvm-01 kvm-02 kvm-03 dc0pkvm-hv02 dc0pcore-hv01 dc0pcore-hv02 dc0pcore-hv03 dc1pcore-hv01 dc1pcore-hv02 dc1pcore-hv03"
+  local ALL_HV=$( hypervisor_list | tr '\n' ' ' )
   local HVS=""
   local TEMP="/tmp/kvm-uuid.$$"
   local XMLPATH="/etc/libvirt/qemu"
@@ -7242,6 +7255,10 @@ _EOF
     hypervisor_locate_system $NAME >/dev/null 2>&1
 
   fi
+
+  # clear any host entry
+  purge_known_hosts --name "$NAME" --ip "$IP"
+  purge_known_hosts --ip "$BUILDIP"
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
