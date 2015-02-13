@@ -2334,26 +2334,45 @@ function application_file_list_unformatted {
   echo $List |tr ' ' '\n' |sort
 }
 
+# unlink a file from an application
+#
+# required:
+#  $1  application
+#  $2  file
+#
+# optional:
+#  --no-prompt  do not confirm the action
+#
 function application_file_remove {
-  start_modify
-  test -z "$1" && shift
-  generic_choose application "$1" APP && shift
+  local Application File SkipPrompt=0
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --no-prompt) SkipPrompt=1;;
+    *)
+      if [[ -z "$Application" ]]; then Application="$1";
+      elif [[ -z "$File" ]]; then File="$1";
+      else application_file_remove_help; return 1; fi
+      ;;
+  esac; shift; done
+  generic_choose application "$Application" Application
   # get the requested file or abort
-  generic_choose file "$1" F && shift
+  generic_choose file "$File" File
   # confirm
-  get_yn RL "Are you sure (y/n)?"
-  if [ "$RL" != "y" ]; then return; fi
+  if [[ $SkipPrompt -eq 0 ]]; then
+    get_yn RL "Are you sure (y/n)?"
+    if [ "$RL" != "y" ]; then return; fi
+  fi
+  start_modify
   # remove the mapping if it exists
   # [FORMAT:file-map]
-  grep -qE "^$F,$APP," $CONF/file-map || err "Error - requested file is not associated with $APP."
+  grep -qE "^$File,$Application," $CONF/file-map || err "Error - requested file is not associated with $Application."
   # [FORMAT:file-map]
-  perl -i -ne "print unless /^$F,$APP,/" $CONF/file-map
+  perl -i -ne "print unless /^$File,$Application,/" $CONF/file-map
   commit_file file-map
 }
 function application_file_remove_help { cat <<_EOF
 Unlink a file from an application
 
-Usage: $0 application [<application_name>] file --remove [<file_name>]
+Usage: $0 application file --remove [<application_name>] [<file_name>] [--no-prompt]
 
 _EOF
 }
