@@ -2940,9 +2940,22 @@ function constant_list_dedupe {
   join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |perl -pe 's/^([^,]*,[^,]*),.*/\1/'
 }
 
+function constant_show_value {
+  NAME=$1
+  SYSTEM=$2
+  system_vars $SYSTEM | grep -e "^constant.$NAME" | awk '{ print $2 }'
+}
+
 function constant_show {
   local C NAME DESC EnList AppList LocList i j
-  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
+  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+  # get any other provided options
+  while [ $# -gt 0 ]; do case $1 in
+    --vars|--system) constant_show_value $C $2 ; return ;;
+    *) usage;;
+  esac; shift; done
+  # validate system name
+  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
