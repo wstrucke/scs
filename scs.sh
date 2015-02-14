@@ -1558,6 +1558,7 @@ Component:
     lineage <name> [--reverse]
     list [--tree] [--detail]
   constant
+    show [--system <name>]
   environment
     application [<environment>] [--list] [<location>]
     application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
@@ -2871,8 +2872,11 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the constant list without any summary information.
 
-	constant show
+	constant show [--system <name>]
 		Show constant details and where it is currently defined.
+
+		If the optional --system argument is provided with a valid system name just show the
+		value of the constant for the system (if it is defined).
 
 	constant update
 		Update the constant name (rename) or description.
@@ -2959,9 +2963,22 @@ function constant_list_dedupe {
   join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |perl -pe 's/^([^,]*,[^,]*),.*/\1/'
 }
 
+function constant_show_value {
+  NAME=$1
+  SYSTEM=$2
+  system_vars $SYSTEM | grep -e "^constant.$NAME" | awk '{ print $2 }'
+}
+
 function constant_show {
   local C NAME DESC EnList AppList LocList i j
-  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )"
+  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+  # get any other provided options
+  while [ $# -gt 0 ]; do case $1 in
+    --system) constant_show_value $C $2 ; return ;;
+    *) usage;;
+  esac; shift; done
+  # validate system name
+  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
