@@ -1558,6 +1558,7 @@ Component:
     lineage <name> [--reverse]
     list [--tree] [--detail]
   constant
+    show [--system <name>]
   environment
     application [<environment>] [--list] [<location>]
     application [<environment>] [--name <app_name>] [--add|--remove|--assign-resource|--unassign-resource|--list-resource] [<location>]
@@ -2852,8 +2853,11 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the constant list without any summary information.
 
-	constant show
+	constant show [--system <name>]
 		Show constant details and where it is currently defined.
+
+		If the optional --system argument is provided with a valid system name just show the
+		value of the constant for the system (if it is defined).
 
 	constant update
 		Update the constant name (rename) or description.
@@ -2951,7 +2955,7 @@ function constant_show {
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
-    --vars|--system) constant_show_value $C $2 ; return ;;
+    --system) constant_show_value $C $2 ; return ;;
     *) usage;;
   esac; shift; done
   # validate system name
