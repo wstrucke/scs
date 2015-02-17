@@ -2965,18 +2965,44 @@ function constant_list_dedupe {
 
 function constant_show_value {
   NAME=$1
-  SYSTEM=$2
-  system_vars $SYSTEM | grep -e "^constant.$NAME" | awk '{ print $2 }'
+  SYS=$2
+  APP=$3
+  EN=$4
+  LOC=$5
+  if [[ -n ${SYS} ]]; then
+    system_vars $SYS | grep -e "^constant.$NAME" | awk '{ print $2 }' ; return ;
+  fi
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} && -n ${LOC} ]]; then
+    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} ]]; then
+    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${APP} ]]; then
+    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
+  fi
+  grep $NAME $CONF/value/constant
 }
 
 function constant_show {
-  local C NAME DESC EnList AppList LocList i j
+  local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
   # get any other provided options
+  
   while [ $# -gt 0 ]; do case $1 in
-    --system) constant_show_value $C $2 ; return ;;
+    --system) SYSTEM=$2 ; shift ;;
+    --application) APPLICATION=$2 ; shift ;;
+    --environment) ENVIRONMENT=$2 ; shift ;;
+    --application) APPLICATION=$2 ; shift ;;
+    --location) LOCATION=$2 ; shift ;;
     *) usage;;
   esac; shift; done
+  if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
+    constant_show_value "$C" "$SYSTEM" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
+  fi
   # validate system name
   if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   constant_exists "$C" || err "Unknown constant"
@@ -2996,7 +3022,8 @@ function constant_show {
     for j in $AppList; do
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s\n' $j $i
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s = ' $j $i \
+          && constant_show_value "$NAME" "" "$j" "$i" ""
       fi
     done
   done
@@ -3008,7 +3035,8 @@ function constant_show {
     for j in $EnList; do
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s\n' $j $i
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s = ' $j $i \
+          && constant_show_value "$NAME" "" "$j" "" "$i"
       fi
     done
   done
@@ -3019,7 +3047,8 @@ function constant_show {
   for i in $EnList; do
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s\n' $i
+      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s = ' $i \
+        && constant_show_value "$NAME" "" "" "$i" ""
     fi
   done
 
@@ -3029,7 +3058,8 @@ function constant_show {
   for i in $AppList; do
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
-      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s\n' $i
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s = ' $i \
+        && constant_show_value "$NAME" "" "$i" "" ""
     fi
   done
 
@@ -3037,7 +3067,9 @@ function constant_show {
 
   # 5. global
   # [FORMAT:value/constant]
-  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined" || echo "Not Defined"
+  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined = " \
+    && constant_show_value "$NAME" "" "" "" "" \
+    || echo "Not Defined"
 }
 
 function constant_update {
