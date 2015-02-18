@@ -2987,6 +2987,43 @@ function constant_show_value {
   grep $NAME $CONF/value/constant
 }
 
+function constant_undefine_value {
+  NAME=$1
+  APP=$2
+  EN=$3
+  LOC=$4
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-app/$APP > /dev/null ; return ;
+  fi
+  if [[ -n ${EN} && -n ${LOC} ]]; then
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-loc/$LOC > /dev/null ; return ;
+  fi
+  if [[ -n ${EN} ]]; then
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/constant > /dev/null ; return ;
+  fi
+  if [[ -n ${APP} ]]; then
+    perl -i -ne "print unless /^$NAME,/" $CONF/value/by-app/$APP > /dev/null ; return ;
+  fi
+  perl -i -ne "print unless /^$NAME,/" $CONF/env/$ENV/constant > /dev/null ; return ;
+}
+
+function constant_undefine {
+  local C SYSTEM APPLICATION ENVIRONMENT LOCATION
+  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --system) SYSTEM=$2 ; shift ;;
+    --application) APPLICATION=$2 ; shift ;;
+    --environment) ENVIRONMENT=$2 ; shift ;;
+    --application) APPLICATION=$2 ; shift ;;
+    --location) LOCATION=$2 ; shift ;;
+    *) usage;;
+  esac; shift; done
+  if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
+    constant_undefine_value "$C" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
+  fi
+}
+
 function constant_show {
   local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
@@ -8688,7 +8725,7 @@ if [[ "$VERB" == "lineage" && "$SUBJ" == "build" ]]; then build_lineage $@; echo
 printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" && "$SUBJ" != "hypervisor" ]]; then
-  printf -- " create delete list show update edit file application constant environment cat " |grep -q " $VERB "
+  printf -- " create delete list show update edit file application constant environment cat undefine " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
