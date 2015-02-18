@@ -2964,6 +2964,7 @@ function constant_list_dedupe {
 }
 
 function constant_show_value {
+  local NAME SYS APP EN LOC
   NAME=$1
   SYS=$2
   APP=$3
@@ -2988,6 +2989,7 @@ function constant_show_value {
 }
 
 function constant_undefine_value {
+  local NAME APP EN LOC
   NAME=$1
   APP=$2
   EN=$3
@@ -3007,21 +3009,61 @@ function constant_undefine_value {
   perl -i -ne "print unless /^$NAME,/" $CONF/env/$ENV/constant > /dev/null ; return ;
 }
 
+function constant_define_value {
+  local NAME VALUE APP EN LOC
+  NAME=$1
+  VALUE=$2
+  APP=$3
+  EN=$4
+  LOC=$5
+  
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    FILE=$CONF/env/$EN/by-app/$APP
+  elif [[ -n ${EN} && -n ${LOC} ]]; then
+    FILE=$CONF/env/$EN/by-loc/$LOC
+  elif [[ -n ${EN} ]]; then
+    FILE=$CONF/env/$EN/constant
+  elif [[ -n ${APP} ]]; then
+    FILE=$CONF/value/by-app/$APP
+  else
+    FILE=$CONF/env/$ENV/constant > /dev/null ; return ;
+  fi
+
+  grep -qE "^$NAME," $FILE
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    perl -i -pe "my \$str = '$NAME,${VALUE//&/\&}'; s/^$NAME,.*/\$str/" $FILE
+  else
+    # not defined, add
+    printf -- "$NAME,$VALUE\n" >>$FILE
+  fi
+}
+
 function constant_undefine {
   local C SYSTEM APPLICATION ENVIRONMENT LOCATION
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
 
   while [ $# -gt 0 ]; do case $1 in
-    --system) SYSTEM=$2 ; shift ;;
     --application) APPLICATION=$2 ; shift ;;
     --environment) ENVIRONMENT=$2 ; shift ;;
-    --application) APPLICATION=$2 ; shift ;;
     --location) LOCATION=$2 ; shift ;;
     *) usage;;
   esac; shift; done
-  if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
-    constant_undefine_value "$C" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
-  fi
+  constant_undefine_value "$C" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
+}
+
+function constant_define {
+  local C VAL SYSTEM APPLICATION ENVIRONMENT LOCATION
+  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+  VAL="$( printf -- "$1" )" ; shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --application) APPLICATION=$2 ; shift ;;
+    --environment) ENVIRONMENT=$2 ; shift ;;
+    --location) LOCATION=$2 ; shift ;;
+    *) usage;;
+  esac; shift; done
+  constant_define_value "$C" "$VAL" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
 }
 
 function constant_show {
@@ -8725,7 +8767,7 @@ if [[ "$VERB" == "lineage" && "$SUBJ" == "build" ]]; then build_lineage $@; echo
 printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" && "$SUBJ" != "hypervisor" ]]; then
-  printf -- " create delete list show update edit file application constant environment cat undefine " |grep -q " $VERB "
+  printf -- " create delete list show update edit file application constant environment cat undefine define " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
