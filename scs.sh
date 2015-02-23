@@ -365,6 +365,7 @@
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
 #     - automatically register the current ssh key on a remote system when it is built (kickstart likely?)
 #     - stop supporting centos 5?  mount disk images to deploy initial config and install packages?
+#     - scs constant edit -> view/edit all set values for a constant (like the route tool?)
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
