@@ -300,7 +300,7 @@
 #     iputils: ping
 #     ncurses: tput
 #     openssh: ssh, ssh-keygen
-#   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
+#   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files and mirrors, pxeboot, dhcp
 #
 # Code Guidelines:
 #   1. Do not use sed, at all, anywhere.  The implementation is inconsistent between Linux/UNIX/BSD/etc...
