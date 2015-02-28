@@ -1976,37 +1976,18 @@ function application_constant {
 # define a constant for an application
 #
 function application_constant_define {
-  start_modify
-  local APP C VAL
+  local APP C
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  test -f ${CONF}/value/by-app/$APP || touch ${CONF}/value/by-app/$APP
-  # check if constant is already defined
-  # [FORMAT:value/by-app/constant]
-  grep -qE "^$C," ${CONF}/value/by-app/$APP
-  if [ $? -eq 0 ]; then
-    # already defined, update value
-    # [FORMAT:value/by-app/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
-  else
-    # not defined, add
-    # [FORMAT:value/by-app/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/value/by-app/$APP
-  fi
-  commit_file ${CONF}/value/by-app/$APP
+  constant_define --application "$APP" "$C" $@
 }
 
 # undefine a constant for an environment
 #
 function application_constant_undefine {
-  local APP C
+  local APP
   generic_choose application "$1" APP && shift
-  generic_choose constant "$1" C
-  test -f ${CONF}/value/by-app/$APP || return 0
-  start_modify
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/value/by-app/$APP
-  commit_file ${CONF}/value/by-app/$APP
+  constant_undefine --application "$APP"
 }
 
 function application_constant_list {
@@ -2768,7 +2749,7 @@ function constant_create {
 
 function constant_define {
   local NAME VAL SYSTEM APP EN LOC FILE NULL=0
-  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )"; shift
+  generic_choose constant "$1" NAME && shift
 
   while [ $# -gt 0 ]; do case $1 in
     --application) application_exists "$2" || err "Invalid application"; APP=$2; shift;;
@@ -2799,6 +2780,11 @@ function constant_define {
     get_input VAL "Value" --nc --null
   fi
 
+  start_modify
+  if ! [ -f $FILE ]; then
+    if ! [ -d $( dirname $FILE ) ]; then mkdir -p $( dirname $FILE ); fi
+    touch $FILE
+  fi
   grep -qE "^$NAME," $FILE
   if [ $? -eq 0 ]; then
     # already define, update value
@@ -2807,6 +2793,7 @@ function constant_define {
     # not defined, add
     printf -- "$NAME,$VAL\n" >>$FILE
   fi
+  commit_file $FILE
 }
 
 function constant_delete {
@@ -3149,8 +3136,8 @@ function constant_show_value {
 }
 
 function constant_undefine {
-  local NAME APP EN LOC
-  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+  local NAME APP EN LOC FILE
+  generic_choose constant "$1" NAME && shift
 
   while [ $# -gt 0 ]; do case $1 in
     --application) application_exists "$2" || err "Invalid application"; APP=$2;;
@@ -3161,24 +3148,27 @@ function constant_undefine {
 
   if [[ -n ${EN} && -n ${APP} ]]; then
     # [FORMAT:value/env/app]
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-app/$APP > /dev/null ; return ;
-  fi
-  if [[ -n ${EN} && -n ${LOC} ]]; then
+    FILE="$CONF/env/$EN/by-app/$APP"
+  elif [[ -n ${EN} && -n ${LOC} ]]; then
     # [FORMAT:value/loc/constant]
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-loc/$LOC > /dev/null ; return ;
-  fi
-  if [[ -n ${EN} ]]; then
+    FILE="$CONF/env/$EN/by-loc/$LOC"
+  elif [[ -n ${EN} ]]; then
     # [FORMAT:value/env/constant]
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/constant > /dev/null ; return ;
-  fi
-  if [[ -n ${APP} ]]; then
+    FILE="$CONF/env/$EN/constant"
+  elif [[ -n ${APP} ]]; then
     # [FORMAT:value/by-app/constant]
-    perl -i -ne "print unless /^$NAME,/" $CONF/value/by-app/$APP > /dev/null ; return ;
-  fi
-  if [[ -z ${EN} && -z ${APP} && -z ${LOC} ]]; then
+    FILE="$CONF/value/by-app/$APP"
+  elif [[ -z ${EN} && -z ${APP} && -z ${LOC} ]]; then
     # [FORMAT:value/constant]
-    perl -i -ne "print unless /^$NAME,/" ${CONF}/value/constant >/dev/null
+    FILE="${CONF}/value/constant"
+  else
+    err
   fi
+
+  test -f $FILE || return 0
+  start_modify
+  perl -i -ne "print unless /^$NAME,/" $FILE >/dev/null
+  commit_file $FILE
 }
 
 function constant_update {
@@ -3246,37 +3236,18 @@ function environment_application_add {
 }
 
 function environment_application_define_constant {
-  start_modify
-  ENV=$1; shift
-  # get the requested application or abort
+  local APP C ENV="$1"; shift
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C && shift
-  # get the value
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  # [FORMAT:value/env/app]
-  grep -qE "^$C," ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/env/app]
-    perl -i -pe "s/^$C,.*/$C,$VAL/" ${CONF}/env/$ENV/by-app/$APP
-  else
-    # not defined, add
-    # [FORMAT:value/env/app]
-    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/by-app/$APP
-  fi
-  commit_file ${CONF}/env/$ENV/by-app/$APP
+  constant_define --environment "$ENV" --application "$APP" "$C" $@
 }
 
 function environment_application_undefine_constant {
-  start_modify
-  ENV=$1; shift
+  local APP C ENV="$1"; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
-  generic_choose constant "$1" C
-  # [FORMAT:value/env/app]
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
-  commit_file ${CONF}/env/$ENV/by-app/$APP
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" --application "$APP" "$C"
 }
 
 function environment_application_list_constant {
@@ -3395,33 +3366,19 @@ function environment_constant {
 # define a constant for an environment
 #
 function environment_constant_define {
-  start_modify
+  local C ENV
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  grep -qE "^$C," ${CONF}/env/$ENV/constant
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/env/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
-  else
-    # not defined, add
-    # [FORMAT:value/env/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/constant
-  fi
-  commit_file ${CONF}/env/$ENV/constant
+  constant_define --environment "$ENV" "$C" $@
 }
 
 # undefine a constant for an environment
 #
 function environment_constant_undefine {
-  start_modify
+  local C ENV
   generic_choose environment "$1" ENV && shift
-  generic_choose constant "$1" C
-  # [FORMAT:value/env/constant]
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/constant
-  commit_file ${CONF}/env/$ENV/constant
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" "$C"
 }
 
 function environment_constant_list {
@@ -4234,31 +4191,15 @@ function location_environment_constant {
 }
 
 function location_environment_constant_define {
-  LOC="$1"; ENV="$2"; shift 2
-  start_modify
-  if ! [ -f $CONF/env/$ENV/by-loc/$LOC ]; then mkdir -p $CONF/env/$ENV/by-loc; touch $CONF/env/$ENV/by-loc/$LOC; fi
+  local C ENV="$2" LOC="$1"; shift 2
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  grep -qE "^$C," $CONF/env/$ENV/by-loc/$LOC
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/loc/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
-  else
-    # not defined, add
-    # [FORMAT:value/loc/constant]
-    printf -- "$C,$VAL\n" >>$CONF/env/$ENV/by-loc/$LOC
-  fi
-  commit_file $CONF/env/$ENV/by-loc/$LOC
+  constant_define --environment "$ENV" --location "$LOC" "$C" $@
 }
 
 function location_environment_constant_undefine {
-  start_modify
-  generic_choose constant "$1" C
-  # [FORMAT:value/loc/constant]
-  perl -i -ne "print unless /^$C,.*/" $CONF/env/$2/by-loc/$1
-  commit_file $CONF/env/$2/by-loc/$1
+  local C ENV="$2" LOC="$1"; shift 2
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" --location "$LOC" "$C"
 }
 
 function location_environment_constant_list {
