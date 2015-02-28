@@ -8020,7 +8020,7 @@ function system_release {
 
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
-    find . -depth -print0 |cpio -o0 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
+    find . -depth -print0 |cpio -o0H newc 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
 
     # add archive to script
