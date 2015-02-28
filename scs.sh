@@ -300,7 +300,7 @@
 #     iputils: ping
 #     ncurses: tput
 #     openssh: ssh, ssh-keygen
-#   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files, pxeboot, dhcp
+#   My stuff - kvm-install.sh, system-build-scripts, http server for kickstart files and mirrors, pxeboot, dhcp
 #
 # Code Guidelines:
 #   1. Do not use sed, at all, anywhere.  The implementation is inconsistent between Linux/UNIX/BSD/etc...
@@ -365,6 +365,7 @@
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
 #     - automatically register the current ssh key on a remote system when it is built (kickstart likely?)
 #     - stop supporting centos 5?  mount disk images to deploy initial config and install packages?
+#     - scs constant edit -> view/edit all set values for a constant (like the route tool?)
 #   - environment stuff:
 #     - an environment instance can force systems to 'single' or 'overlay'
 #     - add concept of 'instance' to environments and define 'stacks'
@@ -4879,7 +4880,7 @@ function network_ipam {
   case "$2" in
     --add-range) network_ipam_add_range $1 ${@:3};;
     --remove-range) network_ipam_remove_range $1 ${@:3};;
-    --reserve-range) echo "Not implemented";;
+    --reserve-range) network_ipam_reserve_range $1 ${@:3};;
     --free-range) echo "Not implemented";;
     *) echo "Not implemented: $@";;
   esac
@@ -4952,7 +4953,6 @@ function network_ipam_add_range {
 #
 function network_ipam_remove_range {
   network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
-  start_modify
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
   local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
@@ -4983,6 +4983,7 @@ function network_ipam_remove_range {
   [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
   [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
   # confirm
+  start_modify
   echo "This operation will remove records for $(( $( ip2dec $LAST_IP ) - $( ip2dec $FIRST_IP ) + 1 )) ip address(es)!"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
@@ -4990,11 +4991,68 @@ function network_ipam_remove_range {
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
       # get the file name
       FILENAME=$( get_network $( dec2ip $i ) 24 )
+    # [FORMAT:net/network]
       perl -i -ne "print unless /^$i,/" ${CONF}/net/$FILENAME 2>/dev/null
     done
     git add ${CONF}/net/$FILENAME >/dev/null 2>&1
     commit_file ${CONF}/net/$FILENAME
   fi
+}
+
+# mark a range of IP addresses as reserved and unavailable for allocation
+#
+# arguments:
+#   loc-zone-alias  required
+#   start-ip/mask   optional ip and optional mask (or bits)
+#   end-ip          optional end ip
+#
+function network_ipam_reserve_range {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
+  test $# -gt 1 || err "An IP and mask or IP Range is required"
+  # initialize variables
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
+  # first check if a mask was provided in the first address
+  printf -- "$1" |grep -q "/"
+  if [ $? -eq 0 ]; then
+    FIRST_IP=$( printf -- "$1" |perl -pe 's%/.*%%' )
+    CIDR=$( printf -- "$1" |perl -pe 's%.*/%%' )
+  else
+    FIRST_IP=$1
+  fi
+  # make sure the provided IP is legit
+  valid_ip $FIRST_IP || err "An invalid IP address was provided"
+  if [ ! -z "$2" ]; then LAST_IP=$2; fi
+  if [ ! -z "$CIDR" ]; then
+    # verify the first IP is the same as the network IP if a CIDR was provided
+    test "$( get_network $FIRST_IP $CIDR )" != "$FIRST_IP" && err "The provided address was not the first in the specified subnet. Use a range instead."
+    # get or override the last IP if a CIDR was provided
+    LAST_IP=$( ipadd $FIRST_IP $(( $( cdr2size $CIDR ) - 1 )) )
+  fi
+  # make sure the last IP is legit too
+  valid_ip $LAST_IP || err "An invalid IP address was provided"
+  # make sure both first and last are in the range for the provided network
+  # [FORMAT:network]
+  read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # get the expected last ip in the network
+  NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
+  [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
+  [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # confirm
+  start_modify
+  # loop through the ip range and reserve each address in the appropriate file
+  for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
+    # get the file name
+    FILENAME=$( get_network $( dec2ip $i ) 24 )
+
+    # load the ip data
+    # [FORMAT:net/network]: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+    IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
+
+    # [FORMAT:net/network]
+    perl -i -pe "s/^$i,.*/$A,$B,y,$D,$E,$F,reserved,$H,$I/" ${CONF}/net/${FILENAME}
+
+    git add ${CONF}/net/${FILENAME}
+  done
 }
 
 # list configured networks
@@ -8130,7 +8188,7 @@ function system_release {
 
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
-    find . -depth -print0 |cpio -o0 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
+    find . -depth -print0 |cpio -o0H newc 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
 
     # add archive to script
