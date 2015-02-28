@@ -2766,6 +2766,45 @@ function constant_create {
   commit_file constant
 }
 
+function constant_define {
+  local NAME VAL SYSTEM APP EN LOC FILE
+  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+  VAL="$( printf -- "$1" )" ; shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --application) APP=$2 ; shift ;;
+    --environment) EN=$2 ; shift ;;
+    --location) LOC=$2 ; shift ;;
+    *) usage;;
+  esac; shift; done
+
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    FILE=$CONF/env/$EN/by-app/$APP
+  elif [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    FILE=$CONF/env/$EN/by-loc/$LOC
+  elif [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    FILE=$CONF/env/$EN/constant
+  elif [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    FILE=$CONF/value/by-app/$APP
+  else
+    # [FORMAT:value/constant]
+    FILE=$CONF/value/constant
+  fi
+
+  grep -qE "^$NAME," $FILE
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    perl -i -pe "my \$str = '$NAME,${VAL//&/\&}'; s/^$NAME,.*/\$str/" $FILE
+  else
+    # not defined, add
+    printf -- "$NAME,$VAL\n" >>$FILE
+  fi
+}
+
 function constant_delete {
   local i j NAME="$1"
   generic_delete constant $NAME
@@ -2964,109 +3003,6 @@ function constant_list_dedupe {
   join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |perl -pe 's/^([^,]*,[^,]*),.*/\1/'
 }
 
-function constant_show_value {
-  local NAME SYS APP EN LOC
-  NAME=$1
-  SYS=$2
-  APP=$3
-  EN=$4
-  LOC=$5
-  if [[ -n ${SYS} ]]; then
-    system_vars $SYS | grep -e "^constant.$NAME" | awk '{ print $2 }' ; return ;
-  fi
-  if [[ -n ${EN} && -n ${APP} ]]; then
-    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
-  fi
-  if [[ -n ${EN} && -n ${LOC} ]]; then
-    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
-  fi
-  if [[ -n ${EN} ]]; then
-    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
-  fi
-  if [[ -n ${APP} ]]; then
-    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
-  fi
-  grep $NAME $CONF/value/constant
-}
-
-function constant_undefine_value {
-  local NAME APP EN LOC
-  NAME=$1
-  APP=$2
-  EN=$3
-  LOC=$4
-  if [[ -n ${EN} && -n ${APP} ]]; then
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-app/$APP > /dev/null ; return ;
-  fi
-  if [[ -n ${EN} && -n ${LOC} ]]; then
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-loc/$LOC > /dev/null ; return ;
-  fi
-  if [[ -n ${EN} ]]; then
-    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/constant > /dev/null ; return ;
-  fi
-  if [[ -n ${APP} ]]; then
-    perl -i -ne "print unless /^$NAME,/" $CONF/value/by-app/$APP > /dev/null ; return ;
-  fi
-  perl -i -ne "print unless /^$NAME,/" $CONF/env/$ENV/constant > /dev/null ; return ;
-}
-
-function constant_define_value {
-  local NAME VALUE APP EN LOC
-  NAME=$1
-  VALUE=$2
-  APP=$3
-  EN=$4
-  LOC=$5
-  
-  if [[ -n ${EN} && -n ${APP} ]]; then
-    FILE=$CONF/env/$EN/by-app/$APP
-  elif [[ -n ${EN} && -n ${LOC} ]]; then
-    FILE=$CONF/env/$EN/by-loc/$LOC
-  elif [[ -n ${EN} ]]; then
-    FILE=$CONF/env/$EN/constant
-  elif [[ -n ${APP} ]]; then
-    FILE=$CONF/value/by-app/$APP
-  else
-    FILE=$CONF/env/$ENV/constant > /dev/null ; return ;
-  fi
-
-  grep -qE "^$NAME," $FILE
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    perl -i -pe "my \$str = '$NAME,${VALUE//&/\&}'; s/^$NAME,.*/\$str/" $FILE
-  else
-    # not defined, add
-    printf -- "$NAME,$VALUE\n" >>$FILE
-  fi
-}
-
-function constant_undefine {
-  local C SYSTEM APPLICATION ENVIRONMENT LOCATION
-  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
-
-  while [ $# -gt 0 ]; do case $1 in
-    --application) APPLICATION=$2 ; shift ;;
-    --environment) ENVIRONMENT=$2 ; shift ;;
-    --location) LOCATION=$2 ; shift ;;
-    *) usage;;
-  esac; shift; done
-  constant_undefine_value "$C" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
-}
-
-function constant_define {
-  local C VAL SYSTEM APPLICATION ENVIRONMENT LOCATION
-  C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
-  VAL="$( printf -- "$1" )" ; shift
-
-  while [ $# -gt 0 ]; do case $1 in
-    --application) APPLICATION=$2 ; shift ;;
-    --environment) ENVIRONMENT=$2 ; shift ;;
-    --location) LOCATION=$2 ; shift ;;
-    *) usage;;
-  esac; shift; done
-  constant_define_value "$C" "$VAL" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
-}
-
 function constant_show {
   local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
@@ -3150,6 +3086,69 @@ function constant_show {
   test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined = " \
     && constant_show_value "$NAME" "" "" "" "" \
     || echo "Not Defined"
+}
+
+function constant_show_value {
+  local NAME SYS APP EN LOC
+  NAME=$1
+  SYS=$2
+  APP=$3
+  EN=$4
+  LOC=$5
+  if [[ -n ${SYS} ]]; then
+    system_vars $SYS | grep -e "^constant.$NAME" | awk '{ print $2 }' ; return ;
+  fi
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
+  fi
+  # [FORMAT:value/constant]
+  grep $NAME $CONF/value/constant
+}
+
+function constant_undefine {
+  local NAME APP EN LOC
+  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --application) APP=$2 ; shift ;;
+    --environment) EN=$2 ; shift ;;
+    --location) LOC=$2 ; shift ;;
+    *) usage;;
+  esac; shift; done
+
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-app/$APP > /dev/null ; return ;
+  fi
+  if [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/by-loc/$LOC > /dev/null ; return ;
+  fi
+  if [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    perl -i -ne "print unless /^$NAME,/" $CONF/env/$EN/constant > /dev/null ; return ;
+  fi
+  if [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    perl -i -ne "print unless /^$NAME,/" $CONF/value/by-app/$APP > /dev/null ; return ;
+  fi
+  if [[ -z ${EN} && -z ${APP} && -z ${LOC} ]]; then
+    # [FORMAT:value/constant]
+    perl -i -ne "print unless /^$NAME,/" ${CONF}/value/constant >/dev/null
+  fi
 }
 
 function constant_update {
