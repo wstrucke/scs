@@ -2089,37 +2089,18 @@ function application_constant {
 # define a constant for an application
 #
 function application_constant_define {
-  start_modify
-  local APP C VAL
+  local APP C
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  test -f ${CONF}/value/by-app/$APP || touch ${CONF}/value/by-app/$APP
-  # check if constant is already defined
-  # [FORMAT:value/by-app/constant]
-  grep -qE "^$C," ${CONF}/value/by-app/$APP
-  if [ $? -eq 0 ]; then
-    # already defined, update value
-    # [FORMAT:value/by-app/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/value/by-app/$APP
-  else
-    # not defined, add
-    # [FORMAT:value/by-app/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/value/by-app/$APP
-  fi
-  commit_file ${CONF}/value/by-app/$APP
+  constant_define --application "$APP" "$C" $@
 }
 
 # undefine a constant for an environment
 #
 function application_constant_undefine {
-  local APP C
+  local APP
   generic_choose application "$1" APP && shift
-  generic_choose constant "$1" C
-  test -f ${CONF}/value/by-app/$APP || return 0
-  start_modify
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/value/by-app/$APP
-  commit_file ${CONF}/value/by-app/$APP
+  constant_undefine --application "$APP"
 }
 
 function application_constant_list {
@@ -2879,6 +2860,55 @@ function constant_create {
   commit_file constant
 }
 
+function constant_define {
+  local NAME VAL SYSTEM APP EN LOC FILE NULL=0
+  generic_choose constant "$1" NAME && shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --application) application_exists "$2" || err "Invalid application"; APP=$2; shift;;
+    --environment) environment_exists "$2" || err "Invalid environment"; EN=$2; shift;;
+    --location) location_exists "$2" || err "Invalid location"; LOC=$2; shift;;
+    --null) NULL=1;;
+    *) if [[ -z "$VAL" ]]; then VAL="$1"; else usage; fi;;
+  esac; shift; done
+
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    FILE=$CONF/env/$EN/by-app/$APP
+  elif [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    FILE=$CONF/env/$EN/by-loc/$LOC
+  elif [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    FILE=$CONF/env/$EN/constant
+  elif [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    FILE=$CONF/value/by-app/$APP
+  else
+    # [FORMAT:value/constant]
+    FILE=$CONF/value/constant
+  fi
+
+  if [[ -z "$VAL" && $NULL -eq 0 ]]; then
+    get_input VAL "Value" --nc --null
+  fi
+
+  start_modify
+  if ! [ -f $FILE ]; then
+    if ! [ -d $( dirname $FILE ) ]; then mkdir -p $( dirname $FILE ); fi
+    touch $FILE
+  fi
+  grep -qE "^$NAME," $FILE
+  if [ $? -eq 0 ]; then
+    # already define, update value
+    perl -i -pe "my \$str = '$NAME,${VAL//&/\&}'; s/^$NAME,.*/\$str/" $FILE
+  else
+    # not defined, add
+    printf -- "$NAME,$VAL\n" >>$FILE
+  fi
+  commit_file $FILE
+}
+
 function constant_delete {
   local i j NAME="$1"
   generic_delete constant $NAME
@@ -2978,6 +3008,20 @@ OPTIONS
 	constant create
 		Create a constant that can be defined and referenced in configuration files.
 
+	constant define [--application <name>] [--environment <name>] [--location <name>] [--null] [<value>]
+		Define a constant in any scope.  If --null is provided and no value is specified the
+		constant will be set to an empty string, otherwise you will be prompted to enter a value.
+
+		Scope 1 - Application in an Environment: Specify --environment and --application
+
+		Scope 2 - Environment at a Location: Specify --environment and --location
+
+		Scope 3 - Environment: Specify --environment
+
+		Scope 4 - Application: Specify --application
+
+		Scope 5 - Global: Do not provide any additional arguments.
+
 	constant delete
 		Delete a constant and remove all configured values.
 
@@ -2986,11 +3030,24 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the constant list without any summary information.
 
-	constant show [--system <name>]
+	constant show [--application <name>] [--environment <name>] [--location <name>] [--system <name>]
 		Show constant details and where it is currently defined.
 
-		If the optional --system argument is provided with a valid system name just show the
-		value of the constant for the system (if it is defined).
+		If one or more optional arguments are provided with valid values, just show the
+		value of the constant in that scope (if it is defined).
+
+	constant undefine [--application <name>] [--environment <name>] [--location <name>]
+		Undefine (remove) a defined constant in the specified scope.
+
+		Scope 1 - Application in an Environment: Specify --environment and --application
+
+		Scope 2 - Environment at a Location: Specify --environment and --location
+
+		Scope 3 - Environment: Specify --environment
+
+		Scope 4 - Application: Specify --application
+
+		Scope 5 - Global: Do not provide any additional arguments.
 
 	constant update
 		Update the constant name (rename) or description.
@@ -3077,26 +3134,31 @@ function constant_list_dedupe {
   join -a1 -a2 -t',' <(sort -t',' -k1,1 $1) <(sort -t',' -k1,1 $2) |perl -pe 's/^([^,]*,[^,]*),.*/\1/'
 }
 
-function constant_show_value {
-  NAME=$1
-  SYSTEM=$2
-  system_vars $SYSTEM | grep -e "^constant.$NAME" | awk '{ print $2 }'
-}
-
 function constant_show {
-  local C NAME DESC EnList AppList LocList i j
+  local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION Brief=0
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
+
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
-    --system) constant_show_value $C $2 ; return ;;
+    --application) APPLICATION="$2"; shift;;
+    --brief) Brief=1;;
+    --environment) ENVIRONMENT="$2"; shift;;
+    --location) LOCATION="$2"; shift;;
+    --system) SYSTEM="$2"; shift;;
     *) usage;;
   esac; shift; done
+  if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
+    constant_show_value "$C" "$SYSTEM" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
+  fi
   # validate system name
   if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
   constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  printf -- "Name: $NAME\nDescription: $DESC\nDefined (priority 1..5):\n"
+  printf -- "Name: $NAME\nDescription: $DESC\n"
+
+  if [[ $Brief -eq 1 ]]; then return 0; fi
+  printf -- 'Defined (priority 1..5):\n'
 
   # list environments and applications
   EnList=$( environment_list --no-format )
@@ -3110,7 +3172,7 @@ function constant_show {
     for j in $AppList; do
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s\n' $j $i
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s = %s\n' $j $i "$( constant_show_value "$NAME" "" "$j" "$i" "" )"
       fi
     done
   done
@@ -3122,7 +3184,7 @@ function constant_show {
     for j in $EnList; do
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s\n' $j $i
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s = %s\n' $j $i "$( constant_show_value "$NAME" "" "" "$j" "$i" )"
       fi
     done
   done
@@ -3133,7 +3195,7 @@ function constant_show {
   for i in $EnList; do
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s\n' $i
+      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s = %s\n' $i "$( constant_show_value "$NAME" "" "" "$i" "" )"
     fi
   done
 
@@ -3143,15 +3205,84 @@ function constant_show {
   for i in $AppList; do
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
-      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s\n' $i
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s = %s\n' $i "$( constant_show_value "$NAME" "" "$i" "" "" )"
     fi
   done
 
-  printf -- '\n  5. Global: '
+  printf -- '\n  5. Global:\n'
 
   # 5. global
   # [FORMAT:value/constant]
-  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined" || echo "Not Defined"
+  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && printf -- '      Defined = %s\n' "$( constant_show_value "$NAME" "" "" "" "" )" \
+    || printf -- '      Not Defined\n'
+
+  echo
+}
+
+function constant_show_value {
+  local NAME SYS APP EN LOC
+  NAME=$1
+  SYS=$2
+  APP=$3
+  EN=$4
+  LOC=$5
+  if [[ -n ${SYS} ]]; then
+    system_vars $SYS | grep -e "^constant.$NAME" | awk '{ print $2 }' ; return ;
+  fi
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
+  fi
+  if [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
+  fi
+  # [FORMAT:value/constant]
+  grep $NAME $CONF/value/constant | cut -f2 -d","
+}
+
+function constant_undefine {
+  local NAME APP EN LOC FILE
+  generic_choose constant "$1" NAME && shift
+
+  while [ $# -gt 0 ]; do case $1 in
+    --application) application_exists "$2" || err "Invalid application"; APP=$2;;
+    --environment) environment_exists "$2" || err "Invalid environment"; EN=$2;;
+    --location) location_exists "$2" || err "Invalid location"; LOC=$2;;
+    *) usage;;
+  esac; shift 2; done
+
+  if [[ -n ${EN} && -n ${APP} ]]; then
+    # [FORMAT:value/env/app]
+    FILE="$CONF/env/$EN/by-app/$APP"
+  elif [[ -n ${EN} && -n ${LOC} ]]; then
+    # [FORMAT:value/loc/constant]
+    FILE="$CONF/env/$EN/by-loc/$LOC"
+  elif [[ -n ${EN} ]]; then
+    # [FORMAT:value/env/constant]
+    FILE="$CONF/env/$EN/constant"
+  elif [[ -n ${APP} ]]; then
+    # [FORMAT:value/by-app/constant]
+    FILE="$CONF/value/by-app/$APP"
+  elif [[ -z ${EN} && -z ${APP} && -z ${LOC} ]]; then
+    # [FORMAT:value/constant]
+    FILE="${CONF}/value/constant"
+  else
+    err
+  fi
+
+  test -f $FILE || return 0
+  start_modify
+  perl -i -ne "print unless /^$NAME,/" $FILE >/dev/null
+  commit_file $FILE
 }
 
 function constant_update {
@@ -3219,37 +3350,18 @@ function environment_application_add {
 }
 
 function environment_application_define_constant {
-  start_modify
-  ENV=$1; shift
-  # get the requested application or abort
+  local APP C ENV="$1"; shift
   generic_choose application "$1" APP && shift
   generic_choose constant "$1" C && shift
-  # get the value
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  # [FORMAT:value/env/app]
-  grep -qE "^$C," ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/env/app]
-    perl -i -pe "s/^$C,.*/$C,$VAL/" ${CONF}/env/$ENV/by-app/$APP
-  else
-    # not defined, add
-    # [FORMAT:value/env/app]
-    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/by-app/$APP
-  fi
-  commit_file ${CONF}/env/$ENV/by-app/$APP
+  constant_define --environment "$ENV" --application "$APP" "$C" $@
 }
 
 function environment_application_undefine_constant {
-  start_modify
-  ENV=$1; shift
+  local APP C ENV="$1"; shift
   # get the requested application or abort
   generic_choose application "$1" APP && shift
-  generic_choose constant "$1" C
-  # [FORMAT:value/env/app]
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/by-app/$APP 2>/dev/null
-  commit_file ${CONF}/env/$ENV/by-app/$APP
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" --application "$APP" "$C"
 }
 
 function environment_application_list_constant {
@@ -3368,33 +3480,19 @@ function environment_constant {
 # define a constant for an environment
 #
 function environment_constant_define {
-  start_modify
+  local C ENV
   generic_choose environment "$1" ENV && shift
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  grep -qE "^$C," ${CONF}/env/$ENV/constant
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/env/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" ${CONF}/env/$ENV/constant
-  else
-    # not defined, add
-    # [FORMAT:value/env/constant]
-    printf -- "$C,$VAL\n" >>${CONF}/env/$ENV/constant
-  fi
-  commit_file ${CONF}/env/$ENV/constant
+  constant_define --environment "$ENV" "$C" $@
 }
 
 # undefine a constant for an environment
 #
 function environment_constant_undefine {
-  start_modify
+  local C ENV
   generic_choose environment "$1" ENV && shift
-  generic_choose constant "$1" C
-  # [FORMAT:value/env/constant]
-  perl -i -ne "print unless /^$C,.*/" ${CONF}/env/$ENV/constant
-  commit_file ${CONF}/env/$ENV/constant
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" "$C"
 }
 
 function environment_constant_list {
@@ -4207,31 +4305,15 @@ function location_environment_constant {
 }
 
 function location_environment_constant_define {
-  LOC="$1"; ENV="$2"; shift 2
-  start_modify
-  if ! [ -f $CONF/env/$ENV/by-loc/$LOC ]; then mkdir -p $CONF/env/$ENV/by-loc; touch $CONF/env/$ENV/by-loc/$LOC; fi
+  local C ENV="$2" LOC="$1"; shift 2
   generic_choose constant "$1" C && shift
-  if [ -z "$1" ]; then get_input VAL "Value" --nc --null; else VAL="$1"; fi
-  # check if constant is already defined
-  grep -qE "^$C," $CONF/env/$ENV/by-loc/$LOC
-  if [ $? -eq 0 ]; then
-    # already define, update value
-    # [FORMAT:value/loc/constant]
-    perl -i -pe "my \$str = '$C,${VAL//&/\&}'; s/^$C,.*/\$str/" $CONF/env/$ENV/by-loc/$LOC
-  else
-    # not defined, add
-    # [FORMAT:value/loc/constant]
-    printf -- "$C,$VAL\n" >>$CONF/env/$ENV/by-loc/$LOC
-  fi
-  commit_file $CONF/env/$ENV/by-loc/$LOC
+  constant_define --environment "$ENV" --location "$LOC" "$C" $@
 }
 
 function location_environment_constant_undefine {
-  start_modify
-  generic_choose constant "$1" C
-  # [FORMAT:value/loc/constant]
-  perl -i -ne "print unless /^$C,.*/" $CONF/env/$2/by-loc/$1
-  commit_file $CONF/env/$2/by-loc/$1
+  local C ENV="$2" LOC="$1"; shift 2
+  generic_choose constant "$1" C && shift
+  constant_undefine --environment "$ENV" --location "$LOC" "$C"
 }
 
 function location_environment_constant_list {
@@ -4882,7 +4964,7 @@ function network_ipam {
   case "$2" in
     --add-range) network_ipam_add_range $1 ${@:3};;
     --remove-range) network_ipam_remove_range $1 ${@:3};;
-    --reserve-range) echo "Not implemented";;
+    --reserve-range) network_ipam_reserve_range $1 ${@:3};;
     --free-range) echo "Not implemented";;
     *) echo "Not implemented: $@";;
   esac
@@ -4955,7 +5037,6 @@ function network_ipam_add_range {
 #
 function network_ipam_remove_range {
   network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
-  start_modify
   test $# -gt 1 || err "An IP and mask or IP Range is required"
   # initialize variables
   local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
@@ -4986,6 +5067,7 @@ function network_ipam_remove_range {
   [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
   [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
   # confirm
+  start_modify
   echo "This operation will remove records for $(( $( ip2dec $LAST_IP ) - $( ip2dec $FIRST_IP ) + 1 )) ip address(es)!"
   get_yn RL "Are you sure (y/n)?"
   if [ "$RL" == "y" ]; then
@@ -4993,11 +5075,68 @@ function network_ipam_remove_range {
     for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
       # get the file name
       FILENAME=$( get_network $( dec2ip $i ) 24 )
+    # [FORMAT:net/network]
       perl -i -ne "print unless /^$i,/" ${CONF}/net/$FILENAME 2>/dev/null
     done
     git add ${CONF}/net/$FILENAME >/dev/null 2>&1
     commit_file ${CONF}/net/$FILENAME
   fi
+}
+
+# mark a range of IP addresses as reserved and unavailable for allocation
+#
+# arguments:
+#   loc-zone-alias  required
+#   start-ip/mask   optional ip and optional mask (or bits)
+#   end-ip          optional end ip
+#
+function network_ipam_reserve_range {
+  network_exists "$1" || err "Missing network or invalid format. Please ensure you are entering 'location-zone-alias'."
+  test $# -gt 1 || err "An IP and mask or IP Range is required"
+  # initialize variables
+  local NETNAME=$1 FIRST_IP LAST_IP CIDR NETIP NETLAST NETCIDR; shift
+  # first check if a mask was provided in the first address
+  printf -- "$1" |grep -q "/"
+  if [ $? -eq 0 ]; then
+    FIRST_IP=$( printf -- "$1" |perl -pe 's%/.*%%' )
+    CIDR=$( printf -- "$1" |perl -pe 's%.*/%%' )
+  else
+    FIRST_IP=$1
+  fi
+  # make sure the provided IP is legit
+  valid_ip $FIRST_IP || err "An invalid IP address was provided"
+  if [ ! -z "$2" ]; then LAST_IP=$2; fi
+  if [ ! -z "$CIDR" ]; then
+    # verify the first IP is the same as the network IP if a CIDR was provided
+    test "$( get_network $FIRST_IP $CIDR )" != "$FIRST_IP" && err "The provided address was not the first in the specified subnet. Use a range instead."
+    # get or override the last IP if a CIDR was provided
+    LAST_IP=$( ipadd $FIRST_IP $(( $( cdr2size $CIDR ) - 1 )) )
+  fi
+  # make sure the last IP is legit too
+  valid_ip $LAST_IP || err "An invalid IP address was provided"
+  # make sure both first and last are in the range for the provided network
+  # [FORMAT:network]
+  read -r NETIP NETCIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $4,$6}' )"
+  # get the expected last ip in the network
+  NETLAST=$( ipadd $NETIP $(( $( cdr2size $NETCIDR ) - 1 )) )
+  [[ $( ip2dec $FIRST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $FIRST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Starting address is outside expected range."
+  [[ $( ip2dec $LAST_IP ) -lt $( ip2dec $NETIP ) || $( ip2dec $LAST_IP ) -gt $( ip2dec $NETLAST) ]] && err "Ending address is outside expected range."
+  # confirm
+  start_modify
+  # loop through the ip range and reserve each address in the appropriate file
+  for ((i=$( ip2dec $FIRST_IP );i<=$( ip2dec $LAST_IP );i++)); do
+    # get the file name
+    FILENAME=$( get_network $( dec2ip $i ) 24 )
+
+    # load the ip data
+    # [FORMAT:net/network]: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
+    IFS="," read -r A B C D E F G H I <<<"$( grep "^$i," ${CONF}/net/${FILENAME} )"
+
+    # [FORMAT:net/network]
+    perl -i -pe "s/^$i,.*/$A,$B,y,$D,$E,$F,reserved,$H,$I/" ${CONF}/net/${FILENAME}
+
+    git add ${CONF}/net/${FILENAME}
+  done
 }
 
 # list configured networks
@@ -8133,7 +8272,7 @@ function system_release {
 
     # generate the release
     pushd $TMP/release >/dev/null 2>&1
-    find . -depth -print0 |cpio -o0 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
+    find . -depth -print0 |cpio -o0H newc 2>/dev/null |gzip -9 >$RELEASEDIR/$RELEASEFILE
     popd >/dev/null 2>&1
 
     # add archive to script
@@ -8771,7 +8910,7 @@ if [[ "$VERB" == "lineage" && "$SUBJ" == "build" ]]; then build_lineage $@; echo
 printf -- " application build constant environment file hypervisor location network resource system " |grep -q " $SUBJ "
 [[ $? -ne 0 || -z "$SUBJ" ]] && usage
 if [[ "$SUBJ" != "resource" && "$SUBJ" != "location" && "$SUBJ" != "system" && "$SUBJ" != "network" && "$SUBJ" != "hypervisor" ]]; then
-  printf -- " create delete list show update edit file application constant environment cat " |grep -q " $VERB "
+  printf -- " create delete list show update edit file application constant environment cat undefine define " |grep -q " $VERB "
   [[ $? -ne 0 || -z "$VERB" ]] && usage
 fi
 [[ "$VERB" == "edit" && "$SUBJ" != "file" ]] && usage
