@@ -3022,17 +3022,18 @@ function constant_list_dedupe {
 }
 
 function constant_show {
-  local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION
+  local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION Brief=0
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
-  # get any other provided options
 
+  # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
-    --application) APPLICATION="$2";;
-    --environment) ENVIRONMENT="$2";;
-    --location) LOCATION="$2";;
-    --system) SYSTEM="$2";;
+    --application) APPLICATION="$2"; shift;;
+    --brief) Brief=1;;
+    --environment) ENVIRONMENT="$2"; shift;;
+    --location) LOCATION="$2"; shift;;
+    --system) SYSTEM="$2"; shift;;
     *) usage;;
-  esac; shift 2; done
+  esac; shift; done
   if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
     constant_show_value "$C" "$SYSTEM" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
   fi
@@ -3041,7 +3042,10 @@ function constant_show {
   constant_exists "$C" || err "Unknown constant"
   # [FORMAT:constant]
   IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  printf -- "Name: $NAME\nDescription: $DESC\nDefined (priority 1..5):\n"
+  printf -- "Name: $NAME\nDescription: $DESC\n"
+
+  if [[ $Brief -eq 1 ]]; then return 0; fi
+  printf -- 'Defined (priority 1..5):\n'
 
   # list environments and applications
   EnList=$( environment_list --no-format )
@@ -3055,8 +3059,7 @@ function constant_show {
     for j in $AppList; do
       # [FORMAT:value/env/app]
       if [ -f "${CONF}/env/$i/by-app/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s = ' $j $i \
-          && constant_show_value "$NAME" "" "$j" "$i" ""
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j" && printf -- '      %s::%s = %s\n' $j $i "$( constant_show_value "$NAME" "" "$j" "$i" "" )"
       fi
     done
   done
@@ -3068,8 +3071,7 @@ function constant_show {
     for j in $EnList; do
       # [FORMAT:value/loc/constant]
       if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s = ' $j $i \
-          && constant_show_value "$NAME" "" "$j" "" "$i"
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i" && printf -- '      %s::%s = %s\n' $j $i "$( constant_show_value "$NAME" "" "" "$j" "$i" )"
       fi
     done
   done
@@ -3080,8 +3082,7 @@ function constant_show {
   for i in $EnList; do
     # [FORMAT:value/env/constant]
     if [ -f "${CONF}/env/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s = ' $i \
-        && constant_show_value "$NAME" "" "" "$i" ""
+      grep -qE "^$NAME," "${CONF}/env/$i/constant" && printf -- '      %s = %s\n' $i "$( constant_show_value "$NAME" "" "" "$i" "" )"
     fi
   done
 
@@ -3091,18 +3092,18 @@ function constant_show {
   for i in $AppList; do
     # [FORMAT:value/by-app/constant]
     if [ -f "${CONF}/value/by-app/$i" ]; then
-      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s = ' $i \
-        && constant_show_value "$NAME" "" "$i" "" ""
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i" && printf -- '      %s = %s\n' $i "$( constant_show_value "$NAME" "" "$i" "" "" )"
     fi
   done
 
-  printf -- '\n  5. Global: '
+  printf -- '\n  5. Global:\n'
 
   # 5. global
   # [FORMAT:value/constant]
-  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && echo "Defined = " \
-    && constant_show_value "$NAME" "" "" "" "" \
-    || echo "Not Defined"
+  test $( grep -cE "^$NAME," ${CONF}/value/constant ) -eq 1 && printf -- '      Defined = %s\n' "$( constant_show_value "$NAME" "" "" "" "" )" \
+    || printf -- '      Not Defined\n'
+
+  echo
 }
 
 function constant_show_value {
@@ -3132,7 +3133,7 @@ function constant_show_value {
     grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
   fi
   # [FORMAT:value/constant]
-  grep $NAME $CONF/value/constant
+  grep $NAME $CONF/value/constant | cut -f2 -d","
 }
 
 function constant_undefine {
