@@ -2767,15 +2767,15 @@ function constant_create {
 }
 
 function constant_define {
-  local NAME VAL SYSTEM APP EN LOC FILE
-  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
-  VAL="$( printf -- "$1" )" ; shift
+  local NAME VAL SYSTEM APP EN LOC FILE NULL=0
+  NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )"; shift
 
   while [ $# -gt 0 ]; do case $1 in
-    --application) APP=$2 ; shift ;;
-    --environment) EN=$2 ; shift ;;
-    --location) LOC=$2 ; shift ;;
-    *) usage;;
+    --application) application_exists "$2" || err "Invalid application"; APP=$2; shift;;
+    --environment) environment_exists "$2" || err "Invalid environment"; EN=$2; shift;;
+    --location) location_exists "$2" || err "Invalid location"; LOC=$2; shift;;
+    --null) NULL=1;;
+    *) if [[ -z "$VAL" ]]; then VAL="$1"; else usage; fi;;
   esac; shift; done
 
   if [[ -n ${EN} && -n ${APP} ]]; then
@@ -2793,6 +2793,10 @@ function constant_define {
   else
     # [FORMAT:value/constant]
     FILE=$CONF/value/constant
+  fi
+
+  if [[ -z "$VAL" && $NULL -eq 0 ]]; then
+    get_input VAL "Value" --nc --null
   fi
 
   grep -qE "^$NAME," $FILE
@@ -2904,6 +2908,20 @@ OPTIONS
 	constant create
 		Create a constant that can be defined and referenced in configuration files.
 
+	constant define [--application <name>] [--environment <name>] [--location <name>] [--null] [<value>]
+		Define a constant in any scope.  If --null is provided and no value is specified the
+		constant will be set to an empty string, otherwise you will be prompted to enter a value.
+
+		Scope 1 - Application in an Environment: Specify --environment and --application
+
+		Scope 2 - Environment at a Location: Specify --environment and --location
+
+		Scope 3 - Environment: Specify --environment
+
+		Scope 4 - Application: Specify --application
+
+		Scope 5 - Global: Do not provide any additional arguments.
+
 	constant delete
 		Delete a constant and remove all configured values.
 
@@ -2912,11 +2930,24 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the constant list without any summary information.
 
-	constant show [--system <name>]
+	constant show [--application <name>] [--environment <name>] [--location <name>] [--system <name>]
 		Show constant details and where it is currently defined.
 
-		If the optional --system argument is provided with a valid system name just show the
-		value of the constant for the system (if it is defined).
+		If one or more optional arguments are provided with valid values, just show the
+		value of the constant in that scope (if it is defined).
+
+	constant undefine [--application <name>] [--environment <name>] [--location <name>]
+		Undefine (remove) a defined constant in the specified scope.
+
+		Scope 1 - Application in an Environment: Specify --environment and --application
+
+		Scope 2 - Environment at a Location: Specify --environment and --location
+
+		Scope 3 - Environment: Specify --environment
+
+		Scope 4 - Application: Specify --application
+
+		Scope 5 - Global: Do not provide any additional arguments.
 
 	constant update
 		Update the constant name (rename) or description.
@@ -3007,15 +3038,14 @@ function constant_show {
   local C NAME DESC EnList AppList LocList i j SYSTEM APPLICATION ENVIRONMENT LOCATION
   C="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
   # get any other provided options
-  
+
   while [ $# -gt 0 ]; do case $1 in
-    --system) SYSTEM=$2 ; shift ;;
-    --application) APPLICATION=$2 ; shift ;;
-    --environment) ENVIRONMENT=$2 ; shift ;;
-    --application) APPLICATION=$2 ; shift ;;
-    --location) LOCATION=$2 ; shift ;;
+    --application) APPLICATION="$2";;
+    --environment) ENVIRONMENT="$2";;
+    --location) LOCATION="$2";;
+    --system) SYSTEM="$2";;
     *) usage;;
-  esac; shift; done
+  esac; shift 2; done
   if [[ -n ${SYSTEM} || -n ${APPLICATION} || -n ${ENVIRONMENT} || -n ${LOCATION} ]]; then
     constant_show_value "$C" "$SYSTEM" "$APPLICATION" "$ENVIRONMENT" "$LOCATION" ; return ;
   fi
@@ -3123,11 +3153,11 @@ function constant_undefine {
   NAME="$( printf -- "$1" |tr 'A-Z' 'a-z' )" ; shift
 
   while [ $# -gt 0 ]; do case $1 in
-    --application) APP=$2 ; shift ;;
-    --environment) EN=$2 ; shift ;;
-    --location) LOC=$2 ; shift ;;
+    --application) application_exists "$2" || err "Invalid application"; APP=$2;;
+    --environment) environment_exists "$2" || err "Invalid environment"; EN=$2;;
+    --location) location_exists "$2" || err "Invalid location"; LOC=$2;;
     *) usage;;
-  esac; shift; done
+  esac; shift 2; done
 
   if [[ -n ${EN} && -n ${APP} ]]; then
     # [FORMAT:value/env/app]
