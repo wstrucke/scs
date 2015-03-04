@@ -3118,22 +3118,22 @@ function constant_show_value {
   fi
   if [[ -n ${EN} && -n ${APP} ]]; then
     # [FORMAT:value/env/app]
-    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${EN} && -n ${LOC} ]]; then
     # [FORMAT:value/loc/constant]
-    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${EN} ]]; then
     # [FORMAT:value/env/constant]
-    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${APP} ]]; then
     # [FORMAT:value/by-app/constant]
-    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
   fi
   # [FORMAT:value/constant]
-  grep $NAME $CONF/value/constant | cut -f2 -d","
+  grep "^$NAME," $CONF/value/constant | cut -f2 -d","
 }
 
 function constant_undefine {
