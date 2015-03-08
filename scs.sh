@@ -363,7 +363,6 @@
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
 #     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
-#     - application show should list systems linked to the application and the environment for the systems
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
@@ -2107,8 +2106,14 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the list without any summary information.
 
-	application show [<name>] [--brief]
-		show details for an application (--brief hides related data that is normally displayed)
+	application show [<name>] [--brief] [--files] [--systems]
+		show details for an application and related objects.
+
+		'--brief' will only output the application details and skip extraneous data.
+
+		'--files' will only output the linked configuration files.
+
+		'--systems' will only output the linked system objects.
 
 	application update [<name>]
 		update application settings or rename an application
@@ -2378,27 +2383,60 @@ function application_list_unformatted {
   awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort
 }
 
+# application_show
+#
+# output application details and linked objects
+#
+# optional:
+#   --brief      only show the application details
+#   --files      only show linked files
+#   --systems    only show linked systems
+#
 function application_show {
   application_exists "$1" || err "Provide the application name"
-  local APP ALIAS BUILD CLUSTER BRIEF=0
-  [ "$2" == "--brief" ] && BRIEF=1
+  local APP ALIAS BUILD CLUSTER FILES i SystemList \
+        ShowDetail=1 ShowFiles=1 ShowSystems=1
+
+  case "$2" in
+    --brief) ShowFiles=0; ShowSystems=0;;
+    --files) ShowDetail=0; ShowSystems=0;;
+    --systems) ShowDetail=0; ShowFiles=0;;
+  esac
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$1," ${CONF}/application )"
-  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
-  test $BRIEF -eq 1 && return
-  # retrieve file list
-  FILES=( $( application_file_list_unformatted $APP ) )
-  # output linked configuration file list
-  if [ ${#FILES[*]} -gt 0 ]; then
-    printf -- "\nManaged configuration files:\n"
-    for ((i=0;i<${#FILES[*]};i++)); do
-      # [FORMAT:file]
-      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-    done |sort |uniq |column -t |perl -pe 's/^/   /'
-  else
-    printf -- "\nNo managed configuration files."
+  if [[ $ShowDetail -eq 1 ]]; then
+    printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
   fi
-  printf -- '\n'
+
+  if [[ $ShowSystems -eq 1 ]]; then
+    # list systems by environment
+    if [[ $ShowDetail -eq 1 ]]; then printf -- '\nSystems:\n'; fi
+    SystemList=( $( system_list_unformatted --build $BUILD ) )
+    if [[ ${#SystemList[*]} -gt 0 ]]; then
+      for ((i=0;i<${#SystemList[*]};i++)); do
+        # [FORMAT:system]
+        grep -E "^${SystemList[i]}," ${CONF}/system |perl -pe 's/^([^,]*),([^,]*,){3}([^,]*),.*/\3 \1/'
+      done |sort -k1,2 |column -t |perl -pe 's/^/   /'
+    else
+      printf -- '  None\n'
+    fi
+  fi
+
+  if [[ $ShowFiles -eq 1 ]]; then
+    # retrieve file list
+    FILES=( $( application_file_list_unformatted $APP ) )
+    # output linked configuration file list
+    if [ ${#FILES[*]} -gt 0 ]; then
+      if [[ $ShowDetail -eq 1 ]]; then printf -- "\nManaged configuration files:\n"; fi
+      for ((i=0;i<${#FILES[*]};i++)); do
+        # [FORMAT:file]
+        grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+      done |sort |uniq |column -t |perl -pe 's/^/   /'
+    else
+      printf -- "\nNo managed configuration files."
+    fi
+  fi
 }
 
 # application_update
@@ -7953,7 +7991,7 @@ function system_list_unformatted {
         NL=""
         Parent="$( build_parent $2 )"
         if [[ -n $Parent ]]; then
-          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
+          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print NL}' |tr ',' ' ' )"
         else
           BuildList="$2"
         fi
