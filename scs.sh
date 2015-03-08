@@ -360,7 +360,6 @@
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
-#     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
 #     - colorize system list output (different color per build)?
 #     - deprecate external kvm-install script and remove dependencies on external servers
