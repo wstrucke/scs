@@ -280,6 +280,13 @@
 #   --search: [FORMAT:value/by-app/constant]
 #   --storage:
 #
+#   <location>/<environment>
+#   --description: list of applications assigned to a location
+#   --format: name
+#   --search: [FORMAT:<location></env>]
+#   --storage:
+#   ----name            name of the application
+#
 #   <location>/network
 #   --description: network details for a specific location
 #   --format: zone,alias,network/cidr,build,default-build\n
@@ -325,7 +332,6 @@
 #     - correct host name when creating overlays
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
-#     - renaming an application does not update all of the configuration files
 #     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
@@ -333,7 +339,6 @@
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - enhancements:
 #     - finish IPAM and IP allocation components
-#     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #     - add detailed help section for each function
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
@@ -2396,27 +2401,71 @@ function application_show {
   printf -- '\n'
 }
 
+# application_update
+#
+# alters the configuration for an existing application, including rename
+#
 function application_update {
+  local APP ALIAS BUILD CLUSTER NAME File Location
+
   start_modify
   generic_choose application "$1" APP && shift
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   get_yn CLUSTER "LVS Support (y/n)"
+
   # [FORMAT:application]
   perl -i -pe "s/^$APP,.*/${NAME},${ALIAS},${BUILD},${CLUSTER}/" ${CONF}/application
+
   # handle rename
   if [[ "$NAME" != "$APP" ]]; then
-     echo "Rename not implemented" >&2
-# <loc>/<env>
-# application
-# build
-# env/<env>/by-app/<name>
-# file-map
-# resource
-# value/by-app/<name>
+
+     # switch to the config directory to perform git operations
+     pushd ${CONF} >/dev/null 2>&1
+
+     if [[ -s environment ]]; then
+
+       # [FORMAT:environment]
+       for Environment in $( perl -pe 's/,.*//' environment ); do
+
+         # update environment as neeeded
+         if [[ -d $Environment && -f env/$Environment/by-app/$APP ]]; then
+           # [FORMAT:value/env/app]
+           git mv env/$Environment/by-app/$APP env/$Environment/by-app/$NAME
+         fi
+
+         if [[ -s location ]]; then
+           # [FORMAT:location]
+           for Location in $( perl -pe 's/,.*//' location ); do
+             if ! [[ -s $Location/$Environment ]]; then continue; fi
+             # update environment
+             # [FORMAT:<location></env>]
+             perl -i -pe "s/^$APP\$/$NAME/" $Location/$Environment
+           done
+         fi
+
+       done
+
+     fi
+
+     if [[ -s value/by-app/$APP ]]; then
+       # [FORMAT:value/by-app/constant]
+       git mv value/by-app/$APP value/by-app/$NAME
+     fi
+
+     # [FORMAT:file-map]
+     perl -i -pe "s/([^,]*,)$APP(,.*)/\1$NAME\2/" file-map
+
+     # [FORMAT:resource]
+     perl -i -pe "s/:$APP,/:$NAME,/" resource
+
+     # switch back
+     popd >/dev/null 2>&1
+
   fi
   commit_file application
 }
