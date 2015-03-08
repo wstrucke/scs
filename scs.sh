@@ -46,6 +46,7 @@
 #     net/a.b.c.0                                          file with IP index for IPAM component
 #     net/a.b.c.0-routes                                   static routes for all hosts in the network
 #     resource                                             file
+#     schema                                               file
 #     system                                               file
 #     template/                                            directory containing global application templates
 #.....template/cluster/<environment>/                      directory containing template patches for an environment w/clustering (proposed)
@@ -252,6 +253,12 @@
 #                         ambiguous.
 #   ----description     a comment or description about this resource for reference
 #
+#   schema
+#   --description: the version of the configuration file schema in the repository
+#   --format: version\n
+#   --search: [FORMAT:schema]
+#   ----version         the version of the schema
+#
 #   system
 #   --description: servers
 #   --format: name,build,ip,location,environment,virtual,backing_image,overlay,build_date\n
@@ -446,6 +453,22 @@ function check_host_alive {
     return $Result
   else
     nc -z -w $Timeout $1 $Port &>/dev/null && return 0 || return 1
+  fi
+}
+
+# check and upgrade the schema as needed
+#
+function check_schema {
+  local Pass=0
+  if [[ -s ${CONF}/schema ]]; then
+    if [[ $( cat ${CONF}/schema ) == "$SchemaVersion" ]]; then
+      Pass=1
+    else
+      err "Migrations are not implemented"
+    fi
+  else
+    # file does not exist, so the repo is at <0.1
+    err "Migrations are not implemented"
   fi
 }
 
@@ -796,6 +819,7 @@ function initialize_configuration {
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
   printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "${SchemaVersion}\n" >schema
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -8796,6 +8820,9 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 # local path to store release archives
 RELEASEDIR=${SCS_RELEASES:=/bkup1/scs-release}; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
+# the version of the schema for this release
+SchemaVersion=0.1
+#
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
 #
@@ -8848,7 +8875,6 @@ trap cleanup_and_exit EXIT INT
 
 # initialize
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
-test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
@@ -8865,6 +8891,12 @@ if ! [ -d $CONF ]; then
   P=$( echo "$P" |tr 'A-Z' 'a-z' )
   test "$P" == "y" && initialize_configuration || exit 1
 fi
+
+# validate schema
+check_schema
+
+# output usage only if no arguments were provided
+test $# -ge 1 || usage
 
 # special case for detailed help without a space
 if [[ "${!#}" =~ \?$ ]]; then help $@; exit 0; fi
