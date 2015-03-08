@@ -1565,7 +1565,7 @@ Component:
     application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
-    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+    cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
     edit [<name>] [--environment <name>]
   help
   hypervisor
@@ -3635,23 +3635,25 @@ function environment_update {
 
 # output a (text) file contents to stdout
 #
-# cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+# cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/file] [--verbose]
 #
 function file_cat {
   # get file name to show
   generic_choose file "$1" C && shift
   # set defaults
-  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC
+  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC \
+        SystemVars=""
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
-    --vars|--system) PARSE="$2"; shift;;
     --silent) SILENT=1;;
+    --system) PARSE="$2"; shift;;
+    --system-vars) SystemVars="$2"; shift;;
     --verbose) VERBOSE=1;;
     *) usage;;
   esac; shift; done
   # validate system name
-  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
+  if [[ -n $PARSE ]]; then system_exists $PARSE || err "Unknown system"; fi
   # load file data
   # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
@@ -3670,9 +3672,12 @@ function file_cat {
     fi
   fi
   # optionally replace variables
-  if ! [ -z "$PARSE" ]; then
+  if [[ -z $SystemVars && -n $PARSE ]]; then
     # generate the system variables
     system_vars $PARSE >$TMP/systemvars.$$
+    SystemVars=$TMP/systemvars.$$
+  fi
+  if [[ -n $SystemVars && -f $SystemVars ]]; then
     # process template variables
     parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
     if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
@@ -3893,8 +3898,6 @@ function file_exists {
 function file_help { cat <<_EOF
 NAME
 	Files (templates or file system resources)
-
-SYNOPSIS
 	scs application file [--add|--remove|--list]
 	scs file [create|delete|list|show|update] [<name>]
 	scs file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
@@ -3948,7 +3951,7 @@ OPTIONS
 	application file --list
 		List files linked to an application.
 
-	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	file cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
 		Process and output the contents of a file.
 
 		If an environment is provided any patch for that environment will be applied.
@@ -6337,6 +6340,9 @@ function system_check {
     -v|--verbose) VERBOSE=1;;
   esac; shift; done
 
+  # ensure the temp directory exists
+  mkdir -p $TMP
+
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
@@ -6348,6 +6354,10 @@ function system_check {
       FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
+
+  # generate the variables for this system once
+  system_vars $NAME >$TMP/systemvars.$$
+
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
@@ -6365,9 +6375,9 @@ function system_check {
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
         if [ $VERBOSE -eq 1 ]; then
-          file_cat ${FILES[i]} --environment $EN --vars $NAME --verbose >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --verbose >$TMP/release/$FPTH
         else
-          file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ >$TMP/release/$FPTH
         fi
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
@@ -8059,6 +8069,10 @@ function system_release {
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
   fi
+
+  # generate the variables for this system one time
+  system_vars $NAME >$TMP/systemvars.$$
+
   # generate the release configuration files
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
@@ -8078,7 +8092,7 @@ function system_release {
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
+        file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
       elif [ "$FTYPE" == "directory" ]; then
         mkdir -p $TMP/release/$FPTH
       elif [ "$FTYPE" == "symlink" ]; then
