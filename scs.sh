@@ -3985,6 +3985,8 @@ function file_exists {
 function file_help { cat <<_EOF
 NAME
 	Files (templates or file system resources)
+
+SYNOPSIS
 	scs application file [--add|--remove|--list]
 	scs file [create|delete|list|show|update] [<name>]
 	scs file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
