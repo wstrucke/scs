@@ -459,17 +459,45 @@ function check_host_alive {
 # check and upgrade the schema as needed
 #
 function check_schema {
-  local Pass=0
-  if [[ -s ${CONF}/schema ]]; then
-    if [[ $( cat ${CONF}/schema ) == "$SchemaVersion" ]]; then
-      Pass=1
-    else
-      err "Migrations are not implemented"
-    fi
-  else
-    # file does not exist, so the repo is at <0.1
-    err "Migrations are not implemented"
+  local Pass=0 RL SkipPrompt=0 Version List n
+  if [[ $1 == "--no-prompt" ]]; then SkipPrompt=1; fi
+  if [[ -s ${CONF}/schema && "$( cat ${CONF}/schema )" == "$SchemaVersion" ]]; then return 0; fi
+
+  if [[ $SkipPrompt -ne 1 ]]; then
+    cat <<_EOF
+------------------------------------------------------------------------------------------
+Error: Your version of the configuration is out of date. It is strongly recommened that
+you pull and/or merge changes in from your upstream master repository before continuing.
+If you are sure you are completely up to date I can automatically update the
+configuration to the latest version, after which you should commit and push changes
+upstream for others.
+------------------------------------------------------------------------------------------
+
+_EOF
+    get_yn RL "Would you like to automatically update the repository (y/n)?"
+    if [[ $RL != "y" ]]; then exit 1; fi
   fi
+
+  # file does not exist, so the repo is at <0.1
+  if ! [[ -s ${CONF}/schema ]]; then echo "0" >${CONF}/schema; fi
+
+  # get available migrations
+  pushd $( dirname $( deref $0 ) ) >/dev/null 2>&1 || err "Error changing to script directory"
+#      List=( $( ls -1 migrate/ |perl -pe 's/\.sh$//' |sort -t. -k 1,1n -k 2,2n -k 3,3n -k 4,4n ) )
+#      for ((n=0;n<${#List[*]};n++)); do
+#        if [[ "${#List[*]}" -lt "$( cat ${CONF}/schema )" ]]; then continue; fi
+#        if ! [[ -s migrate/${List[n]}.sh ]]; then err "Error accessing migration script for ${#List[*]}"; fi
+#      done
+
+  Version="$( cat ${CONF}/schema )"
+  while [[ $Version < $SchemaVersion ]]; do
+    if ! [[ -s migrate/${Version}.sh ]]; then err "Error accessing migration script for $Version"; fi
+    echo "Upgrading configuration from version ${Version}..."
+    /bin/bash migrate/${Version}.sh ${CONF}
+    if [[ $? -ne 0 ]]; then err "Error executing migration for $Version"; fi
+    if [[ "$( cat ${CONF}/schema )" == "$Version" ]]; then err "Error in migration script for $Version"; fi
+    Version="$( cat ${CONF}/schema )"
+  done
 }
 
 # exit function called from trap
@@ -8892,12 +8920,6 @@ if ! [ -d $CONF ]; then
   test "$P" == "y" && initialize_configuration || exit 1
 fi
 
-# validate schema
-check_schema
-
-# output usage only if no arguments were provided
-test $# -ge 1 || usage
-
 # special case for detailed help without a space
 if [[ "${!#}" =~ \?$ ]]; then help $@; exit 0; fi
 
@@ -8918,6 +8940,12 @@ case "$SUBJ" in
   pdir) dirname $( deref $0 ); exit 0;;
   status) git_status --exit $@;;
 esac
+
+# validate schema
+check_schema
+
+# output usage only if no arguments were provided
+test $# -ge 1 || usage
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
