@@ -1637,8 +1637,8 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--register-key|
-             --release|--start-remote-build|--type|--uptime|--vars|--vm-add-disk|--vm-disks]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|--provision|--push-build-scripts|--register-key|
+             --release|--start-remote-build|--type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -6352,12 +6352,14 @@ function system_byname {
     --deploy)              system_deploy $1 ${@:3};;
     --deprovision)         system_deprovision $1 ${@:3};;
     --distribute)          system_distribute $1 ${@:3};;
+    --lock)                system_lock $1;;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
     --register-key)        system_register_key $1 ${@:3};;
     --release)             system_release $1;;
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
+    --unlock)              system_unlock $1;;
     --uptime)              system_uptime $1;;
     --vars)                system_vars $1;;
     --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
@@ -7156,9 +7158,9 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
-	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|
-	                    --uptime|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|
+                            --provision|--push-build-scripts|--register-key|--release|--start-remote-build|
+                            --type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
 	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
@@ -7250,6 +7252,9 @@ OPTIONS
 		--location   : If provided, all hypervisors at the specified location will be loaded into the copy
 		               copy TO list.
 
+	system <value> --lock
+		Lock a system to prevent changes.
+
 	system <value> --provision [--distribute] [--foreground] [--hypervisor <name>] [--network <loc-zone-alias>]
 		                   [--skip-distribute]
 		Provision (create/install) a configured virtual machine.  By default a hypervisor will be
@@ -7305,6 +7310,9 @@ OPTIONS
 	system <value> --type
 		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
 		'overlay'.
+
+	system <value> --unlock
+		Unlock a system to allow changes.
 
 	system <value> --uptime
 		Connect to the remote system and run 'uptime'. This is purely diagnostic.
@@ -7362,6 +7370,18 @@ COPYRIGHT
 SEE ALSO
 	$0 help
 _EOF
+}
+
+# lock a system to prevent changes
+#
+function system_lock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2y,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 locked"
+  commit_file system
 }
 
 # get the parent of a system
@@ -8498,6 +8518,18 @@ function system_type {
   if [ "$BASE_IMAGE" == "y" ]; then printf -- "backing\n"; return; fi
   if [ -z "$OVERLAY" ];        then printf -- "single\n"; return; fi
                                     printf -- "overlay\n"
+}
+
+# unlock a system to allow changes
+#
+function system_unlock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2n,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 unlocked"
+  commit_file system
 }
 
 function system_update {
