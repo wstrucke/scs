@@ -1,0 +1,3 @@
+# normal ignore stuff
+*\.sw[op]
+.DS_Store

@@ -323,7 +323,6 @@
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
 #     - correct host name when creating overlays
-#     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - renaming an application does not update all of the configuration files
@@ -2409,8 +2408,15 @@ function application_update {
   # [FORMAT:application]
   perl -i -pe "s/^$APP,.*/${NAME},${ALIAS},${BUILD},${CLUSTER}/" ${CONF}/application
   # handle rename
-  if [ "$NAME" != "$APP "]; then
+  if [[ "$NAME" != "$APP" ]]; then
      echo "Rename not implemented" >&2
+# <loc>/<env>
+# application
+# build
+# env/<env>/by-app/<name>
+# file-map
+# resource
+# value/by-app/<name>
   fi
   commit_file application
 }
