@@ -3766,12 +3766,12 @@ function file_cat {
   fi
   if [[ -n $SystemVars && -f $SystemVars ]]; then
     # process template variables
-    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
+    parse_template $TMP/$C $SystemVars $SILENT $VERBOSE
     if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
   fi
   # output the file and remove it
   cat $TMP/$C
-  rm -f $TMP/$C $TMP/systemvars.$$
+  rm -f $TMP/$C
 }
 function file_cat_help {
   echo "help tbd"
