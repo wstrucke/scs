@@ -7438,7 +7438,7 @@ _EOF
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-    nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
+    nohup $0 --config "${CONF}" system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     scslog "starting phase 2 in foreground process"
     echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \
@@ -8749,6 +8749,7 @@ else
     CONF=$SCS_CONF
   fi
 fi
+echo "using configuration at '$CONF' for application at '$0'" >>$SCS_Activity_Log
 
 # first run check
 if ! [ -d $CONF ]; then
