@@ -280,6 +280,13 @@
 #   --search: [FORMAT:value/by-app/constant]
 #   --storage:
 #
+#   <location>/<environment>
+#   --description: list of applications assigned to a location
+#   --format: name
+#   --search: [FORMAT:<location></env>]
+#   --storage:
+#   ----name            name of the application
+#
 #   <location>/network
 #   --description: network details for a specific location
 #   --format: zone,alias,network/cidr,build,default-build\n
@@ -323,10 +330,8 @@
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
 #     - correct host name when creating overlays
-#     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
-#     - renaming an application does not update all of the configuration files
 #     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
@@ -334,7 +339,6 @@
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - enhancements:
 #     - finish IPAM and IP allocation components
-#     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #     - add detailed help section for each function
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
@@ -359,7 +363,6 @@
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
 #     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
-#     - application show should list systems linked to the application and the environment for the systems
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
@@ -1566,7 +1569,7 @@ Component:
     application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
-    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+    cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
     edit [<name>] [--environment <name>]
   help
   hypervisor
@@ -2103,8 +2106,14 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the list without any summary information.
 
-	application show [<name>] [--brief]
-		show details for an application (--brief hides related data that is normally displayed)
+	application show [<name>] [--brief] [--files] [--systems]
+		show details for an application and related objects.
+
+		'--brief' will only output the application details and skip extraneous data.
+
+		'--files' will only output the linked configuration files.
+
+		'--systems' will only output the linked system objects.
 
 	application update [<name>]
 		update application settings or rename an application
@@ -2374,43 +2383,127 @@ function application_list_unformatted {
   awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort
 }
 
+# application_show
+#
+# output application details and linked objects
+#
+# optional:
+#   --brief      only show the application details
+#   --files      only show linked files
+#   --systems    only show linked systems
+#
 function application_show {
   application_exists "$1" || err "Provide the application name"
-  local APP ALIAS BUILD CLUSTER BRIEF=0
-  [ "$2" == "--brief" ] && BRIEF=1
+  local APP ALIAS BUILD CLUSTER FILES i SystemList \
+        ShowDetail=1 ShowFiles=1 ShowSystems=1
+
+  case "$2" in
+    --brief) ShowFiles=0; ShowSystems=0;;
+    --files) ShowDetail=0; ShowSystems=0;;
+    --systems) ShowDetail=0; ShowFiles=0;;
+  esac
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$1," ${CONF}/application )"
-  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
-  test $BRIEF -eq 1 && return
-  # retrieve file list
-  FILES=( $( application_file_list_unformatted $APP ) )
-  # output linked configuration file list
-  if [ ${#FILES[*]} -gt 0 ]; then
-    printf -- "\nManaged configuration files:\n"
-    for ((i=0;i<${#FILES[*]};i++)); do
-      # [FORMAT:file]
-      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-    done |sort |uniq |column -t |perl -pe 's/^/   /'
-  else
-    printf -- "\nNo managed configuration files."
+  if [[ $ShowDetail -eq 1 ]]; then
+    printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
   fi
-  printf -- '\n'
+
+  if [[ $ShowSystems -eq 1 ]]; then
+    # list systems by environment
+    if [[ $ShowDetail -eq 1 ]]; then printf -- '\nSystems:\n'; fi
+    SystemList=( $( system_list_unformatted --build $BUILD ) )
+    if [[ ${#SystemList[*]} -gt 0 ]]; then
+      for ((i=0;i<${#SystemList[*]};i++)); do
+        # [FORMAT:system]
+        grep -E "^${SystemList[i]}," ${CONF}/system |perl -pe 's/^([^,]*),([^,]*,){3}([^,]*),.*/\3 \1/'
+      done |sort -k1,2 |column -t |perl -pe 's/^/   /'
+    else
+      printf -- '  None\n'
+    fi
+  fi
+
+  if [[ $ShowFiles -eq 1 ]]; then
+    # retrieve file list
+    FILES=( $( application_file_list_unformatted $APP ) )
+    # output linked configuration file list
+    if [ ${#FILES[*]} -gt 0 ]; then
+      if [[ $ShowDetail -eq 1 ]]; then printf -- "\nManaged configuration files:\n"; fi
+      for ((i=0;i<${#FILES[*]};i++)); do
+        # [FORMAT:file]
+        grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+      done |sort |uniq |column -t |perl -pe 's/^/   /'
+    else
+      printf -- "\nNo managed configuration files."
+    fi
+  fi
 }
 
+# application_update
+#
+# alters the configuration for an existing application, including rename
+#
 function application_update {
+  local APP ALIAS BUILD CLUSTER NAME File Location
+
   start_modify
   generic_choose application "$1" APP && shift
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   get_yn CLUSTER "LVS Support (y/n)"
+
   # [FORMAT:application]
   perl -i -pe "s/^$APP,.*/${NAME},${ALIAS},${BUILD},${CLUSTER}/" ${CONF}/application
+
   # handle rename
-  if [ "$NAME" != "$APP "]; then
-     echo "Rename not implemented" >&2
+  if [[ "$NAME" != "$APP" ]]; then
+
+     # switch to the config directory to perform git operations
+     pushd ${CONF} >/dev/null 2>&1
+
+     if [[ -s environment ]]; then
+
+       # [FORMAT:environment]
+       for Environment in $( perl -pe 's/,.*//' environment ); do
+
+         # update environment as neeeded
+         if [[ -d $Environment && -f env/$Environment/by-app/$APP ]]; then
+           # [FORMAT:value/env/app]
+           git mv env/$Environment/by-app/$APP env/$Environment/by-app/$NAME
+         fi
+
+         if [[ -s location ]]; then
+           # [FORMAT:location]
+           for Location in $( perl -pe 's/,.*//' location ); do
+             if ! [[ -s $Location/$Environment ]]; then continue; fi
+             # update environment
+             # [FORMAT:<location></env>]
+             perl -i -pe "s/^$APP\$/$NAME/" $Location/$Environment
+           done
+         fi
+
+       done
+
+     fi
+
+     if [[ -s value/by-app/$APP ]]; then
+       # [FORMAT:value/by-app/constant]
+       git mv value/by-app/$APP value/by-app/$NAME
+     fi
+
+     # [FORMAT:file-map]
+     perl -i -pe "s/([^,]*,)$APP(,.*)/\1$NAME\2/" file-map
+
+     # [FORMAT:resource]
+     perl -i -pe "s/:$APP,/:$NAME,/" resource
+
+     # switch back
+     popd >/dev/null 2>&1
+
   fi
   commit_file application
 }
@@ -3629,23 +3722,25 @@ function environment_update {
 
 # output a (text) file contents to stdout
 #
-# cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+# cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/file] [--verbose]
 #
 function file_cat {
   # get file name to show
   generic_choose file "$1" C && shift
   # set defaults
-  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC
+  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC \
+        SystemVars=""
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
-    --vars|--system) PARSE="$2"; shift;;
     --silent) SILENT=1;;
+    --system) PARSE="$2"; shift;;
+    --system-vars) SystemVars="$2"; shift;;
     --verbose) VERBOSE=1;;
     *) usage;;
   esac; shift; done
   # validate system name
-  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
+  if [[ -n $PARSE ]]; then system_exists $PARSE || err "Unknown system"; fi
   # load file data
   # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
@@ -3664,9 +3759,12 @@ function file_cat {
     fi
   fi
   # optionally replace variables
-  if ! [ -z "$PARSE" ]; then
+  if [[ -z $SystemVars && -n $PARSE ]]; then
     # generate the system variables
     system_vars $PARSE >$TMP/systemvars.$$
+    SystemVars=$TMP/systemvars.$$
+  fi
+  if [[ -n $SystemVars && -f $SystemVars ]]; then
     # process template variables
     parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
     if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
@@ -3942,7 +4040,7 @@ OPTIONS
 	application file --list
 		List files linked to an application.
 
-	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	file cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
 		Process and output the contents of a file.
 
 		If an environment is provided any patch for that environment will be applied.
@@ -6331,6 +6429,9 @@ function system_check {
     -v|--verbose) VERBOSE=1;;
   esac; shift; done
 
+  # ensure the temp directory exists
+  mkdir -p $TMP
+
   # load the system
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
@@ -6342,6 +6443,10 @@ function system_check {
       FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
+
+  # generate the variables for this system once
+  system_vars $NAME >$TMP/systemvars.$$
+
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
@@ -6359,9 +6464,9 @@ function system_check {
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
         if [ $VERBOSE -eq 1 ]; then
-          file_cat ${FILES[i]} --environment $EN --vars $NAME --verbose >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --verbose >$TMP/release/$FPTH
         else
-          file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ >$TMP/release/$FPTH
         fi
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
@@ -7888,7 +7993,7 @@ function system_list_unformatted {
         NL=""
         Parent="$( build_parent $2 )"
         if [[ -n $Parent ]]; then
-          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
+          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print NL}' |tr ',' ' ' )"
         else
           BuildList="$2"
         fi
@@ -8053,6 +8158,10 @@ function system_release {
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
   fi
+
+  # generate the variables for this system one time
+  system_vars $NAME >$TMP/systemvars.$$
+
   # generate the release configuration files
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
@@ -8072,7 +8181,7 @@ function system_release {
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
+        file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
       elif [ "$FTYPE" == "directory" ]; then
         mkdir -p $TMP/release/$FPTH
       elif [ "$FTYPE" == "symlink" ]; then
