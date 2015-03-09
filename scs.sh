@@ -333,6 +333,8 @@
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
+#     - backups are not expired on systems during install
+#     - backups are created with complete directory trees for managed directories
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
