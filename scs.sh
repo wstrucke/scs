@@ -363,7 +363,6 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
-#     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
@@ -1493,6 +1492,10 @@ ENVIRONMENT
 
 	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
 
+	SCS_SHARED_REPO - set to 0 to disable "locking". this is useful when used on a management server
+		with a local repository that is accesssed by multiple concurrent users, to avoid contention.
+		The default value is 1 (enabled).
+
 	SCS_TEMP - directory to store temporary files. this normally includes the process id in the path.
 
 	SCS_TEMP_LARGE - directory to store LARGE temporary files, e.g. >1GB
@@ -1624,7 +1627,7 @@ function cancel_modify {
   # get change count
   L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "ERROR: These are not your outstanding changes!"; fi
   fi
@@ -1642,7 +1645,7 @@ function cancel_modify {
     done; fi
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
-    if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
     printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     if [[ $L -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
   fi
@@ -1842,13 +1845,17 @@ function git_status {
   RemoteRepo=$( git config -l |grep "branch.$Branch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
   RemoteBranch=$( git config -l |grep "branch.$Branch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
   if [ -z "$Branch" ]; then Branch=master; fi
-  if ! [ -f .scs_lock ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
-    if [ $N -gt 0 ]; then git status; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 ]]; then
+    if ! [ -f .scs_lock ]; then
+      printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
+      if [ $N -gt 0 ]; then git status; fi
+    else
+      printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
+      Status=1
+      if [ $N -gt 0 ]; then git status; fi
+    fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
-    Status=1
-    if [ $N -gt 0 ]; then git status; fi
+    printf -- 'Branch: %s\n' "$Branch"
   fi
   # check upstream
   if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
@@ -1871,11 +1878,11 @@ function start_modify {
   get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then err "Another change is in progress, aborting."; fi
     return 0
-  else
+  elif [[ $SCS_SharedLocalRepo -eq 1 ]]; then
     echo "$USERNAME" >.scs_lock
   fi
   printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
@@ -1904,7 +1911,7 @@ function stop_modify {
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     if [ "$USERNAME" != "$( cat .scs_lock )" ]; then err "The configuration is locked by $( cat .scs_lock )"; fi
   fi
   # handle submodules
@@ -1931,7 +1938,7 @@ function stop_modify {
     elif [[ $Push -eq 1 ]]; then
       git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
     fi
-    if [ -f .scs_lock ]; then
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
       rm -f .scs_lock
       printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     fi
@@ -1951,7 +1958,7 @@ function stop_modify {
   elif [[ $Push -eq 1 ]]; then
     git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
   fi
-  if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
   printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
   scslog "committed pending changes with message: $Message"
@@ -8812,6 +8819,9 @@ SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
 #
 # remote user on all systems for management access
 SCS_RemoteUser=${SCS_REMOTE_USER:=root}
+#
+# shared repository setting (enable or disable "locking")
+SCS_SharedLocalRepo=${SCS_SHARED_REPO:=1}
 #
 # application version
 SCS_Version="1.0.0"
