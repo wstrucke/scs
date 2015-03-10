@@ -796,7 +796,7 @@ function initialize_configuration {
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
-  printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "*\\.sw[op]\n\\.DS_Store\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
