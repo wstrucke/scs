@@ -8093,7 +8093,8 @@ function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
-        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch
+        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch \
+        DeleteFiles
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
@@ -8105,6 +8106,7 @@ function system_release {
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
+  DeleteFiles=()
 
   pushd $CONF >/dev/null 2>&1
   Branch=$( git branch |grep ^* |cut -d' ' -f2 )
@@ -8166,6 +8168,8 @@ function system_release {
     printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>${RELEASESCRIPT}.tail
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
+    # backup
+    AllFiles[${#AllFiles[@]}]='/etc/sysconfig/static-routes'
   fi
 
   # generate the variables for this system one time
@@ -8177,8 +8181,10 @@ function system_release {
       # get the file path based on the unique name
       # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
-      # add to allfiles array
-      AllFiles[${#AllFiles[@]}]="$FPTH"
+      if [[ "$FTYPE" != "directory" && "$FTYPE" != "delete" ]]; then
+        # add to allfiles array
+        AllFiles[${#AllFiles[@]}]="$FPTH"
+      fi
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |perl -pe 's%^/%%' )
       # alternate octal representation
@@ -8215,6 +8221,8 @@ function system_release {
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
         # add audit check
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
+        # add to backup
+        DeleteFiles[${#DeleteFiles[@]}]="$FPTH"
       fi
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
@@ -8250,9 +8258,12 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\ntar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
-    [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
-    printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
+    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\nFileName=\"\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tar\"\n" >>$RELEASESCRIPT
+    printf -- "tar -cf /var/backups/\$FileName %s 2>/dev/null\n" "${AllFiles[*]}" >>$RELEASESCRIPT
+    for ((i=0;i<${#DeleteFiles[@]};i++)); do
+      printf -- "if [[ -d \"${DeleteFiles[i]}\" ]]; then tar -rf /var/backups/\$FileName %s 2>/dev/null; fi\n" "${DeleteFiles[i]}" >>$RELEASESCRIPT
+    done
+    printf -- "gzip /var/backups/\$FileName 2>/dev/null\n\n" >>$RELEASESCRIPT
 
     # do not deploy stat/audit scripts
     printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
