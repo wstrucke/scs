@@ -333,8 +333,6 @@
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
 #     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
-#     - backups are not expired on systems during install
-#     - backups are created with complete directory trees for managed directories
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
 #     - populate reserved IP addresses
@@ -1489,6 +1487,9 @@ ENVIRONMENT
 	SCS_IDENTITY - path to the private key used to access remote systems over ssh
 
 	SCS_RELEASES - path to store generated releases
+
+	SCS_REMOTE_BACKUPS - number of backups to retain on remote systems when deploying configuration.
+		a value of 0 will keep all backups, a value of 1 will only keep the current backup, etc...
 
 	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
 
@@ -8832,7 +8833,7 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
 # number of backups to keep on each remote system when deploying config (a value of 0 will keep all)
-SCS_NumRemoteBackups=10
+SCS_NumRemoteBackups=${SCS_REMOTE_BACKUPS:=10}
 #
 # default private key for systems management (ssh/scp)
 SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
