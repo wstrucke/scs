@@ -8265,6 +8265,12 @@ function system_release {
     done
     printf -- "gzip /var/backups/\$FileName 2>/dev/null\n\n" >>$RELEASESCRIPT
 
+    # cleanup old backups
+    if [[ $SCS_NumRemoteBackups -gt 0 ]]; then
+      printf -- "cd /var/backups || exit 1\nCount=\$( ls -1 \$( hostname )-scs-backup-* | wc -l )\n" >>$RELEASESCRIPT
+      printf -- "if [[ \$Count -gt ${SCS_NumRemoteBackups} ]]; then\n  ls -1 \$( hostname )-scs-backup-* | head -n\$( expr \$Count - $SCS_NumRemoteBackups) | xargs rm -f {}\nfi\n\n" >>$RELEASESCRIPT
+    fi
+
     # do not deploy stat/audit scripts
     printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
 
@@ -8824,6 +8830,9 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 #
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
+#
+# number of backups to keep on each remote system when deploying config (a value of 0 will keep all)
+SCS_NumRemoteBackups=10
 #
 # default private key for systems management (ssh/scp)
 SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
