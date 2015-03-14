@@ -46,6 +46,7 @@
 #     net/a.b.c.0                                          file with IP index for IPAM component
 #     net/a.b.c.0-routes                                   static routes for all hosts in the network
 #     resource                                             file
+#     schema                                               file
 #     system                                               file
 #     template/                                            directory containing global application templates
 #.....template/cluster/<environment>/                      directory containing template patches for an environment w/clustering (proposed)
@@ -252,9 +253,15 @@
 #                         ambiguous.
 #   ----description     a comment or description about this resource for reference
 #
+#   schema
+#   --description: the version of the configuration file schema in the repository
+#   --format: version\n
+#   --search: [FORMAT:schema]
+#   ----version         the version of the schema
+#
 #   system
 #   --description: servers
-#   --format: name,build,ip,location,environment,virtual,backing_image,overlay,build_date\n
+#   --format: name,build,ip,location,environment,virtual,backing_image,overlay,locked,build_date\n
 #   --search: [FORMAT:system]
 #   --storage:
 #   ----name            the hostname
@@ -266,6 +273,7 @@
 #   ----backing_image   'y' or 'n', yes if this is a VM and is unregistered, always SHUT OFF, and read-only as a backing image for overlays
 #   ----overlay         'null', 'auto', or '<name>'. null=>full system (a.k.a. single), auto=>auto-select base system/image during
 #                         provisioning, or the name of the base system
+#   ----locked          'y' or 'n', yes if this system is LOCKED an changes should be restricted (especially provision/deprovision)
 #   ----build_date      unix timestamp of the last time this system was built (by scs of course)
 #
 #   value/constant
@@ -352,7 +360,6 @@
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
-#     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
 #     - colorize system list output (different color per build)?
 #     - deprecate external kvm-install script and remove dependencies on external servers
@@ -446,6 +453,53 @@ function check_host_alive {
   else
     nc -z -w $Timeout $1 $Port &>/dev/null && return 0 || return 1
   fi
+}
+
+# check and upgrade the schema as needed
+#
+function check_schema {
+  local Pass=0 RL SkipPrompt=0 Version List n
+  if [[ $1 == "--no-prompt" ]]; then SkipPrompt=1; fi
+  if [[ -s ${CONF}/schema && "$( cat ${CONF}/schema )" == "$SchemaVersion" ]]; then return 0; fi
+
+  # file does not exist, so the repo is at <0.1
+  if ! [[ -s ${CONF}/schema ]]; then echo "0" >${CONF}/schema; fi
+
+  Version="$( cat ${CONF}/schema )"
+
+  if [[ $Version > $SchemaVersion ]]; then
+    err "Error: The configuration repository schema is newer than what is supported by this application."
+  fi
+
+  if [[ $SkipPrompt -ne 1 ]]; then
+    cat <<_EOF
+------------------------------------------------------------------------------------------
+Error: Your version of the configuration is out of date. It is strongly recommened that
+you pull and/or merge changes in from your upstream master repository before continuing.
+If you are sure you are completely up to date I can automatically update the
+configuration to the latest version, after which you should commit and push changes
+upstream for others.
+------------------------------------------------------------------------------------------
+
+_EOF
+    get_yn RL "Would you like to automatically update the repository (y/n)?"
+    if [[ $RL != "y" ]]; then exit 1; fi
+  fi
+
+  # get available migrations
+  pushd $( dirname $( deref $0 ) ) >/dev/null 2>&1 || err "Error changing to script directory"
+
+  while [[ $Version < $SchemaVersion ]]; do
+    if ! [[ -s migrate/${Version}.sh ]]; then err "Error accessing migration script for $Version"; fi
+    echo "Upgrading configuration from version ${Version}..."
+    /bin/bash migrate/${Version}.sh ${CONF}
+    if [[ $? -ne 0 ]]; then err "Error executing migration for $Version"; fi
+    if [[ "$( cat ${CONF}/schema )" == "$Version" ]]; then err "Error in migration script for $Version"; fi
+    Version="$( cat ${CONF}/schema )"
+  done
+
+  printf -- '\nSchema successfully upgraded to version %s. Please commit and push changes to your upstream repository.\n' $SchemaVersion
+  exit 0
 }
 
 # exit function called from trap
@@ -795,6 +849,7 @@ function initialize_configuration {
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
   printf -- "*\\.sw[op]\n\\.DS_Store\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "${SchemaVersion}\n" >schema
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -1592,8 +1647,8 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--register-key|
-             --release|--start-remote-build|--type|--uptime|--vars|--vm-add-disk|--vm-disks]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|--provision|--push-build-scripts|--register-key|
+             --release|--start-remote-build|--type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -5863,11 +5918,11 @@ function hypervisor_locate_system {
   # variable scope
   local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
         VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate \
-        Cache
+        Cache SystemLock
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
   test "$VIRTUAL" == "n" && err "Not a virtual machine"
 
   # process args
@@ -6312,12 +6367,14 @@ function system_byname {
     --deploy)              system_deploy $1 ${@:3};;
     --deprovision)         system_deprovision $1 ${@:3};;
     --distribute)          system_distribute $1 ${@:3};;
+    --lock)                system_lock $1;;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
     --register-key)        system_register_key $1 ${@:3};;
     --release)             system_release $1;;
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
+    --unlock)              system_unlock $1;;
     --uptime)              system_uptime $1;;
     --vars)                system_vars $1;;
     --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
@@ -6335,7 +6392,8 @@ function system_byname {
 #
 function system_audit {
   system_exists "$1" || err "Unknown or missing system name"
-  local VALID=0 SkipCheck SkipPrompt=0 System="$1"; shift
+  local VALID=0 FILE F SkipCheck SkipPrompt=0 System="$1"; shift
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -6345,7 +6403,7 @@ function system_audit {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # test connectivity
   check_host_alive $System || err "System $System is not accessible at this time"
 
@@ -6434,7 +6492,9 @@ function system_audit {
 #
 function system_check {
   system_exists "$1" || err "Unknown or missing system name"
-  local System=$1 VALID=0 VERBOSE=0; shift
+  local FILES System=$1 VALID=0 VERBOSE=0; shift
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate \
+        FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC
 
   while [ $# -gt 0 ]; do case "$1" in
     -v|--verbose) VERBOSE=1;;
@@ -6445,7 +6505,7 @@ function system_check {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -6498,11 +6558,11 @@ function system_check {
 # output a list of constants and values assigned to a system
 #
 function system_constant_list {
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate C APP
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate C APP
   generic_choose system "$1" C && shift
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   # 1. applications @ environment
   for APP in $( build_application_list "$BUILD" ); do
@@ -6537,7 +6597,7 @@ function system_convert {
         Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
         VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0 Count HV_FINAL_INT \
         HV_BUILD_INT SystemBuildDate BUILDNET OS ARCH DISK RAM PARENT RDISK RRAM RP \
-        UUID MAC; shift
+        UUID MAC SystemLock; shift
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -6557,7 +6617,10 @@ function system_convert {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   # get current type
   curType=$( system_type $NAME )
@@ -6744,10 +6807,10 @@ function system_convert {
 
       # update system configuration
       # [FORMAT:system]
-      IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+      IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
       # save changes
       # [FORMAT:system]
-      perl -i -pe "s/^$C,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},n,${OVERLAY},${SystemBuildDate}/" ${CONF}/system
+      perl -i -pe "s/^$C,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},n,${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
       commit_file system
 
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
@@ -6817,7 +6880,7 @@ function system_create {
   if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
   # [FORMAT:system]
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>$CONF/system
   commit_file system
 }
 function system_create_help {
@@ -6826,9 +6889,15 @@ function system_create_help {
 
 function system_delete {
   system_exists "$1" || err "Unknown or missing system name"
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate
+
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
+
   # verify this is not a backing image for other servers
   # [FORMAT:system]
   grep -qE ",$1,.*\$" ${CONF}/system
@@ -6836,7 +6905,9 @@ function system_delete {
     printf -- "%s\n" "Warning - this system is the backing image for one or more other virtual machines"
     get_yn R "Are you SURE you want to delete it (y/n)?" || exit
   fi
+
   generic_delete system $1 || return
+
   # free IP address assignment
   network_ip_unassign $IP >/dev/null 2>&1
 }
@@ -6886,15 +6957,23 @@ _EOF
 function system_deprovision {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
+
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH F LIST DRY_RUN=0 \
-        HVFIRST SystemBuildDate
+        HVFIRST SystemBuildDate SystemLock
+
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+
   # check for dry-run flag
   if [ "$1" == "--dry-run" ]; then DRY_RUN=1; fi
   if [ "$1" == "--yes-i-am-sure" ]; then SURE=1; else SURE=0; fi
+
+  # check lock
+  if [[ "$SystemLock" != "n" && $DRY_RUN -eq 0 ]]; then err "System locked; please unlock to make changes"; fi
+
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
+
   # confirm
   if [ $SURE -ne 1 ]; then
     if [ $DRY_RUN -ne 1 ]; then
@@ -6909,6 +6988,7 @@ function system_deprovision {
       get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
     fi
   fi
+
   # locate
   HV=$( hypervisor_locate_system $NAME )
   test -z "$HV" && err "Unable to locate hypervisor for this system"
@@ -6944,6 +7024,7 @@ function system_deprovision {
     HV=$( hypervisor_locate_system $NAME )
     if [[ $DRY_RUN -eq 1 && "$HV" == "$HVFIRST" ]]; then HV=""; fi
   done
+
   printf -- '\n%s has been removed\n' "$NAME"
   scslog "$NAME has been deprovisioned"
   return 0
@@ -6961,10 +7042,13 @@ function system_distribute {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate \
         Network HVList HV HVIP Hypervisor HypervisorIP VMPath HVPath \
-        File FileList DryRun=0 Location LocalTransfer=1
+        File FileList DryRun=0 Location LocalTransfer=1 SystemLock
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   while [ $# -gt 0 ]; do case $1 in
     --dry-run) DryRun=1;;
@@ -7089,9 +7173,9 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
-	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|
-	                    --uptime|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|
+                            --provision|--push-build-scripts|--register-key|--release|--start-remote-build|
+                            --type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
 	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
@@ -7183,6 +7267,9 @@ OPTIONS
 		--location   : If provided, all hypervisors at the specified location will be loaded into the copy
 		               copy TO list.
 
+	system <value> --lock
+		Lock a system to prevent changes.
+
 	system <value> --provision [--distribute] [--foreground] [--hypervisor <name>] [--network <loc-zone-alias>]
 		                   [--skip-distribute]
 		Provision (create/install) a configured virtual machine.  By default a hypervisor will be
@@ -7238,6 +7325,9 @@ OPTIONS
 	system <value> --type
 		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
 		'overlay'.
+
+	system <value> --unlock
+		Unlock a system to allow changes.
 
 	system <value> --uptime
 		Connect to the remote system and run 'uptime'. This is purely diagnostic.
@@ -7297,12 +7387,24 @@ SEE ALSO
 _EOF
 }
 
+# lock a system to prevent changes
+#
+function system_lock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2y,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 locked"
+  commit_file system
+}
+
 # get the parent of a system
 #
 function system_parent {
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   printf -- "$OVERLAY\n"
   test -z "$OVERLAY" && return 1 || return 0
 }
@@ -7319,7 +7421,7 @@ function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME NETMASK \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
         BuildParent BUILDNET VMPath Foreground=0 Hypervisor OS ARCH DISK RAM PARENT \
-        HV_FINAL_INT HV_BUILD_INT
+        HV_FINAL_INT HV_BUILD_INT SystemLock
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -7339,7 +7441,10 @@ function system_provision {
   esac; shift; done
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
@@ -7407,7 +7512,7 @@ function system_provision {
     if [ "$OVERLAY" == "auto" ]; then system_resolve_autooverlay $NAME; fi
 
     # [FORMAT:system]
-    IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+    IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
     # must set these values since they are passed to phase2 (not used for overlays so the value can be anything without a space)
     REPO_ADDR="-"; REPO_PATH="-"
@@ -7569,10 +7674,10 @@ _EOF
 
   # update last build date
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
   # [FORMAT:system]
-  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},$( date +'%s' )/" ${CONF}/system
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},$( date +'%s' )/" ${CONF}/system
 
   commit_file system
   return 0
@@ -7599,14 +7704,15 @@ _EOF
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
         REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
-        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS List File
+        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS List File \
+        SystemLock
 
   # load arguments passed in from phase1
   echo "Args: $@" >&2
   read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST ARCH DISK OS RAM MAC UUID <<< "$@"
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   system_exists $NAME
   if [ $? -ne 0 ]; then errlog "error staring build phase 2 - system '$NAME' does not exist - check $HV"; exit 1; fi
 
@@ -7913,14 +8019,17 @@ _EOF
 
 function system_resolve_autooverlay {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate BuildParent \
-        BuildGrandParent BackingList ParentName
+        BuildGrandParent BackingList ParentName SystemLock
 
   system_exists $1 || err
 
   start_modify
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   # auto-select backing image
   BackingList="$( system_list_unformatted --backing --build $BUILD --sort-by-build-date --exclude-parent $NAME --location $LOC --environment $EN |tr '\n' ' ' )"
@@ -7947,7 +8056,7 @@ function system_resolve_autooverlay {
 
   # save changes
   # [FORMAT:system]
-  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemBuildDate}/" ${CONF}/system
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemLock},${SystemBuildDate}/" ${CONF}/system
 
   commit_file system
 }
@@ -8079,7 +8188,7 @@ function system_list_unformatted {
     else
       # [FORMAT:system]
       for N in $LIST; do
-        grep -E "^$N," ${CONF}/system |awk 'BEGIN{FS=","}{print $1,$9}'
+        grep -E "^$N," ${CONF}/system |awk 'BEGIN{FS=","}{print $1,$10}'
       done |sort -rnk2 |awk '{print $1}'
     fi
 
@@ -8096,9 +8205,9 @@ function system_release {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
         AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch \
-        DeleteFiles
+        SystemLock DeleteFiles
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP/release $RELEASEDIR
   MyDate="$( date +'%Y%m%d-%H%M%S' )"
@@ -8319,9 +8428,9 @@ function system_release {
 function system_resource_list {
   generic_choose system "$1" C && shift
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   for APP in $( build_application_list "$BUILD" ); do
     # get any localized resources for the application
     # [FORMAT:resource]
@@ -8334,16 +8443,17 @@ function system_resource_list {
 
 function system_show {
   system_exists "$1" || err "Unknown or missing system name"
-  local FILES=() NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY BRIEF=0 SystemBuildDate
+  local FILES=() NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY BRIEF=0 SystemBuildDate \
+        SystemLock
   [ "$2" == "--brief" ] && BRIEF=1
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # if overlay is null then there is no overlay
   test -z "$OVERLAY" && OVERLAY="N/A"
   # output the status/summary
-  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLast Build: %s\n" \
-    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
+  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLocked: %s\nLast Build: %s\n" \
+    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$SystemLock" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
   test $BRIEF -eq 1 && return
   # show other systems using this as a base image
   if [[ "$BASE_IMAGE" == "y" ]]; then
@@ -8429,11 +8539,11 @@ function system_type {
   system_exists "$1" || err "Unknown or missing system name"
 
   # scope variables
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
 
   if [ "$VIRTUAL" == "n" ];    then printf -- "physical\n"; return; fi
   if [ "$BASE_IMAGE" == "y" ]; then printf -- "backing\n"; return; fi
@@ -8441,13 +8551,31 @@ function system_type {
                                     printf -- "overlay\n"
 }
 
+# unlock a system to allow changes
+#
+function system_unlock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2n,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 unlocked"
+  commit_file system
+}
+
 function system_update {
-  local C NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate IP NETNAME ORIGNAME
+  local C NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate \
+        IP NETNAME ORIGNAME SystemLock
   start_modify
   generic_choose system "$1" C && shift
+
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   ORIGNAME="$NAME"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
+
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
@@ -8517,7 +8645,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemBuildDate}/" ${CONF}/system
+  perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -8596,9 +8724,9 @@ function system_vars {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ZONE ALIAS \
         NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH \
-        REPO_URL BUILD DEFAULT_BUILD NTP SystemBuildDate
+        REPO_URL BUILD DEFAULT_BUILD NTP SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
   # output network data, if available
@@ -8824,6 +8952,9 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 # local path to store release archives
 RELEASEDIR=${SCS_RELEASES:=/bkup1/scs-release}; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
+# the version of the schema for this release
+SchemaVersion=0.1
+#
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
 #
@@ -8882,7 +9013,6 @@ trap cleanup_and_exit EXIT INT
 
 # initialize
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
-test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
@@ -8921,6 +9051,12 @@ case "$SUBJ" in
   pdir) dirname $( deref $0 ); exit 0;;
   status) git_status --exit $@;;
 esac
+
+# validate schema
+check_schema
+
+# output usage only if no arguments were provided
+test $# -ge 1 || usage
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
