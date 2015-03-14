@@ -462,6 +462,15 @@ function check_schema {
   if [[ $1 == "--no-prompt" ]]; then SkipPrompt=1; fi
   if [[ -s ${CONF}/schema && "$( cat ${CONF}/schema )" == "$SchemaVersion" ]]; then return 0; fi
 
+  # file does not exist, so the repo is at <0.1
+  if ! [[ -s ${CONF}/schema ]]; then echo "0" >${CONF}/schema; fi
+
+  Version="$( cat ${CONF}/schema )"
+
+  if [[ $Version > $SchemaVersion ]]; then
+    err "Error: The configuration repository schema is newer than what is supported by this application."
+  fi
+
   if [[ $SkipPrompt -ne 1 ]]; then
     cat <<_EOF
 ------------------------------------------------------------------------------------------
@@ -477,13 +486,9 @@ _EOF
     if [[ $RL != "y" ]]; then exit 1; fi
   fi
 
-  # file does not exist, so the repo is at <0.1
-  if ! [[ -s ${CONF}/schema ]]; then echo "0" >${CONF}/schema; fi
-
   # get available migrations
   pushd $( dirname $( deref $0 ) ) >/dev/null 2>&1 || err "Error changing to script directory"
 
-  Version="$( cat ${CONF}/schema )"
   while [[ $Version < $SchemaVersion ]]; do
     if ! [[ -s migrate/${Version}.sh ]]; then err "Error accessing migration script for $Version"; fi
     echo "Upgrading configuration from version ${Version}..."
