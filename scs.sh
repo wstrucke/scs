@@ -1879,11 +1879,12 @@ function start_modify {
   get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
-  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
+  if [[ $SCS_SharedLocalRepo -eq 0 ]]; then return 0; fi
+  if [[ -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then err "Another change is in progress, aborting."; fi
     return 0
-  elif [[ $SCS_SharedLocalRepo -eq 1 ]]; then
+  else
     echo "$USERNAME" >.scs_lock
   fi
   printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $USERNAME [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
