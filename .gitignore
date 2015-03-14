@@ -1,3 +1,5 @@
-# normal ignore stuff
 *\.sw[op]
-.DS_Store
+\.DS_Store
+scs_activity\.log
+scs_bg\.log
+scs_error\.log

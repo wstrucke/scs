@@ -368,7 +368,6 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
-#     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
@@ -844,7 +843,7 @@ function initialize_configuration {
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
-  printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "*\\.sw[op]\n\\.DS_Store\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
   printf -- "${SchemaVersion}\n" >schema
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
@@ -1539,7 +1538,14 @@ ENVIRONMENT
 
 	SCS_RELEASES - path to store generated releases
 
+	SCS_REMOTE_BACKUPS - number of backups to retain on remote systems when deploying configuration.
+		a value of 0 will keep all backups, a value of 1 will only keep the current backup, etc...
+
 	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
+
+	SCS_SHARED_REPO - set to 0 to disable "locking". this is useful when used on a management server
+		with a local repository that is accesssed by multiple concurrent users, to avoid contention.
+		The default value is 1 (enabled).
 
 	SCS_TEMP - directory to store temporary files. this normally includes the process id in the path.
 
@@ -1672,7 +1678,7 @@ function cancel_modify {
   # get change count
   L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "ERROR: These are not your outstanding changes!"; fi
   fi
@@ -1690,7 +1696,7 @@ function cancel_modify {
     done; fi
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
-    if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
     printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     if [[ $L -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
   fi
@@ -1890,13 +1896,17 @@ function git_status {
   RemoteRepo=$( git config -l |grep "branch.$Branch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
   RemoteBranch=$( git config -l |grep "branch.$Branch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
   if [ -z "$Branch" ]; then Branch=master; fi
-  if ! [ -f .scs_lock ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
-    if [ $N -gt 0 ]; then git status; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 ]]; then
+    if ! [ -f .scs_lock ]; then
+      printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
+      if [ $N -gt 0 ]; then git status; fi
+    else
+      printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
+      Status=1
+      if [ $N -gt 0 ]; then git status; fi
+    fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
-    Status=1
-    if [ $N -gt 0 ]; then git status; fi
+    printf -- 'Branch: %s\n' "$Branch"
   fi
   # check upstream
   if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
@@ -1919,7 +1929,8 @@ function start_modify {
   get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 0 ]]; then return 0; fi
+  if [[ -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then err "Another change is in progress, aborting."; fi
     return 0
@@ -1952,7 +1963,7 @@ function stop_modify {
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     if [ "$USERNAME" != "$( cat .scs_lock )" ]; then err "The configuration is locked by $( cat .scs_lock )"; fi
   fi
   # handle submodules
@@ -1979,7 +1990,7 @@ function stop_modify {
     elif [[ $Push -eq 1 ]]; then
       git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
     fi
-    if [ -f .scs_lock ]; then
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
       rm -f .scs_lock
       printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     fi
@@ -1999,7 +2010,7 @@ function stop_modify {
   elif [[ $Push -eq 1 ]]; then
     git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
   fi
-  if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
   printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
   scslog "committed pending changes with message: $Message"
@@ -3816,12 +3827,12 @@ function file_cat {
   fi
   if [[ -n $SystemVars && -f $SystemVars ]]; then
     # process template variables
-    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
+    parse_template $TMP/$C $SystemVars $SILENT $VERBOSE
     if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
   fi
   # output the file and remove it
   cat $TMP/$C
-  rm -f $TMP/$C $TMP/systemvars.$$
+  rm -f $TMP/$C
 }
 function file_cat_help {
   echo "help tbd"
@@ -7643,7 +7654,7 @@ _EOF
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-    nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
+    nohup $0 --config "${CONF}" system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     scslog "starting phase 2 in foreground process"
     echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \
@@ -8189,7 +8200,7 @@ function system_release {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
         AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch \
-        SystemLock
+        SystemLock DeleteFiles
   # [FORMAT:system]
   IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
@@ -8201,6 +8212,7 @@ function system_release {
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
+  DeleteFiles=()
 
   pushd $CONF >/dev/null 2>&1
   Branch=$( git branch |grep ^* |cut -d' ' -f2 )
@@ -8262,6 +8274,8 @@ function system_release {
     printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>${RELEASESCRIPT}.tail
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
+    # backup
+    AllFiles[${#AllFiles[@]}]='/etc/sysconfig/static-routes'
   fi
 
   # generate the variables for this system one time
@@ -8273,8 +8287,10 @@ function system_release {
       # get the file path based on the unique name
       # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
-      # add to allfiles array
-      AllFiles[${#AllFiles[@]}]="$FPTH"
+      if [[ "$FTYPE" != "directory" && "$FTYPE" != "delete" ]]; then
+        # add to allfiles array
+        AllFiles[${#AllFiles[@]}]="$FPTH"
+      fi
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |perl -pe 's%^/%%' )
       # alternate octal representation
@@ -8311,6 +8327,8 @@ function system_release {
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
         # add audit check
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
+        # add to backup
+        DeleteFiles[${#DeleteFiles[@]}]="$FPTH"
       fi
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
@@ -8346,9 +8364,18 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\ntar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
-    [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
-    printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
+    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\nFileName=\"\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tar\"\n" >>$RELEASESCRIPT
+    printf -- "tar -cf /var/backups/\$FileName %s 2>/dev/null\n" "${AllFiles[*]}" >>$RELEASESCRIPT
+    for ((i=0;i<${#DeleteFiles[@]};i++)); do
+      printf -- "if [[ -d \"${DeleteFiles[i]}\" ]]; then tar -rf /var/backups/\$FileName %s 2>/dev/null; fi\n" "${DeleteFiles[i]}" >>$RELEASESCRIPT
+    done
+    printf -- "gzip /var/backups/\$FileName 2>/dev/null\n\n" >>$RELEASESCRIPT
+
+    # cleanup old backups
+    if [[ $SCS_NumRemoteBackups -gt 0 ]]; then
+      printf -- "cd /var/backups || exit 1\nCount=\$( ls -1 \$( hostname )-scs-backup-* | wc -l )\n" >>$RELEASESCRIPT
+      printf -- "if [[ \$Count -gt ${SCS_NumRemoteBackups} ]]; then\n  ls -1 \$( hostname )-scs-backup-* | head -n\$( expr \$Count - $SCS_NumRemoteBackups) | xargs rm -f {}\nfi\n\n" >>$RELEASESCRIPT
+    fi
 
     # do not deploy stat/audit scripts
     printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
@@ -8932,11 +8959,17 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
+# number of backups to keep on each remote system when deploying config (a value of 0 will keep all)
+SCS_NumRemoteBackups=${SCS_REMOTE_BACKUPS:=10}
+#
 # default private key for systems management (ssh/scp)
 SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
 #
 # remote user on all systems for management access
 SCS_RemoteUser=${SCS_REMOTE_USER:=root}
+#
+# shared repository setting (enable or disable "locking")
+SCS_SharedLocalRepo=${SCS_SHARED_REPO:=1}
 #
 # application version
 SCS_Version="1.0.0"
@@ -8984,6 +9017,7 @@ else
     CONF=$SCS_CONF
   fi
 fi
+echo "using configuration at '$CONF' for application at '$0'" >>$SCS_Activity_Log
 
 # first run check
 if ! [ -d $CONF ]; then
