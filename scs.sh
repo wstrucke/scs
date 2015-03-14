@@ -46,6 +46,7 @@
 #     net/a.b.c.0                                          file with IP index for IPAM component
 #     net/a.b.c.0-routes                                   static routes for all hosts in the network
 #     resource                                             file
+#     schema                                               file
 #     system                                               file
 #     template/                                            directory containing global application templates
 #.....template/cluster/<environment>/                      directory containing template patches for an environment w/clustering (proposed)
@@ -252,9 +253,15 @@
 #                         ambiguous.
 #   ----description     a comment or description about this resource for reference
 #
+#   schema
+#   --description: the version of the configuration file schema in the repository
+#   --format: version\n
+#   --search: [FORMAT:schema]
+#   ----version         the version of the schema
+#
 #   system
 #   --description: servers
-#   --format: name,build,ip,location,environment,virtual,backing_image,overlay,build_date\n
+#   --format: name,build,ip,location,environment,virtual,backing_image,overlay,locked,build_date\n
 #   --search: [FORMAT:system]
 #   --storage:
 #   ----name            the hostname
@@ -266,6 +273,7 @@
 #   ----backing_image   'y' or 'n', yes if this is a VM and is unregistered, always SHUT OFF, and read-only as a backing image for overlays
 #   ----overlay         'null', 'auto', or '<name>'. null=>full system (a.k.a. single), auto=>auto-select base system/image during
 #                         provisioning, or the name of the base system
+#   ----locked          'y' or 'n', yes if this system is LOCKED an changes should be restricted (especially provision/deprovision)
 #   ----build_date      unix timestamp of the last time this system was built (by scs of course)
 #
 #   value/constant
@@ -279,6 +287,13 @@
 #   --format: constant,value\n
 #   --search: [FORMAT:value/by-app/constant]
 #   --storage:
+#
+#   <location>/<environment>
+#   --description: list of applications assigned to a location
+#   --format: name
+#   --search: [FORMAT:<location></env>]
+#   --storage:
+#   ----name            name of the application
 #
 #   <location>/network
 #   --description: network details for a specific location
@@ -323,10 +338,8 @@
 #     - system_provision_phase2 has remote while loops that will not exit on their own when abort is enabled
 #     - need to be able to remove a partially built backing system
 #     - correct host name when creating overlays
-#     - there is no way to set or clear a global constant value
 #     - there is no way to manage environment inclusions/exclusions for application::file mapping
 #     - 'build lineage --reverse' only outputs the build name.  Is that intentional?
-#     - renaming an application does not update all of the configuration files
 #     - system deprovision needs to handle snapshots (they prevent the system from being undefined)
 #   - clean up:
 #     - simplify IP management functions by reducing code duplication
@@ -334,7 +347,6 @@
 #     - rename operations should update map files (hv stuff specifically for net/env/loc)
 #   - enhancements:
 #     - finish IPAM and IP allocation components
-#     - system_audit and system_deploy both delete the generated release. reconsider keeping it.
 #     - add detailed help section for each function
 #     - reduce the number of places files are read directly. eventually use an actual DB.
 #     - ADD: build [<environment>] [--name <build_name>] [--assign-resource|--unassign-resource|--list-resource]
@@ -348,7 +360,6 @@
 #     - file 'patch' for cluster y/n (in addition to environment patch)
 #     - file enabled y/n for cluster
 #     - pre/post-flight scripts or commands (per application, per environment, per location ?)
-#     - add locking to systems to prevent unintended changes, or worse, removal
 #     - finish implementing system_convert
 #     - colorize system list output (different color per build)?
 #     - deprecate external kvm-install script and remove dependencies on external servers
@@ -357,9 +368,7 @@
 #     - ipam network service?
 #     - hosts network service (or just use DNS!) ?
 #     - handle more natural english for commands... and/or make the order consistent (i.e. 'scs system show X' vs 'scs show system X' vs 'scs system X --blah')
-#     - make locking an optional behavior
 #     - flock is not available on darwin (... or would have to be built ...)
-#     - application show should list systems linked to the application and the environment for the systems
 #     - need to be able to define number of processors for a build or system
 #     - add support to system module to show and manage snapshots on hypervisors
 #     - showing a system that is a base image should display each hypervisor it is deployed to and all overlays using it
@@ -444,6 +453,53 @@ function check_host_alive {
   else
     nc -z -w $Timeout $1 $Port &>/dev/null && return 0 || return 1
   fi
+}
+
+# check and upgrade the schema as needed
+#
+function check_schema {
+  local Pass=0 RL SkipPrompt=0 Version List n
+  if [[ $1 == "--no-prompt" ]]; then SkipPrompt=1; fi
+  if [[ -s ${CONF}/schema && "$( cat ${CONF}/schema )" == "$SchemaVersion" ]]; then return 0; fi
+
+  # file does not exist, so the repo is at <0.1
+  if ! [[ -s ${CONF}/schema ]]; then echo "0" >${CONF}/schema; fi
+
+  Version="$( cat ${CONF}/schema )"
+
+  if [[ $Version > $SchemaVersion ]]; then
+    err "Error: The configuration repository schema is newer than what is supported by this application."
+  fi
+
+  if [[ $SkipPrompt -ne 1 ]]; then
+    cat <<_EOF
+------------------------------------------------------------------------------------------
+Error: Your version of the configuration is out of date. It is strongly recommened that
+you pull and/or merge changes in from your upstream master repository before continuing.
+If you are sure you are completely up to date I can automatically update the
+configuration to the latest version, after which you should commit and push changes
+upstream for others.
+------------------------------------------------------------------------------------------
+
+_EOF
+    get_yn RL "Would you like to automatically update the repository (y/n)?"
+    if [[ $RL != "y" ]]; then exit 1; fi
+  fi
+
+  # get available migrations
+  pushd $( dirname $( deref $0 ) ) >/dev/null 2>&1 || err "Error changing to script directory"
+
+  while [[ $Version < $SchemaVersion ]]; do
+    if ! [[ -s migrate/${Version}.sh ]]; then err "Error accessing migration script for $Version"; fi
+    echo "Upgrading configuration from version ${Version}..."
+    /bin/bash migrate/${Version}.sh ${CONF}
+    if [[ $? -ne 0 ]]; then err "Error executing migration for $Version"; fi
+    if [[ "$( cat ${CONF}/schema )" == "$Version" ]]; then err "Error in migration script for $Version"; fi
+    Version="$( cat ${CONF}/schema )"
+  done
+
+  printf -- '\nSchema successfully upgraded to version %s. Please commit and push changes to your upstream repository.\n' $SchemaVersion
+  exit 0
 }
 
 # exit function called from trap
@@ -793,7 +849,8 @@ function initialize_configuration {
   git init --quiet $CONF
   touch $CONF/{application,constant,environment,file{,-map},hv-{environment,network,system},hypervisor,location,network,resource,system}
   cd $CONF || err
-  printf -- "*\\.swp\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "*\\.sw[op]\n\\.DS_Store\nscs_activity\\.log\nscs_bg\\.log\nscs_error\\.log\n\\.scs_lock\n" >.gitignore
+  printf -- "${SchemaVersion}\n" >schema
   git add *
   git commit -a -m'initial commit' >/dev/null 2>&1
   cd - >/dev/null 2>&1
@@ -1599,7 +1656,14 @@ ENVIRONMENT
 
 	SCS_RELEASES - path to store generated releases
 
+	SCS_REMOTE_BACKUPS - number of backups to retain on remote systems when deploying configuration.
+		a value of 0 will keep all backups, a value of 1 will only keep the current backup, etc...
+
 	SCS_REMOTE_USER - remote user to run commands on and manage systems and hypervisors (default: root)
+
+	SCS_SHARED_REPO - set to 0 to disable "locking". this is useful when used on a management server
+		with a local repository that is accesssed by multiple concurrent users, to avoid contention.
+		The default value is 1 (enabled).
 
 	SCS_TEMP - directory to store temporary files. this normally includes the process id in the path.
 
@@ -1679,7 +1743,7 @@ Component:
     application [<environment>] [--name <app_name>] [--define|--undefine|--list-constant] [<application>]
     constant [--define|--undefine|--list] [<environment>] [<constant>]
   file
-    cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+    cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
     edit [<name>] [--environment <name>]
   help
   hypervisor
@@ -1696,8 +1760,8 @@ Component:
     <value> [--assign] [<system>]
     <value> [--unassign|--list]
   system
-    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|--push-build-scripts|--register-key|
-             --release|--start-remote-build|--type|--uptime|--vars|--vm-add-disk|--vm-disks]
+    <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|--provision|--push-build-scripts|--register-key|
+             --release|--start-remote-build|--type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 Verbs - all top level components:
   create
@@ -1732,7 +1796,7 @@ function cancel_modify {
   # get change count
   L=$( git status -s |wc -l 2>/dev/null |awk '{print $1}' )
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then test "$1" == "--force" && echo "WARNING: These are not your outstanding changes!" || err "ERROR: These are not your outstanding changes!"; fi
   fi
@@ -1750,7 +1814,7 @@ function cancel_modify {
     done; fi
     git clean -f >/dev/null 2>&1
     git reset --hard >/dev/null 2>&1
-    if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
     printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     if [[ $L -gt 0 ]]; then scslog "pending changes were canceled and deleted"; else scslog "unlocked clean"; fi
   fi
@@ -1950,13 +2014,17 @@ function git_status {
   RemoteRepo=$( git config -l |grep "branch.$Branch." |grep '.remote=' 2>/dev/null |awk 'BEGIN{FS="="}{print $NF}' )
   RemoteBranch=$( git config -l |grep "branch.$Branch." |grep '.merge=' 2>/dev/null |awk 'BEGIN{FS="/"}{print $NF}' )
   if [ -z "$Branch" ]; then Branch=master; fi
-  if ! [ -f .scs_lock ]; then
-    printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
-    if [ $N -gt 0 ]; then git status; fi
+    if [[ $SCS_SharedLocalRepo -eq 1 ]]; then
+    if ! [ -f .scs_lock ]; then
+      printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$Branch] *****" >&2
+      if [ $N -gt 0 ]; then git status; fi
+    else
+      printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
+      Status=1
+      if [ $N -gt 0 ]; then git status; fi
+    fi
   else
-    printf -- '\E[31;47m%s\E[0m\n' "***** SCS LOCKED BY $( cat .scs_lock ) [$Branch] *****" >&2
-    Status=1
-    if [ $N -gt 0 ]; then git status; fi
+    printf -- 'Branch: %s\n' "$Branch"
   fi
   # check upstream
   if [[ -n $RemoteRepo && $Verbose -eq 1 ]]; then
@@ -1979,7 +2047,8 @@ function start_modify {
   get_user
   # the current branch must either be master or the name of this user to continue
   cd $CONF || err
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 0 ]]; then return 0; fi
+  if [[ -f .scs_lock ]]; then
     grep -qE "^$USERNAME\$" .scs_lock
     if [ $? -ne 0 ]; then err "Another change is in progress, aborting."; fi
     return 0
@@ -2012,7 +2081,7 @@ function stop_modify {
   # switch directories
   pushd $CONF >/dev/null 2>&1 || err
   # validate the lock
-  if [ -f .scs_lock ]; then
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
     if [ "$USERNAME" != "$( cat .scs_lock )" ]; then err "The configuration is locked by $( cat .scs_lock )"; fi
   fi
   # handle submodules
@@ -2039,7 +2108,7 @@ function stop_modify {
     elif [[ $Push -eq 1 ]]; then
       git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
     fi
-    if [ -f .scs_lock ]; then
+    if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then
       rm -f .scs_lock
       printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
     fi
@@ -2059,7 +2128,7 @@ function stop_modify {
   elif [[ $Push -eq 1 ]]; then
     git_push --path $CONF --no-prompt || err "Error pushing changes to upstream repository!"
   fi
-  if [ -f .scs_lock ]; then rm -f .scs_lock; fi
+  if [[ $SCS_SharedLocalRepo -eq 1 && -f .scs_lock ]]; then rm -f .scs_lock; fi
   popd >/dev/null 2>&1
   printf -- '\E[32;47m%s\E[0m\n' "***** SCS UNLOCKED [$( git branch |grep ^* |cut -d' ' -f2 )] *****" >&2
   scslog "committed pending changes with message: $Message"
@@ -2216,8 +2285,14 @@ OPTIONS
 
 		The '--no-format' or '-1' argument outputs the list without any summary information.
 
-	application show [<name>] [--brief]
-		show details for an application (--brief hides related data that is normally displayed)
+	application show [<name>] [--brief] [--files] [--systems]
+		show details for an application and related objects.
+
+		'--brief' will only output the application details and skip extraneous data.
+
+		'--files' will only output the linked configuration files.
+
+		'--systems' will only output the linked system objects.
 
 	application update [<name>]
 		update application settings or rename an application
@@ -2487,43 +2562,127 @@ function application_list_unformatted {
   awk 'BEGIN{FS=","}{print $1}' $CONF/application |sort
 }
 
+# application_show
+#
+# output application details and linked objects
+#
+# optional:
+#   --brief      only show the application details
+#   --files      only show linked files
+#   --systems    only show linked systems
+#
 function application_show {
   application_exists "$1" || err "Provide the application name"
-  local APP ALIAS BUILD CLUSTER BRIEF=0
-  [ "$2" == "--brief" ] && BRIEF=1
+  local APP ALIAS BUILD CLUSTER FILES i SystemList \
+        ShowDetail=1 ShowFiles=1 ShowSystems=1
+
+  case "$2" in
+    --brief) ShowFiles=0; ShowSystems=0;;
+    --files) ShowDetail=0; ShowSystems=0;;
+    --systems) ShowDetail=0; ShowFiles=0;;
+  esac
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$1," ${CONF}/application )"
-  printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
-  test $BRIEF -eq 1 && return
-  # retrieve file list
-  FILES=( $( application_file_list_unformatted $APP ) )
-  # output linked configuration file list
-  if [ ${#FILES[*]} -gt 0 ]; then
-    printf -- "\nManaged configuration files:\n"
-    for ((i=0;i<${#FILES[*]};i++)); do
-      # [FORMAT:file]
-      grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
-    done |sort |uniq |column -t |perl -pe 's/^/   /'
-  else
-    printf -- "\nNo managed configuration files."
+  if [[ $ShowDetail -eq 1 ]]; then
+    printf -- "Name: $APP\nAlias: $ALIAS\nBuild: $BUILD\nCluster Support: $CLUSTER\n"
   fi
-  printf -- '\n'
+
+  if [[ $ShowSystems -eq 1 ]]; then
+    # list systems by environment
+    if [[ $ShowDetail -eq 1 ]]; then printf -- '\nSystems:\n'; fi
+    SystemList=( $( system_list_unformatted --build $BUILD ) )
+    if [[ ${#SystemList[*]} -gt 0 ]]; then
+      for ((i=0;i<${#SystemList[*]};i++)); do
+        # [FORMAT:system]
+        grep -E "^${SystemList[i]}," ${CONF}/system |perl -pe 's/^([^,]*),([^,]*,){3}([^,]*),.*/\3 \1/'
+      done |sort -k1,2 |column -t |perl -pe 's/^/   /'
+    else
+      printf -- '  None\n'
+    fi
+  fi
+
+  if [[ $ShowFiles -eq 1 ]]; then
+    # retrieve file list
+    FILES=( $( application_file_list_unformatted $APP ) )
+    # output linked configuration file list
+    if [ ${#FILES[*]} -gt 0 ]; then
+      if [[ $ShowDetail -eq 1 ]]; then printf -- "\nManaged configuration files:\n"; fi
+      for ((i=0;i<${#FILES[*]};i++)); do
+        # [FORMAT:file]
+        grep -E "^${FILES[i]}," $CONF/file |awk 'BEGIN{FS=","}{print $1,$2}'
+      done |sort |uniq |column -t |perl -pe 's/^/   /'
+    else
+      printf -- "\nNo managed configuration files."
+    fi
+  fi
 }
 
+# application_update
+#
+# alters the configuration for an existing application, including rename
+#
 function application_update {
+  local APP ALIAS BUILD CLUSTER NAME File Location
+
   start_modify
   generic_choose application "$1" APP && shift
+
   # [FORMAT:application]
   IFS="," read -r APP ALIAS BUILD CLUSTER <<< "$( grep -E "^$APP," ${CONF}/application )"
   get_input NAME "Name" --default "$APP"
   get_input ALIAS "Alias" --default "$ALIAS"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   get_yn CLUSTER "LVS Support (y/n)"
+
   # [FORMAT:application]
   perl -i -pe "s/^$APP,.*/${NAME},${ALIAS},${BUILD},${CLUSTER}/" ${CONF}/application
+
   # handle rename
-  if [ "$NAME" != "$APP "]; then
-     echo "Rename not implemented" >&2 
+  if [[ "$NAME" != "$APP" ]]; then
+
+     # switch to the config directory to perform git operations
+     pushd ${CONF} >/dev/null 2>&1
+
+     if [[ -s environment ]]; then
+
+       # [FORMAT:environment]
+       for Environment in $( perl -pe 's/,.*//' environment ); do
+
+         # update environment as neeeded
+         if [[ -d $Environment && -f env/$Environment/by-app/$APP ]]; then
+           # [FORMAT:value/env/app]
+           git mv env/$Environment/by-app/$APP env/$Environment/by-app/$NAME
+         fi
+
+         if [[ -s location ]]; then
+           # [FORMAT:location]
+           for Location in $( perl -pe 's/,.*//' location ); do
+             if ! [[ -s $Location/$Environment ]]; then continue; fi
+             # update environment
+             # [FORMAT:<location></env>]
+             perl -i -pe "s/^$APP\$/$NAME/" $Location/$Environment
+           done
+         fi
+
+       done
+
+     fi
+
+     if [[ -s value/by-app/$APP ]]; then
+       # [FORMAT:value/by-app/constant]
+       git mv value/by-app/$APP value/by-app/$NAME
+     fi
+
+     # [FORMAT:file-map]
+     perl -i -pe "s/([^,]*,)$APP(,.*)/\1$NAME\2/" file-map
+
+     # [FORMAT:resource]
+     perl -i -pe "s/:$APP,/:$NAME,/" resource
+
+     # switch back
+     popd >/dev/null 2>&1
+
   fi
   commit_file application
 }
@@ -3231,22 +3390,22 @@ function constant_show_value {
   fi
   if [[ -n ${EN} && -n ${APP} ]]; then
     # [FORMAT:value/env/app]
-    grep $NAME $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/by-app/$APP 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${EN} && -n ${LOC} ]]; then
     # [FORMAT:value/loc/constant]
-    grep $NAME $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/by-loc/$LOC 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${EN} ]]; then
     # [FORMAT:value/env/constant]
-    grep $NAME $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/env/$EN/constant 2> /dev/null | cut -f2 -d"," ; return ;
   fi
   if [[ -n ${APP} ]]; then
     # [FORMAT:value/by-app/constant]
-    grep $NAME $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
+    grep "^$NAME," $CONF/value/by-app/$APP 2>/dev/null | cut -f2 -d"," ; return ;
   fi
   # [FORMAT:value/constant]
-  grep $NAME $CONF/value/constant | cut -f2 -d","
+  grep "^$NAME," $CONF/value/constant | cut -f2 -d","
 }
 
 function constant_undefine {
@@ -3742,23 +3901,25 @@ function environment_update {
 
 # output a (text) file contents to stdout
 #
-# cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+# cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/file] [--verbose]
 #
 function file_cat {
   # get file name to show
   generic_choose file "$1" C && shift
   # set defaults
-  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC
+  local EN="" PARSE="" SILENT=0 VERBOSE=0 NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC \
+        SystemVars=""
   # get any other provided options
   while [ $# -gt 0 ]; do case $1 in
     --environment) EN="$2"; shift;;
-    --vars|--system) PARSE="$2"; shift;;
     --silent) SILENT=1;;
+    --system) PARSE="$2"; shift;;
+    --system-vars) SystemVars="$2"; shift;;
     --verbose) VERBOSE=1;;
     *) usage;;
   esac; shift; done
   # validate system name
-  if ! [ -z "$PARSE" ]; then grep -qE "^$PARSE," ${CONF}/system || err "Unknown system"; fi
+  if [[ -n $PARSE ]]; then system_exists $PARSE || err "Unknown system"; fi
   # load file data
   # [FORMAT:file]
   IFS="," read -r NAME PTH TYPE OWNER GROUP OCTAL TARGET DESC <<< "$( grep -E "^$C," ${CONF}/file )"
@@ -3777,16 +3938,19 @@ function file_cat {
     fi
   fi
   # optionally replace variables
-  if ! [ -z "$PARSE" ]; then
+  if [[ -z $SystemVars && -n $PARSE ]]; then
     # generate the system variables
     system_vars $PARSE >$TMP/systemvars.$$
+    SystemVars=$TMP/systemvars.$$
+  fi
+  if [[ -n $SystemVars && -f $SystemVars ]]; then
     # process template variables
-    parse_template $TMP/$C $TMP/systemvars.$$ $SILENT $VERBOSE
+    parse_template $TMP/$C $SystemVars $SILENT $VERBOSE
     if [ $? -ne 0 ]; then test $SILENT -ne 1 && echo "Error parsing template" >&2; return 1; fi
   fi
   # output the file and remove it
   cat $TMP/$C
-  rm -f $TMP/$C $TMP/systemvars.$$
+  rm -f $TMP/$C
 }
 function file_cat_help {
   echo "help tbd"
@@ -4055,7 +4219,7 @@ OPTIONS
 	application file --list
 		List files linked to an application.
 
-	file cat [<name>] [--environment <name>] [--vars <system>] [--silent] [--verbose]
+	file cat [<name>] [--environment <name>] [--silent] [--system <system>] [--system-vars /path/to/variables] [--verbose]
 		Process and output the contents of a file.
 
 		If an environment is provided any patch for that environment will be applied.
@@ -5867,11 +6031,11 @@ function hypervisor_locate_system {
   # variable scope
   local NAME H HV PREF BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ON OFF HIP ENABLED \
         VM STATE FOUND VMPATH ALL=0 QUICK=0 ForceBacking=0 ForceSingle=0 SystemBuildDate \
-        Cache
+        Cache SystemLock
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
   test "$VIRTUAL" == "n" && err "Not a virtual machine"
 
   # process args
@@ -6316,12 +6480,14 @@ function system_byname {
     --deploy)              system_deploy $1 ${@:3};;
     --deprovision)         system_deprovision $1 ${@:3};;
     --distribute)          system_distribute $1 ${@:3};;
+    --lock)                system_lock $1;;
     --provision)           system_provision $1 ${@:3};;
     --push-build-scripts)  system_push_build_scripts $1 ${@:3};;
     --register-key)        system_register_key $1 ${@:3};;
     --release)             system_release $1;;
     --start-remote-build)  system_start_remote_build $1 ${@:3};;
     --type)                system_type $1;;
+    --unlock)              system_unlock $1;;
     --uptime)              system_uptime $1;;
     --vars)                system_vars $1;;
     --vm-add-disk)         system_vm_disk_create $1 ${@:3};;
@@ -6339,7 +6505,8 @@ function system_byname {
 #
 function system_audit {
   system_exists "$1" || err "Unknown or missing system name"
-  local VALID=0 SkipCheck SkipPrompt=0 System="$1"; shift
+  local VALID=0 FILE F SkipCheck SkipPrompt=0 System="$1"; shift
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -6349,7 +6516,7 @@ function system_audit {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # test connectivity
   check_host_alive $System || err "System $System is not accessible at this time"
 
@@ -6438,15 +6605,20 @@ function system_audit {
 #
 function system_check {
   system_exists "$1" || err "Unknown or missing system name"
-  local System=$1 VALID=0 VERBOSE=0; shift
+  local FILES System=$1 VALID=0 VERBOSE=0; shift
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate \
+        FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC
 
   while [ $# -gt 0 ]; do case "$1" in
     -v|--verbose) VERBOSE=1;;
   esac; shift; done
 
+  # ensure the temp directory exists
+  mkdir -p $TMP
+
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$System," ${CONF}/system )"
   # look up the applications configured for the build assigned to this system
   if ! [ -z "$BUILD" ]; then
     # retrieve application related data
@@ -6455,6 +6627,10 @@ function system_check {
       FILES=( ${FILES[@]} $( application_file_list_unformatted $APP --environment $EN ) )
     done
   fi
+
+  # generate the variables for this system once
+  system_vars $NAME >$TMP/systemvars.$$
+
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
@@ -6472,9 +6648,9 @@ function system_check {
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
         if [ $VERBOSE -eq 1 ]; then
-          file_cat ${FILES[i]} --environment $EN --vars $NAME --verbose >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --verbose >$TMP/release/$FPTH
         else
-          file_cat ${FILES[i]} --environment $EN --vars $NAME >$TMP/release/$FPTH
+          file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ >$TMP/release/$FPTH
         fi
         if [ $? -ne 0 ]; then printf -- "Error generating file or replacing template variables, constants, and resources for ${FILES[i]}.\n" >&2; VALID=1; continue; fi
       elif [ "$FTYPE" == "binary" ]; then
@@ -6495,11 +6671,11 @@ function system_check {
 # output a list of constants and values assigned to a system
 #
 function system_constant_list {
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate C APP
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate C APP
   generic_choose system "$1" C && shift
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   mkdir -p $TMP; test -f $TMP/clist && :>$TMP/clist || touch $TMP/clist
   # 1. applications @ environment
   for APP in $( build_application_list "$BUILD" ); do
@@ -6534,7 +6710,7 @@ function system_convert {
         Confirm=1 Distribute=0 backingImage RL Hypervisor HypervisorAll HypervisorIP \
         VMPath HV HVIP HVPATH NETNAME Force=0 List File DryRun=0 Count HV_FINAL_INT \
         HV_BUILD_INT SystemBuildDate BUILDNET OS ARCH DISK RAM PARENT RDISK RRAM RP \
-        UUID MAC; shift
+        UUID MAC SystemLock; shift
 
   # process arguments
   while [ $# -gt 0 ]; do case $1 in
@@ -6554,7 +6730,10 @@ function system_convert {
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   # get current type
   curType=$( system_type $NAME )
@@ -6741,10 +6920,10 @@ function system_convert {
 
       # update system configuration
       # [FORMAT:system]
-      IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+      IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
       # save changes
       # [FORMAT:system]
-      perl -i -pe "s/^$C,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},n,${OVERLAY},${SystemBuildDate}/" ${CONF}/system
+      perl -i -pe "s/^$C,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},n,${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
       commit_file system
 
       if [ $DryRun -eq 0 ]; then scslog "converted system $NAME from $curType -> $newType"; fi
@@ -6814,7 +6993,7 @@ function system_create {
   if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
   # [FORMAT:system]
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>$CONF/system
   commit_file system
 }
 function system_create_help {
@@ -6823,9 +7002,15 @@ function system_create_help {
 
 function system_delete {
   system_exists "$1" || err "Unknown or missing system name"
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate
+
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
+
   # verify this is not a backing image for other servers
   # [FORMAT:system]
   grep -qE ",$1,.*\$" ${CONF}/system
@@ -6833,7 +7018,9 @@ function system_delete {
     printf -- "%s\n" "Warning - this system is the backing image for one or more other virtual machines"
     get_yn R "Are you SURE you want to delete it (y/n)?" || exit
   fi
+
   generic_delete system $1 || return
+
   # free IP address assignment
   network_ip_unassign $IP >/dev/null 2>&1
 }
@@ -6883,15 +7070,23 @@ _EOF
 function system_deprovision {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
+
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY HV HVIP VMPATH F LIST DRY_RUN=0 \
-        HVFIRST SystemBuildDate
+        HVFIRST SystemBuildDate SystemLock
+
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+
   # check for dry-run flag
   if [ "$1" == "--dry-run" ]; then DRY_RUN=1; fi
   if [ "$1" == "--yes-i-am-sure" ]; then SURE=1; else SURE=0; fi
+
+  # check lock
+  if [[ "$SystemLock" != "n" && $DRY_RUN -eq 0 ]]; then err "System locked; please unlock to make changes"; fi
+
   # verify virtual machine
   test "$VIRTUAL" == "y" || err "This is not a virtual machine"
+
   # confirm
   if [ $SURE -ne 1 ]; then
     if [ $DRY_RUN -ne 1 ]; then
@@ -6906,6 +7101,7 @@ function system_deprovision {
       get_yn RL "Are you *absolutely certain* you want to permanently destroy this base image (y/n)?" || return
     fi
   fi
+
   # locate
   HV=$( hypervisor_locate_system $NAME )
   test -z "$HV" && err "Unable to locate hypervisor for this system"
@@ -6941,6 +7137,7 @@ function system_deprovision {
     HV=$( hypervisor_locate_system $NAME )
     if [[ $DRY_RUN -eq 1 && "$HV" == "$HVFIRST" ]]; then HV=""; fi
   done
+
   printf -- '\n%s has been removed\n' "$NAME"
   scslog "$NAME has been deprovisioned"
   return 0
@@ -6958,10 +7155,13 @@ function system_distribute {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate \
         Network HVList HV HVIP Hypervisor HypervisorIP VMPath HVPath \
-        File FileList DryRun=0 Location LocalTransfer=1
+        File FileList DryRun=0 Location LocalTransfer=1 SystemLock
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"; shift
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   while [ $# -gt 0 ]; do case $1 in
     --dry-run) DryRun=1;;
@@ -7086,9 +7286,9 @@ function system_help { cat <<_EOF
 NAME
 
 SYNOPSIS
-	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--provision|
-	                    --push-build-scripts|--register-key|--release|--start-remote-build|--type|
-	                    --uptime|--vars|--vm-add-disk|--vm-disks]
+	scs system <value> [--audit|--check|--convert|--deploy|--deprovision|--distribute|--lock|
+                            --provision|--push-build-scripts|--register-key|--release|--start-remote-build|
+                            --type|--unlock|--uptime|--vars|--vm-add-disk|--vm-disks]
 
 DESCRIPTION
 	System management functions.  This section embodies the entire spirit and purpose of this tool since it directly
@@ -7180,6 +7380,9 @@ OPTIONS
 		--location   : If provided, all hypervisors at the specified location will be loaded into the copy
 		               copy TO list.
 
+	system <value> --lock
+		Lock a system to prevent changes.
+
 	system <value> --provision [--distribute] [--foreground] [--hypervisor <name>] [--network <loc-zone-alias>]
 		                   [--skip-distribute]
 		Provision (create/install) a configured virtual machine.  By default a hypervisor will be
@@ -7235,6 +7438,9 @@ OPTIONS
 	system <value> --type
 		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
 		'overlay'.
+
+	system <value> --unlock
+		Unlock a system to allow changes.
 
 	system <value> --uptime
 		Connect to the remote system and run 'uptime'. This is purely diagnostic.
@@ -7294,12 +7500,24 @@ SEE ALSO
 _EOF
 }
 
+# lock a system to prevent changes
+#
+function system_lock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2y,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 locked"
+  commit_file system
+}
+
 # get the parent of a system
 #
 function system_parent {
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   printf -- "$OVERLAY\n"
   test -z "$OVERLAY" && return 1 || return 0
 }
@@ -7316,7 +7534,7 @@ function system_provision {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY REDIST NETNAME NETMASK \
         GATEWAY DNS REPO_ADDR REPO_PATH REPO_URL LIST BackingList SystemBuildDate \
         BuildParent BUILDNET VMPath Foreground=0 Hypervisor OS ARCH DISK RAM PARENT \
-        HV_FINAL_INT HV_BUILD_INT
+        HV_FINAL_INT HV_BUILD_INT SystemLock
 
   # abort handler
   test -f $ABORTFILE && err "Abort file in place - please remove $ABORTFILE to continue."
@@ -7336,7 +7554,10 @@ function system_provision {
   esac; shift; done
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   #  - verify system is not already deployed
   if [ "$( hypervisor_locate_system $NAME )" != "" ]; then err "Error: $NAME is already deployed. Please deprovision or clean up the hypervisors. Use 'scs hypervisor --locate-system $NAME' for more details."; fi
@@ -7404,7 +7625,7 @@ function system_provision {
     if [ "$OVERLAY" == "auto" ]; then system_resolve_autooverlay $NAME; fi
 
     # [FORMAT:system]
-    IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+    IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
     # must set these values since they are passed to phase2 (not used for overlays so the value can be anything without a space)
     REPO_ADDR="-"; REPO_PATH="-"
@@ -7551,7 +7772,7 @@ _EOF
 
   if [ $Foreground -eq 0 ]; then
     #  - background task to monitor deployment (try to connect nc, sleep until connected, max wait of 3600s)
-    nohup $0 system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
+    nohup $0 --config "${CONF}" system $NAME --provision --phase-2 "$Hypervisor" "$BUILDIP" "$HV_BUILD_INT" "$HV_FINAL_INT" "$BUILDNET" "$NETNAME" "$REPO_ADDR" "$REPO_PATH" "$REDIST" "$ARCH" "$DISK" "$OS" "$RAM" "$MAC" "$UUID" </dev/null >/dev/null 2>&1 &
   else
     scslog "starting phase 2 in foreground process"
     echo "system_provision_phase2 \"$NAME\" \"$Hypervisor\" \"$BUILDIP\" \"$HV_BUILD_INT\" \"$HV_FINAL_INT\" \
@@ -7566,10 +7787,10 @@ _EOF
 
   # update last build date
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
 
   # [FORMAT:system]
-  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},$( date +'%s' )/" ${CONF}/system
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},$( date +'%s' )/" ${CONF}/system
 
   commit_file system
   return 0
@@ -7596,14 +7817,15 @@ _EOF
 function system_provision_phase2 {
   local NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR \
         REPO_PATH REDIST SystemBuildDate BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY \
-        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS List File
+        HVIP VMPATH DHCP ARCH DISK OS RAM MAC UUID DHCPIP NETMASK GATEWAY DNS List File \
+        SystemLock
 
   # load arguments passed in from phase1
   echo "Args: $@" >&2
   read -r NAME HV BUILDIP HV_BUILD_INT HV_FINAL_INT BUILDNET NETNAME REPO_ADDR REPO_PATH REDIST ARCH DISK OS RAM MAC UUID <<< "$@"
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$NAME," ${CONF}/system )"
   system_exists $NAME
   if [ $? -ne 0 ]; then errlog "error staring build phase 2 - system '$NAME' does not exist - check $HV"; exit 1; fi
 
@@ -7910,14 +8132,17 @@ _EOF
 
 function system_resolve_autooverlay {
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate BuildParent \
-        BuildGrandParent BackingList ParentName
+        BuildGrandParent BackingList ParentName SystemLock
 
   system_exists $1 || err
 
   start_modify
 
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
 
   # auto-select backing image
   BackingList="$( system_list_unformatted --backing --build $BUILD --sort-by-build-date --exclude-parent $NAME --location $LOC --environment $EN |tr '\n' ' ' )"
@@ -7944,7 +8169,7 @@ function system_resolve_autooverlay {
 
   # save changes
   # [FORMAT:system]
-  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemBuildDate}/" ${CONF}/system
+  perl -i -pe "s/^$NAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${ParentName},${SystemLock},${SystemBuildDate}/" ${CONF}/system
 
   commit_file system
 }
@@ -8001,7 +8226,7 @@ function system_list_unformatted {
         NL=""
         Parent="$( build_parent $2 )"
         if [[ -n $Parent ]]; then
-          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print $NL}' |tr ',' ' ' )"
+          BuildList="$( build_lineage_unformatted $( build_parent $2 ) |awk '{print NL}' |tr ',' ' ' )"
         else
           BuildList="$2"
         fi
@@ -8076,7 +8301,7 @@ function system_list_unformatted {
     else
       # [FORMAT:system]
       for N in $LIST; do
-        grep -E "^$N," ${CONF}/system |awk 'BEGIN{FS=","}{print $1,$9}'
+        grep -E "^$N," ${CONF}/system |awk 'BEGIN{FS=","}{print $1,$10}'
       done |sort -rnk2 |awk '{print $1}'
     fi
 
@@ -8092,9 +8317,10 @@ function system_release {
   system_exists "$1" || err "Unknown or missing system name"
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY FILES ROUTES FPTH SystemBuildDate \
-        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch
+        AllFiles HasRoutes=0 AUDITSCRIPT RELEASEFILE RELEASESCRIPT STATFILE MyDate Branch \
+        SystemLock DeleteFiles
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # create the temporary directory to store the release files
   mkdir -p $TMP/release $RELEASEDIR
   MyDate="$( date +'%Y%m%d-%H%M%S' )"
@@ -8104,6 +8330,7 @@ function system_release {
   STATFILE="$TMP/release/scs-stat"
   FILES=()
   AllFiles=()
+  DeleteFiles=()
 
   pushd $CONF >/dev/null 2>&1
   Branch=$( git branch |grep ^* |cut -d' ' -f2 )
@@ -8165,15 +8392,23 @@ function system_release {
     printf -- "# set permissions on 'static-routes'\nchown root:root /$FPTH\nchmod 644 /$FPTH\n" >>${RELEASESCRIPT}.tail
     # stat
     printf -- "/$FPTH root root 644 file\n" >>$STATFILE
+    # backup
+    AllFiles[${#AllFiles[@]}]='/etc/sysconfig/static-routes'
   fi
+
+  # generate the variables for this system one time
+  system_vars $NAME >$TMP/systemvars.$$
+
   # generate the release configuration files
   if [ ${#FILES[*]} -gt 0 ]; then
     for ((i=0;i<${#FILES[*]};i++)); do
       # get the file path based on the unique name
       # [FORMAT:file]
       IFS="," read -r FNAME FPTH FTYPE FOWNER FGROUP FOCTAL FTARGET FDESC <<< "$( grep -E "^${FILES[i]}," ${CONF}/file )"
-      # add to allfiles array
-      AllFiles[${#AllFiles[@]}]="$FPTH"
+      if [[ "$FTYPE" != "directory" && "$FTYPE" != "delete" ]]; then
+        # add to allfiles array
+        AllFiles[${#AllFiles[@]}]="$FPTH"
+      fi
       # remove leading '/' to make path relative
       FPTH=$( printf -- "$FPTH" |perl -pe 's%^/%%' )
       # alternate octal representation
@@ -8185,7 +8420,7 @@ function system_release {
       # how the file is created differs by type
       if [ "$FTYPE" == "file" ]; then
         # generate the file for this environment
-        file_cat ${FILES[i]} --environment $EN --vars $NAME --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
+        file_cat ${FILES[i]} --environment $EN --system-vars $TMP/systemvars.$$ --silent >$TMP/release/$FPTH || err "Error generating $EN file for ${FILES[i]}"
       elif [ "$FTYPE" == "directory" ]; then
         mkdir -p $TMP/release/$FPTH
       elif [ "$FTYPE" == "symlink" ]; then
@@ -8210,6 +8445,8 @@ function system_release {
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then /bin/rm -rf \"/$FPTH\"; logger -t scs \"deleting path '/$FPTH'\"; fi\n" >>${RELEASESCRIPT}.tail
         # add audit check
         printf -- "if [[ ! -z \"$FPTH\" && \"$FPTH\" != \"/\" && -e \"/$FPTH\" ]]; then PASS=1; echo \"File should not exist: '/$FPTH'\"; fi\n" >>$AUDITSCRIPT
+        # add to backup
+        DeleteFiles[${#DeleteFiles[@]}]="$FPTH"
       fi
       # stage permissions for audit and processing
       if [ "$FTYPE" != "delete" ]; then
@@ -8245,9 +8482,18 @@ function system_release {
     chmod +x $AUDITSCRIPT
 
     # create backup
-    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\ntar czf /var/backups/\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tgz %s" "${AllFiles[*]}" >>$RELEASESCRIPT
-    [ $HasRoutes -eq 1 ] && printf -- " /etc/sysconfig/static-routes" >>$RELEASESCRIPT
-    printf -- ' 2>/dev/null\n\n' >>$RELEASESCRIPT
+    printf -- "# create backup\ntest -d /var/backups || mkdir -p /var/backups\nFileName=\"\$( hostname )-scs-backup-\$( date +%%y%%m%%d-%%H%%M ).tar\"\n" >>$RELEASESCRIPT
+    printf -- "tar -cf /var/backups/\$FileName %s 2>/dev/null\n" "${AllFiles[*]}" >>$RELEASESCRIPT
+    for ((i=0;i<${#DeleteFiles[@]};i++)); do
+      printf -- "if [[ -d \"${DeleteFiles[i]}\" ]]; then tar -rf /var/backups/\$FileName %s 2>/dev/null; fi\n" "${DeleteFiles[i]}" >>$RELEASESCRIPT
+    done
+    printf -- "gzip /var/backups/\$FileName 2>/dev/null\n\n" >>$RELEASESCRIPT
+
+    # cleanup old backups
+    if [[ $SCS_NumRemoteBackups -gt 0 ]]; then
+      printf -- "cd /var/backups || exit 1\nCount=\$( ls -1 \$( hostname )-scs-backup-* | wc -l )\n" >>$RELEASESCRIPT
+      printf -- "if [[ \$Count -gt ${SCS_NumRemoteBackups} ]]; then\n  ls -1 \$( hostname )-scs-backup-* | head -n\$( expr \$Count - $SCS_NumRemoteBackups) | xargs rm -f {}\nfi\n\n" >>$RELEASESCRIPT
+    fi
 
     # do not deploy stat/audit scripts
     printf -- "rm -f \$TMPDIR/scs-{stat,audit.sh}\n\n" >>$RELEASESCRIPT
@@ -8295,9 +8541,9 @@ function system_release {
 function system_resource_list {
   generic_choose system "$1" C && shift
   # load the system
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   for APP in $( build_application_list "$BUILD" ); do
     # get any localized resources for the application
     # [FORMAT:resource]
@@ -8310,16 +8556,17 @@ function system_resource_list {
 
 function system_show {
   system_exists "$1" || err "Unknown or missing system name"
-  local FILES=() NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY BRIEF=0 SystemBuildDate
+  local FILES=() NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY BRIEF=0 SystemBuildDate \
+        SystemLock
   [ "$2" == "--brief" ] && BRIEF=1
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # if overlay is null then there is no overlay
   test -z "$OVERLAY" && OVERLAY="N/A"
   # output the status/summary
-  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLast Build: %s\n" \
-    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
+  printf -- "Name: %s\nBuild: %s\nIP: %s\nLocation: %s\nEnvironment: %s\nVirtual: %s\nBase Image: %s\nOverlay: %s\nLocked: %s\nLast Build: %s\n" \
+    "$NAME" "$BUILD" "$IP" "$LOC" "$EN" "$VIRTUAL" "$BASE_IMAGE" "$OVERLAY" "$SystemLock" "$( date +'%c' -d @${SystemBuildDate} 2>/dev/null )"
   test $BRIEF -eq 1 && return
   # show other systems using this as a base image
   if [[ "$BASE_IMAGE" == "y" ]]; then
@@ -8405,11 +8652,11 @@ function system_type {
   system_exists "$1" || err "Unknown or missing system name"
 
   # scope variables
-  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate
+  local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate SystemLock
 
   # load the system
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
 
   if [ "$VIRTUAL" == "n" ];    then printf -- "physical\n"; return; fi
   if [ "$BASE_IMAGE" == "y" ]; then printf -- "backing\n"; return; fi
@@ -8417,13 +8664,31 @@ function system_type {
                                     printf -- "overlay\n"
 }
 
+# unlock a system to allow changes
+#
+function system_unlock {
+  system_exists $1 || return 1
+  start_modify
+  # [FORMAT:system]
+  perl -i -pe "s/^($1,)(([^,]*,){7})[^,]*,(.*)/\\1\\2n,\\4/" ${CONF}/system
+  if [[ $? -ne 0 ]]; then err "Error updating configuration"; fi
+  echo "$1 unlocked"
+  commit_file system
+}
+
 function system_update {
-  local C NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate IP NETNAME ORIGNAME
+  local C NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate \
+        IP NETNAME ORIGNAME SystemLock
   start_modify
   generic_choose system "$1" C && shift
+
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
+  IFS="," read -r NAME BUILD ORIGIP LOC EN ORIGVIRTUAL ORIGBASE_IMAGE ORIGOVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$C," ${CONF}/system )"
   ORIGNAME="$NAME"
+
+  # check lock
+  if [[ "$SystemLock" != "n" ]]; then err "System locked; please unlock to make changes"; fi
+
   get_input NAME "Hostname" --default "$NAME"
   get_input BUILD "Build" --default "$BUILD" --null --options "$( build_list_unformatted |replace )"
   while [[ "$IP" != "auto" && "$IP" != "dhcp" && $( exit_status valid_ip "$IP" ) -ne 0 ]]; do get_input IP "Primary IP (address, dhcp, or auto to auto-select)" --default "$ORIGIP"; done
@@ -8493,7 +8758,7 @@ function system_update {
 
   # save changes
   # [FORMAT:system]
-  perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemBuildDate}/" ${CONF}/system
+  perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
@@ -8572,9 +8837,9 @@ function system_vars {
   # load the system
   local NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY ZONE ALIAS \
         NET MASK BITS GW HAS_ROUTES DNS VLAN DESC REPO_ADDR REPO_PATH \
-        REPO_URL BUILD DEFAULT_BUILD NTP SystemBuildDate
+        REPO_URL BUILD DEFAULT_BUILD NTP SystemBuildDate SystemLock
   # [FORMAT:system]
-  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
+  IFS="," read -r NAME BUILD IP LOC EN VIRTUAL BASE_IMAGE OVERLAY SystemLock SystemBuildDate <<< "$( grep -E "^$1," ${CONF}/system )"
   # output system data
   echo -e "system.name $NAME\nsystem.build $BUILD\nsystem.ip $IP\nsystem.location $LOC\nsystem.environment $EN"
   # output network data, if available
@@ -8800,6 +9065,9 @@ PUSH_HOSTS="hqpcore-bkup01 bkup-21"
 # local path to store release archives
 RELEASEDIR=${SCS_RELEASES:=/bkup1/scs-release}; mkdir $RELEASEDIR >/dev/null 2>&1 || RELEASEDIR=~/scs-release
 #
+# the version of the schema for this release
+SchemaVersion=0.1
+#
 # path to activity log
 SCS_Activity_Log=/var/log/scs_activity.log; test -w $SCS_Activity_Log   || SCS_Activity_Log=scs_activity.log
 #
@@ -8809,11 +9077,17 @@ SCS_Background_Log=/var/log/scs_bg.log    ; test -w $SCS_Background_Log || SCS_B
 # path to error log
 SCS_Error_Log=/var/log/scs_error.log      ; test -w $SCS_Error_Log      || SCS_Error_Log=scs_error.log
 #
+# number of backups to keep on each remote system when deploying config (a value of 0 will keep all)
+SCS_NumRemoteBackups=${SCS_REMOTE_BACKUPS:=10}
+#
 # default private key for systems management (ssh/scp)
 SCS_KeyFile=${SCS_IDENTITY:=/root/.ssh/id_rsa}
 #
 # remote user on all systems for management access
 SCS_RemoteUser=${SCS_REMOTE_USER:=root}
+#
+# shared repository setting (enable or disable "locking")
+SCS_SharedLocalRepo=${SCS_SHARED_REPO:=1}
 #
 # application version
 SCS_Version="1.0.0"
@@ -8852,7 +9126,6 @@ trap cleanup_and_exit EXIT INT
 
 # initialize
 which git >/dev/null 2>&1 || err "Please install git or correct your PATH"
-test $# -ge 1 || usage
 
 # the path to the configuration is configurable as an argument
 if [[ "$1" == "-c" || "$1" == "--config" ]]; then
@@ -8862,6 +9135,7 @@ else
     CONF=$SCS_CONF
   fi
 fi
+echo "using configuration at '$CONF' for application at '$0'" >>$SCS_Activity_Log
 
 # first run check
 if ! [ -d $CONF ]; then
@@ -8891,6 +9165,12 @@ case "$SUBJ" in
   pdir) dirname $( deref $0 ); exit 0;;
   status) git_status --exit $@;;
 esac
+
+# validate schema
+check_schema
+
+# output usage only if no arguments were provided
+test $# -ge 1 || usage
 
 # get verb
 VERB="$( expand_verb_alias "$( echo "$1" |tr 'A-Z' 'a-z' )")"; shift
