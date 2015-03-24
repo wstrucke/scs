@@ -2956,8 +2956,13 @@ function constant_define {
 }
 
 function constant_delete {
-  local i j NAME="$1"
+  local NAME="$1"
   generic_delete constant $NAME
+  constant_undefine_all $NAME
+}
+
+function constant_undefine_all {
+  local i j NAME="$1"
   cd $CONF >/dev/null 2>&1 || return
 
   # list environments and applications
@@ -3303,6 +3308,7 @@ function constant_undefine {
     --application) application_exists "$2" || err "Invalid application"; APP=$2;;
     --environment) environment_exists "$2" || err "Invalid environment"; EN=$2;;
     --location) location_exists "$2" || err "Invalid location"; LOC=$2;;
+    --all) constant_undefine_all "$NAME"; exit 0;;
     *) usage;;
   esac; shift 2; done
 
