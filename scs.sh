@@ -2961,59 +2961,12 @@ function constant_delete {
   constant_undefine_all $NAME
 }
 
-function constant_undefine_all {
-  local i j NAME="$1"
-  cd $CONF >/dev/null 2>&1 || return
-
-  # list environments and applications
-  EnList=$( environment_list --no-format )
-  AppList=$( application_list --no-format )
-  LocList=$( location_list --no-format )
-
-  # 1. applications @ environment
-  for i in $EnList; do
-    for j in $AppList; do
-      # [FORMAT:value/env/app]
-      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
-        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
-      fi
-    done
-  done
-
-  # 2. environments @ location
-  for i in $LocList; do
-    for j in $EnList; do
-      # [FORMAT:value/loc/constant]
-      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
-        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
-      fi
-    done
-  done
-
-  # 3. environments (global)
-  for i in $EnList; do
-    # [FORMAT:value/env/constant]
-    if [ -f "${CONF}/env/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/env/$i/constant"
-      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
-    fi
-  done
-
-  # 4. applications (global)
-  for i in $AppList; do
-    # [FORMAT:value/by-app/constant]
-    if [ -f "${CONF}/value/by-app/$i" ]; then
-      grep -qE "^$NAME," "${CONF}/value/by-app/$i"
-      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
-    fi
-  done
-
-  # 5. global
-  # [FORMAT:value/constant]
-  grep -qE "^$NAME," ${CONF}/value/constant
-  if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+# checks if a constant exists
+#
+function constant_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:constant]
+  grep -qE "^$1," $CONF/constant || return 1
 }
 
 # general constant help
@@ -3087,7 +3040,7 @@ OPTIONS
 		If one or more optional arguments are provided with valid values, just show the
 		value of the constant in that scope (if it is defined).
 
-	constant undefine [--application <name>] [--environment <name>] [--location <name>]
+	constant undefine [--application <name>] [--environment <name>] [--location <name>] [--all]
 		Undefine (remove) a defined constant in the specified scope.
 
 		Scope 1 - Application in an Environment: Specify --environment and --application
@@ -3145,14 +3098,6 @@ COPYRIGHT
 SEE ALSO
 	$0 help
 _EOF
-}
-
-# checks if a constant exists
-#
-function constant_exists {
-  test $# -eq 1 || return 1
-  # [FORMAT:constant]
-  grep -qE "^$1," $CONF/constant || return 1
 }
 
 # show all constants
@@ -3351,6 +3296,60 @@ function constant_update {
   commit_file constant
 }
 
+function constant_undefine_all {
+  local i j NAME="$1"
+  cd $CONF >/dev/null 2>&1 || return
+
+  # list environments and applications
+  EnList=$( environment_list --no-format )
+  AppList=$( application_list --no-format )
+  LocList=$( location_list --no-format )
+
+  # 1. applications @ environment
+  for i in $EnList; do
+    for j in $AppList; do
+      # [FORMAT:value/env/app]
+      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+      fi
+    done
+  done
+
+  # 2. environments @ location
+  for i in $LocList; do
+    for j in $EnList; do
+      # [FORMAT:value/loc/constant]
+      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+      fi
+    done
+  done
+
+  # 3. environments (global)
+  for i in $EnList; do
+    # [FORMAT:value/env/constant]
+    if [ -f "${CONF}/env/$i/constant" ]; then
+      grep -qE "^$NAME," "${CONF}/env/$i/constant"
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+    fi
+  done
+
+  # 4. applications (global)
+  for i in $AppList; do
+    # [FORMAT:value/by-app/constant]
+    if [ -f "${CONF}/value/by-app/$i" ]; then
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i"
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+    fi
+  done
+
+  # 5. global
+  # [FORMAT:value/constant]
+  grep -qE "^$NAME," ${CONF}/value/constant
+  if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+}
 
 #Section: ENVIRONMENT
  ####### #     # #     # ### ######  ####### #     # #     # ####### #     # #######
