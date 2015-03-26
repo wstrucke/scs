@@ -76,6 +76,7 @@
 #   --description: application details
 #   --format: name,alias,build,cluster\n
 #   --search: [FORMAT:application]
+#   --sort: alphabetical
 #   --storage:
 #   ----name            a unique name for the application
 #   ----alias           an alias for the application (currently unused)
@@ -86,37 +87,59 @@
 #   --description: server builds
 #   --format: name,role,description,os,arch,disk,ram,parent\n
 #   --search: [FORMAT:build]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the build
+#   ----role            name of the role provided to the system build script (role.sh) during provisioning
+#   ----description     human readable description
+#   ----os              operating system (passed into the kickstart/vm build script)
+#   ----arch            architecture (passed into the kickstart/vm build script)
+#   ----disk            default disk size in GB
+#   ----ram             default memory allocated in MB
+#   ----parent          optional parent build name
 #
 #   constant
 #   --description: variables used to generate configurations
 #   --format: name,description\n
 #   --search: [FORMAT:constant]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the constant
+#   ----description     human readable description
 #
 #   environment
 #   --description: 'stacks' or groups of instances of all or a subset of applications
 #   --format: name,alias,description\n
 #   --search: [FORMAT:environment]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the environment
+#   ----alias           a unique alias... so far as i know this is not used anywhere
+#   ----description     human readable description
 #
 #   env/<environment>/constant
 #   --description: environment scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/env/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   env/<environment>/by-app/<application>
 #   --description: application in environment scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/env/app]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   env/<environment>/by-loc/<location>
 #   --description: enironment at a specific site scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/loc/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   file
 #   --description: files installed on servers
@@ -227,6 +250,15 @@
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
 #   --search: [FORMAT:net/network]
 #   --storage:
+#   ----octal_ip           octal representation of the ip address (e.g. 3232235521)
+#   ----cidr_ip            cidr representation of the ip address (e.g. 192.168.0.1)
+#   ----reserved           'y' or 'n', yes if the ip address is reserved and should not be assigned
+#   ----dhcp               'y' or 'n', yes if the ip address is assigned via a dhcp server
+#   ----hostname           the hostname of the system or device assigned to this address
+#   ----host_interface     the interface on the host the ip is assigned on (optional)
+#   ----comment            a human readable comment for the address
+#   ----interface_comment  a human readable comment for the system or device interface
+#   ----owner              username who allocated the IP address
 #
 #   net/a.b.c.0-routes
 #   --description: static routes to be applied to all hosts in the network
@@ -257,6 +289,7 @@
 #   --description: the version of the configuration file schema in the repository
 #   --format: version\n
 #   --search: [FORMAT:schema]
+#   --storage:
 #   ----version         the version of the schema
 #
 #   system
@@ -281,12 +314,16 @@
 #   --format: constant,value\n
 #   --search: [FORMAT:value/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   value/by-app/<application>
 #   --description: application scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/by-app/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   <location>/<environment>
 #   --description: list of applications assigned to a location
