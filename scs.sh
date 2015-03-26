@@ -1174,6 +1174,32 @@ function shuf {
   perl -MList::Util=shuffle -le'printf for shuffle <>'
 }
 
+# sort a csv file alphabetically by the first argument
+#
+# required:
+#   $1  /path/to/file
+#
+function sort_csv_file {
+  local TempFile
+
+  # return error if the file is not writable
+  if ! [[ -w $1 ]]; then return 1; fi
+  # return success if the file is empty
+  if ! [[ -s $1 ]]; then return 0; fi
+
+  # prep the temp directory and temp file
+  if ! [[ -d $TMP ]]; then mkdir -p $TMP || return 1; fi
+  TempFile=$( mktemp -q $TMP/scs.XXXXXX ) || return 1
+  if ! [[ -f $TempFile ]]; then return 1; fi
+
+  # sort the file, overwrite the original, and unlink temp
+  sort -t, -k1 -o $TempFile $1
+  cat $TempFile >$1
+  rm -f $TempFile
+
+  return 0
+}
+
 # execute a command on a remote server
 #
 # used to centralize ssh calls and make global configuration parameters practical
@@ -2118,6 +2144,7 @@ function application_create {
   get_yn CLUSTER "LVS Support (y/n)" --auto "$4"
   # [FORMAT:application]
   printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
+  sort_csv_file $CONF/application
   commit_file application
 }
 function application_create_help { cat <<_EOF
@@ -2338,9 +2365,10 @@ function application_file_add {
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
   # [FORMAT:file-map]
-  grep -qE "^$F,$APP," $CONF/file-map && return
+  grep -qE "^$F,$APP," ${CONF}/file-map && return
   # [FORMAT:file-map]
-  echo "$F,$APP," >>$CONF/file-map
+  echo "$F,$APP," >>${CONF}/file-map
+  sort_csv_file ${CONF}/file-map
   commit_file file-map
 }
 function application_file_add_help { cat <<_EOF
@@ -2607,6 +2635,7 @@ function application_update {
      # switch back
      popd >/dev/null 2>&1
 
+     sort_csv_file ${CONF}/application
   fi
   commit_file application
 }
@@ -2651,6 +2680,7 @@ function build_create {
   get_input DESC "Description" --nc --null
   # [FORMAT:build]
   printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\n" >>$CONF/build
+  sort_csv_file $CONF/build
   commit_file build
 }
 
@@ -2915,6 +2945,7 @@ function build_update {
     perl -i -pe "s/([^,]*,[^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/application
     # [FORMAT:build]
     perl -i -pe "s/(.*),$ORIGNAME\$/\\1,$NAME/" ${CONF}/build
+    sort_csv_file $CONF/build
   fi
 }
 
@@ -2940,6 +2971,7 @@ function constant_create {
   # add
   # [FORMAT:constant]
   printf -- "${NAME},${DESC}\n" >>$CONF/constant
+  sort_csv_file $CONF/constant
   commit_file constant
 }
 
@@ -2988,6 +3020,7 @@ function constant_define {
   else
     # not defined, add
     printf -- "$NAME,$VAL\n" >>$FILE
+    sort_csv_file $FILE
   fi
   commit_file $FILE
 }
@@ -3369,16 +3402,24 @@ function constant_undefine {
 }
 
 function constant_update {
+  local NAME DESC OrigName
   start_modify
   generic_choose constant "$1" C && shift
   # [FORMAT:constant]
-  IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  get_input NAME "Name" --default "$NAME"
+  IFS="," read -r OrigName DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
+  get_input NAME "Name" --default "$OrigName"
   # force lowercase for constants
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   # [FORMAT:constant]
   perl -i -pe "s/^$C,.*/${NAME},${DESC}/" ${CONF}/constant
+  # handle rename
+  if [[ "$NAME" != "$OrigName" ]]; then
+
+    # !!FIXME!! need to update constant values here
+
+    sort_csv_file ${CONF}/constant
+  fi
   commit_file constant
 }
 
@@ -3427,6 +3468,7 @@ function environment_application_add {
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   # assign the application
   echo "$APP" >>${CONF}/${LOC}/${ENV}
+  sort_csv_file ${CONF}/${LOC}/${ENV}
   # [FORMAT:value/env/app]
   touch $CONF/env/$ENV/by-app/$APP
   commit_file "${LOC}/${ENV}" $CONF/env/$ENV/by-app/$APP
@@ -3603,6 +3645,7 @@ function environment_create {
   mkdir -p $CONF/template/patch/${NAME} $CONF/env/${NAME} >/dev/null 2>&1
   # [FORMAT:environment]
   printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
+  sort_csv_file ${CONF}/environment
   # [FORMAT:value/env/constant]
   touch $CONF/env/${NAME}/constant
   commit_file environment env/${NAME}/constant
@@ -3809,6 +3852,7 @@ function environment_update {
       test -d $L/$C && git mv $L/$C $L/$NAME >/dev/null 2>&1
     done
     popd >/dev/null 2>&1
+    sort_csv_file ${CONF}/environment
   fi
   commit_file environment
 }
@@ -3925,6 +3969,7 @@ function file_create {
   fi
   # [FORMAT:file]
   printf -- "${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}\n" >>${CONF}/file
+  sort_csv_file ${CONF}/file
   # create base file
   if [ "$TYPE" == "file" ]; then
     pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
@@ -4008,10 +4053,10 @@ function file_edit {
     cat $TMP/$C.patch >$CONF/template/$ENV/$C
     echo "Wrote $( wc -c $CONF/template/$ENV/$C |awk '{print $1}' ) bytes to $ENV/$C."
     # commit
-    pushd $CONF >/dev/null 2>&1
-    git add template/$ENV/$C >/dev/null 2>&1
-    popd >/dev/null 2>&1
-    commit_file template/$ENV/$C
+#    pushd $CONF >/dev/null 2>&1
+#    git add template/$ENV/$C >/dev/null 2>&1
+#    popd >/dev/null 2>&1
+#    commit_file template/$ENV/$C
   else
     # create a copy of the template to edit
     cat $CONF/template/$C >/tmp/app-config.$$
@@ -4290,6 +4335,8 @@ function file_update {
     get_input GROUP "Permissions - Group" --default "$GROUP"
     get_input OCTAL "Permissions - Octal (e.g. 0755)" --default "$OCTAL" --regex '^[0-7]{3,4}$'
   fi
+
+  # handle rename
   if [ "$NAME" != "$C" ]; then
     # validate unique name
     grep -qE "^$NAME," ${CONF}/file && err "File already defined."
@@ -4309,8 +4356,11 @@ function file_update {
     # [FORMAT:file-map]
     perl -i -pe "s%^$C,(.*)%${NAME},\1%" ${CONF}/file-map
   fi
+
   # [FORMAT:file]
   perl -i -pe "s%^$C,.*%${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}%" $CONF/file
+  sort_csv_file ${CONF}/file
+
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
@@ -4343,6 +4393,7 @@ function location_create {
   # add
   # [FORMAT:location]
   printf -- "${CODE},${NAME},${DESC}\n" >>$CONF/location
+  sort_csv_file ${CONF}/location
   commit_file location
 }
 
@@ -4374,7 +4425,7 @@ function location_environment_assign {
   # assign the environment
   pushd $CONF >/dev/null 2>&1
   touch ${LOC}/$ENV
-  git add ${LOC}/$ENV >/dev/null 2>&1
+#  git add ${LOC}/$ENV >/dev/null 2>&1
   #git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
@@ -4516,6 +4567,7 @@ function location_update {
     test -d $C && git mv $C $CODE >/dev/null 2>&1
     perl -i -pe "s/^$C,/${CODE},/" network
     popd >/dev/null 2>&1
+    sort_csv_file ${CONF}/location
   fi
   commit_file location
 }
@@ -4598,6 +4650,7 @@ function network_create {
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
   # [FORMAT:network]
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}\n" >>$CONF/network
+  sort_csv_file ${CONF}/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   # [FORMAT:location/network]
@@ -4612,6 +4665,7 @@ function network_create {
   fi
   # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
+  sort_csv_file ${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
   if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
 }
@@ -4831,8 +4885,8 @@ function network_ip_assign {
   fi
 
   # commit changes
-  git add ${CONF}/net/${FILENAME}
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME}
+#  commit_file ${CONF}/net/${FILENAME}
   return $RET
 }
 function network_ip_assign_help { cat <<_EOF
@@ -5015,8 +5069,8 @@ function network_ip_scan {
       echo "Found device at $( dec2ip $i )"
     fi
   done
-  git add ${CONF}/net/${FILENAME} >/dev/null 2>&1
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME} >/dev/null 2>&1
+#  commit_file ${CONF}/net/${FILENAME}
 }
 
 # unassign an ip address
@@ -5036,8 +5090,8 @@ function network_ip_unassign {
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # [FORMAT:net/network]
   perl -i -pe "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
-  git add ${CONF}/net/${FILENAME}
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME}
+#  commit_file ${CONF}/net/${FILENAME}
 }
 
 # network ipam component
@@ -5111,9 +5165,10 @@ function network_ipam_add_range {
     if [ $? -eq 0 ]; then echo "Error: entry already exists for $( dec2ip $i ). Skipping..." >&2; continue; fi
     # [FORMAT:net/network]
     printf -- "${i},$( dec2ip $i ),n,n,,,,,\n" >>${CONF}/net/$FILENAME
+    sort_csv_file ${CONF}/net/$FILENAME
   done
-  git add ${CONF}/net/$FILENAME >/dev/null 2>&1
-  commit_file ${CONF}/net/$FILENAME
+#  git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+#  commit_file ${CONF}/net/$FILENAME
 }
 
 # remove a range of IPs and 'forget' the assignments
@@ -5166,8 +5221,8 @@ function network_ipam_remove_range {
     # [FORMAT:net/network]
       perl -i -ne "print unless /^$i,/" ${CONF}/net/$FILENAME 2>/dev/null
     done
-    git add ${CONF}/net/$FILENAME >/dev/null 2>&1
-    commit_file ${CONF}/net/$FILENAME
+#    git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+#    commit_file ${CONF}/net/$FILENAME
   fi
 }
 
@@ -5223,7 +5278,7 @@ function network_ipam_reserve_range {
     # [FORMAT:net/network]
     perl -i -pe "s/^$i,.*/$A,$B,y,$D,$E,$F,reserved,$H,$I/" ${CONF}/net/${FILENAME}
 
-    git add ${CONF}/net/${FILENAME}
+#    git add ${CONF}/net/${FILENAME}
   done
 }
 
@@ -5385,6 +5440,7 @@ function network_update {
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
     # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
+    sort_csv_file ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
   fi
   if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
@@ -5523,7 +5579,8 @@ function resource_create {
   grep -qE "^[^,]*,${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
   # [FORMAT:resource]
-  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>${CONF}/resource
+  sort_csv_file ${CONF}/resource
   commit_file resource
 }
 
@@ -5641,6 +5698,7 @@ function resource_update {
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
   perl -i -pe "s/^[^,]*,$C,.*/${TYPE},${VAL//,/},${ASSIGN_TYPE},${ASSIGN_TO},${NAME//,/},${DESC}/" ${CONF}/resource
+  sort_csv_file ${CONF}/resource
   commit_file resource
 }
 
@@ -5666,6 +5724,7 @@ function hypervisor_add_environment {
   # add mapping
   # [FORMAT:hv-environment]
   printf -- "$ENV,$1\n" >>${CONF}/hv-environment
+  sort_csv_file ${CONF}/hv-environment
   commit_file hv-environment
 }
 
@@ -5691,6 +5750,7 @@ function hypervisor_add_network {
   # add mapping
   # [FORMAT:hv-network]
   printf -- "$C,$1,$IFACE\n" >>${CONF}/hv-network
+  sort_csv_file ${CONF}/hv-network
   commit_file hv-network
 }
 
@@ -5727,7 +5787,8 @@ function hypervisor_create {
   get_yn ENABLED "Enabled (y/n)"
   # add
   # [FORMAT:hypervisor]
-  printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>$CONF/hypervisor
+  printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>${CONF}/hypervisor
+  sort_csv_file ${CONF}/hypervisor
   commit_file hypervisor
 }
 
@@ -6021,6 +6082,7 @@ function hypervisor_locate_system {
     printf -- ' %s ' "$Cache" |grep -q " $HV "
     if [[ $? -ne 0 ]]; then
       printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+      sort_csv_file ${CONF}/hv-system
     else
       Cache="$( printf -- '%s' "$Cache" |perl -pe "s/ ?$HV ?//" )"
     fi
@@ -6036,6 +6098,7 @@ function hypervisor_locate_system {
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
   if [[ -n "$PREF" ]]; then perl -i -pe "s/^${NAME},${PREF},.*/${NAME},${PREF},y/" ${CONF}/hv-system; fi
+  sort_csv_file ${CONF}/hv-system
   commit_file hv-system
 
   # output results and return status
@@ -6377,6 +6440,7 @@ function hypervisor_update {
     perl -i -pe "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
     perl -i -pe "s%^([^,]*),$C,(.*)\$%\1,${NAME},\2%" ${CONF}/hv-network
+    sort_csv_file ${CONF}/hypervisor
   fi
   commit_file hypervisor hv-environment hv-network
 }
@@ -6917,7 +6981,8 @@ function system_create {
   if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
   # [FORMAT:system]
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>${CONF}/system
+  sort_csv_file ${CONF}/system
   commit_file system
 }
 function system_create_help {
@@ -8683,6 +8748,8 @@ function system_update {
   # save changes
   # [FORMAT:system]
   perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
+  sort_csv_file ${CONF}/system
+
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
