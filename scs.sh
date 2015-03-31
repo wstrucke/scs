@@ -76,6 +76,7 @@
 #   --description: application details
 #   --format: name,alias,build,cluster\n
 #   --search: [FORMAT:application]
+#   --sort: alphabetical
 #   --storage:
 #   ----name            a unique name for the application
 #   ----alias           an alias for the application (currently unused)
@@ -86,37 +87,59 @@
 #   --description: server builds
 #   --format: name,role,description,os,arch,disk,ram,parent\n
 #   --search: [FORMAT:build]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the build
+#   ----role            name of the role provided to the system build script (role.sh) during provisioning
+#   ----description     human readable description
+#   ----os              operating system (passed into the kickstart/vm build script)
+#   ----arch            architecture (passed into the kickstart/vm build script)
+#   ----disk            default disk size in GB
+#   ----ram             default memory allocated in MB
+#   ----parent          optional parent build name
 #
 #   constant
 #   --description: variables used to generate configurations
 #   --format: name,description\n
 #   --search: [FORMAT:constant]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the constant
+#   ----description     human readable description
 #
 #   environment
 #   --description: 'stacks' or groups of instances of all or a subset of applications
 #   --format: name,alias,description\n
 #   --search: [FORMAT:environment]
+#   --sort: alphabetical
 #   --storage:
+#   ----name            a unique name for the environment
+#   ----alias           a unique alias... so far as i know this is not used anywhere
+#   ----description     human readable description
 #
 #   env/<environment>/constant
 #   --description: environment scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/env/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   env/<environment>/by-app/<application>
 #   --description: application in environment scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/env/app]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   env/<environment>/by-loc/<location>
 #   --description: enironment at a specific site scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/loc/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   file
 #   --description: files installed on servers
@@ -227,6 +250,15 @@
 #   --format: octal_ip,cidr_ip,reserved,dhcp,hostname,host_interface,comment,interface_comment,owner\n
 #   --search: [FORMAT:net/network]
 #   --storage:
+#   ----octal_ip           octal representation of the ip address (e.g. 3232235521)
+#   ----cidr_ip            cidr representation of the ip address (e.g. 192.168.0.1)
+#   ----reserved           'y' or 'n', yes if the ip address is reserved and should not be assigned
+#   ----dhcp               'y' or 'n', yes if the ip address is assigned via a dhcp server
+#   ----hostname           the hostname of the system or device assigned to this address
+#   ----host_interface     the interface on the host the ip is assigned on (optional)
+#   ----comment            a human readable comment for the address
+#   ----interface_comment  a human readable comment for the system or device interface
+#   ----owner              username who allocated the IP address
 #
 #   net/a.b.c.0-routes
 #   --description: static routes to be applied to all hosts in the network
@@ -257,6 +289,7 @@
 #   --description: the version of the configuration file schema in the repository
 #   --format: version\n
 #   --search: [FORMAT:schema]
+#   --storage:
 #   ----version         the version of the schema
 #
 #   system
@@ -281,12 +314,16 @@
 #   --format: constant,value\n
 #   --search: [FORMAT:value/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   value/by-app/<application>
 #   --description: application scoped values for constants
 #   --format: constant,value\n
 #   --search: [FORMAT:value/by-app/constant]
 #   --storage:
+#   ----constant        name of the constant
+#   ----value           value (commas and new lines are not allowed)
 #
 #   <location>/<environment>
 #   --description: list of applications assigned to a location
@@ -1248,6 +1285,32 @@ function shuf {
   perl -MList::Util=shuffle -le'printf for shuffle <>'
 }
 
+# sort a csv file alphabetically by the first argument
+#
+# required:
+#   $1  /path/to/file
+#
+function sort_csv_file {
+  local TempFile
+
+  # return error if the file is not writable
+  if ! [[ -w $1 ]]; then return 1; fi
+  # return success if the file is empty
+  if ! [[ -s $1 ]]; then return 0; fi
+
+  # prep the temp directory and temp file
+  if ! [[ -d $TMP ]]; then mkdir -p $TMP || return 1; fi
+  TempFile=$( mktemp -q $TMP/scs.XXXXXX ) || return 1
+  if ! [[ -f $TempFile ]]; then return 1; fi
+
+  # sort the file, overwrite the original, and unlink temp
+  sort -t, -k1 -o $TempFile $1
+  cat $TempFile >$1
+  rm -f $TempFile
+
+  return 0
+}
+
 # execute a command on a remote server
 #
 # used to centralize ssh calls and make global configuration parameters practical
@@ -2194,6 +2257,7 @@ function application_create {
   get_yn CLUSTER "LVS Support (y/n)" --auto "$4"
   # [FORMAT:application]
   printf -- "${NAME},${ALIAS},${BUILD},${CLUSTER}\n" >>$CONF/application
+  sort_csv_file $CONF/application
   commit_file application
 }
 function application_create_help { cat <<_EOF
@@ -2414,9 +2478,10 @@ function application_file_add {
   generic_choose file "$1" F && shift
   # add the mapping if it does not already exist
   # [FORMAT:file-map]
-  grep -qE "^$F,$APP," $CONF/file-map && return
+  grep -qE "^$F,$APP," ${CONF}/file-map && return
   # [FORMAT:file-map]
-  echo "$F,$APP," >>$CONF/file-map
+  echo "$F,$APP," >>${CONF}/file-map
+  sort_csv_file ${CONF}/file-map
   commit_file file-map
 }
 function application_file_add_help { cat <<_EOF
@@ -2683,6 +2748,7 @@ function application_update {
      # switch back
      popd >/dev/null 2>&1
 
+     sort_csv_file ${CONF}/application
   fi
   commit_file application
 }
@@ -2727,6 +2793,7 @@ function build_create {
   get_input DESC "Description" --nc --null
   # [FORMAT:build]
   printf -- "${NAME},${ROLE},${DESC//,/},${OS},${ARCH},${DISK},${RAM},${PARENT}\n" >>$CONF/build
+  sort_csv_file $CONF/build
   commit_file build
 }
 
@@ -2991,6 +3058,7 @@ function build_update {
     perl -i -pe "s/([^,]*,[^,]*),$ORIGNAME,(.*)/\1,$NAME,\2/" ${CONF}/application
     # [FORMAT:build]
     perl -i -pe "s/(.*),$ORIGNAME\$/\\1,$NAME/" ${CONF}/build
+    sort_csv_file $CONF/build
   fi
 }
 
@@ -3016,6 +3084,7 @@ function constant_create {
   # add
   # [FORMAT:constant]
   printf -- "${NAME},${DESC}\n" >>$CONF/constant
+  sort_csv_file $CONF/constant
   commit_file constant
 }
 
@@ -3064,64 +3133,23 @@ function constant_define {
   else
     # not defined, add
     printf -- "$NAME,$VAL\n" >>$FILE
+    sort_csv_file $FILE
   fi
   commit_file $FILE
 }
 
 function constant_delete {
-  local i j NAME="$1"
+  local NAME="$1"
   generic_delete constant $NAME
-  cd $CONF >/dev/null 2>&1 || return
+  constant_undefine_all $NAME
+}
 
-  # list environments and applications
-  EnList=$( environment_list --no-format )
-  AppList=$( application_list --no-format )
-  LocList=$( location_list --no-format )
-
-  # 1. applications @ environment
-  for i in $EnList; do
-    for j in $AppList; do
-      # [FORMAT:value/env/app]
-      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
-        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
-      fi
-    done
-  done
-
-  # 2. environments @ location
-  for i in $LocList; do
-    for j in $EnList; do
-      # [FORMAT:value/loc/constant]
-      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
-        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
-        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
-      fi
-    done
-  done
-
-  # 3. environments (global)
-  for i in $EnList; do
-    # [FORMAT:value/env/constant]
-    if [ -f "${CONF}/env/$i/constant" ]; then
-      grep -qE "^$NAME," "${CONF}/env/$i/constant"
-      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
-    fi
-  done
-
-  # 4. applications (global)
-  for i in $AppList; do
-    # [FORMAT:value/by-app/constant]
-    if [ -f "${CONF}/value/by-app/$i" ]; then
-      grep -qE "^$NAME," "${CONF}/value/by-app/$i"
-      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
-    fi
-  done
-
-  # 5. global
-  # [FORMAT:value/constant]
-  grep -qE "^$NAME," ${CONF}/value/constant
-  if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+# checks if a constant exists
+#
+function constant_exists {
+  test $# -eq 1 || return 1
+  # [FORMAT:constant]
+  grep -qE "^$1," $CONF/constant || return 1
 }
 
 # general constant help
@@ -3195,7 +3223,7 @@ OPTIONS
 		If one or more optional arguments are provided with valid values, just show the
 		value of the constant in that scope (if it is defined).
 
-	constant undefine [--application <name>] [--environment <name>] [--location <name>]
+	constant undefine [--application <name>] [--environment <name>] [--location <name>] [--all]
 		Undefine (remove) a defined constant in the specified scope.
 
 		Scope 1 - Application in an Environment: Specify --environment and --application
@@ -3253,14 +3281,6 @@ COPYRIGHT
 SEE ALSO
 	$0 help
 _EOF
-}
-
-# checks if a constant exists
-#
-function constant_exists {
-  test $# -eq 1 || return 1
-  # [FORMAT:constant]
-  grep -qE "^$1," $CONF/constant || return 1
 }
 
 # show all constants
@@ -3416,6 +3436,7 @@ function constant_undefine {
     --application) application_exists "$2" || err "Invalid application"; APP=$2;;
     --environment) environment_exists "$2" || err "Invalid environment"; EN=$2;;
     --location) location_exists "$2" || err "Invalid location"; LOC=$2;;
+    --all) constant_undefine_all "$NAME"; exit 0;;
     *) usage;;
   esac; shift 2; done
 
@@ -3445,19 +3466,81 @@ function constant_undefine {
 }
 
 function constant_update {
+  local NAME DESC OrigName
   start_modify
   generic_choose constant "$1" C && shift
   # [FORMAT:constant]
-  IFS="," read -r NAME DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
-  get_input NAME "Name" --default "$NAME"
+  IFS="," read -r OrigName DESC <<< "$( grep -E "^$C," ${CONF}/constant )"
+  get_input NAME "Name" --default "$OrigName"
   # force lowercase for constants
   NAME=$( printf -- "$NAME" |tr 'A-Z' 'a-z' )
   get_input DESC "Description" --default "$DESC" --null --nc
   # [FORMAT:constant]
   perl -i -pe "s/^$C,.*/${NAME},${DESC}/" ${CONF}/constant
+  # handle rename
+  if [[ "$NAME" != "$OrigName" ]]; then
+
+    # !!FIXME!! need to update constant values here
+
+    sort_csv_file ${CONF}/constant
+  fi
   commit_file constant
 }
 
+function constant_undefine_all {
+  local i j NAME="$1"
+  cd $CONF >/dev/null 2>&1 || return
+
+  # list environments and applications
+  EnList=$( environment_list --no-format )
+  AppList=$( application_list --no-format )
+  LocList=$( location_list --no-format )
+
+  # 1. applications @ environment
+  for i in $EnList; do
+    for j in $AppList; do
+      # [FORMAT:value/env/app]
+      if [ -f "${CONF}/env/$i/by-app/$j" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$i/by-app/$j"
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/by-app/$j; commit_file ${CONF}/env/$i/by-app/$j; fi
+      fi
+    done
+  done
+
+  # 2. environments @ location
+  for i in $LocList; do
+    for j in $EnList; do
+      # [FORMAT:value/loc/constant]
+      if [ -f "${CONF}/env/$j/by-loc/$i" ]; then
+        grep -qE "^$NAME," "${CONF}/env/$j/by-loc/$i"
+        if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$j/by-loc/$i; commit_file ${CONF}/env/$j/by-loc/$i; fi
+      fi
+    done
+  done
+
+  # 3. environments (global)
+  for i in $EnList; do
+    # [FORMAT:value/env/constant]
+    if [ -f "${CONF}/env/$i/constant" ]; then
+      grep -qE "^$NAME," "${CONF}/env/$i/constant"
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/env/$i/constant; commit_file ${CONF}/env/$i/constant; fi
+    fi
+  done
+
+  # 4. applications (global)
+  for i in $AppList; do
+    # [FORMAT:value/by-app/constant]
+    if [ -f "${CONF}/value/by-app/$i" ]; then
+      grep -qE "^$NAME," "${CONF}/value/by-app/$i"
+      if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/by-app/$i; commit_file ${CONF}/value/by-app/$i; fi
+    fi
+  done
+
+  # 5. global
+  # [FORMAT:value/constant]
+  grep -qE "^$NAME," ${CONF}/value/constant
+  if [[ $? -eq 0 ]]; then perl -i -ne "print unless /^$1,/" ${CONF}/value/constant; commit_file ${CONF}/value/constant; fi
+}
 
 #Section: ENVIRONMENT
  ####### #     # #     # ### ######  ####### #     # #     # ####### #     # #######
@@ -3503,6 +3586,7 @@ function environment_application_add {
   test -f ${CONF}/${LOC}/${ENV} || err "Error - please create $ENV at $LOC first."
   # assign the application
   echo "$APP" >>${CONF}/${LOC}/${ENV}
+  sort_csv_file ${CONF}/${LOC}/${ENV}
   # [FORMAT:value/env/app]
   touch $CONF/env/$ENV/by-app/$APP
   commit_file "${LOC}/${ENV}" $CONF/env/$ENV/by-app/$APP
@@ -3679,6 +3763,7 @@ function environment_create {
   mkdir -p $CONF/template/patch/${NAME} $CONF/env/${NAME} >/dev/null 2>&1
   # [FORMAT:environment]
   printf -- "${NAME},${ALIAS},${DESC}\n" >>${CONF}/environment
+  sort_csv_file ${CONF}/environment
   # [FORMAT:value/env/constant]
   touch $CONF/env/${NAME}/constant
   commit_file environment env/${NAME}/constant
@@ -3885,6 +3970,7 @@ function environment_update {
       test -d $L/$C && git mv $L/$C $L/$NAME >/dev/null 2>&1
     done
     popd >/dev/null 2>&1
+    sort_csv_file ${CONF}/environment
   fi
   commit_file environment
 }
@@ -4001,6 +4087,7 @@ function file_create {
   fi
   # [FORMAT:file]
   printf -- "${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}\n" >>${CONF}/file
+  sort_csv_file ${CONF}/file
   # create base file
   if [ "$TYPE" == "file" ]; then
     pushd $CONF >/dev/null 2>&1 || err "Unable to change to '${CONF}' directory"
@@ -4084,10 +4171,10 @@ function file_edit {
     cat $TMP/$C.patch >$CONF/template/$ENV/$C
     echo "Wrote $( wc -c $CONF/template/$ENV/$C |awk '{print $1}' ) bytes to $ENV/$C."
     # commit
-    pushd $CONF >/dev/null 2>&1
-    git add template/$ENV/$C >/dev/null 2>&1
-    popd >/dev/null 2>&1
-    commit_file template/$ENV/$C
+#    pushd $CONF >/dev/null 2>&1
+#    git add template/$ENV/$C >/dev/null 2>&1
+#    popd >/dev/null 2>&1
+#    commit_file template/$ENV/$C
   else
     # create a copy of the template to edit
     cat $CONF/template/$C >/tmp/app-config.$$
@@ -4366,6 +4453,8 @@ function file_update {
     get_input GROUP "Permissions - Group" --default "$GROUP"
     get_input OCTAL "Permissions - Octal (e.g. 0755)" --default "$OCTAL" --regex '^[0-7]{3,4}$'
   fi
+
+  # handle rename
   if [ "$NAME" != "$C" ]; then
     # validate unique name
     grep -qE "^$NAME," ${CONF}/file && err "File already defined."
@@ -4385,8 +4474,11 @@ function file_update {
     # [FORMAT:file-map]
     perl -i -pe "s%^$C,(.*)%${NAME},\1%" ${CONF}/file-map
   fi
+
   # [FORMAT:file]
   perl -i -pe "s%^$C,.*%${NAME},${PTH},${TYPE},${OWNER},${GROUP},${OCTAL},${TARGET},${DESC}%" $CONF/file
+  sort_csv_file ${CONF}/file
+
   # if type changed from "file" to something else, delete the template
   if [[ "$T" == "file" && "$TYPE" != "file" ]]; then
     pushd $CONF >/dev/null 2>&1
@@ -4419,6 +4511,7 @@ function location_create {
   # add
   # [FORMAT:location]
   printf -- "${CODE},${NAME},${DESC}\n" >>$CONF/location
+  sort_csv_file ${CONF}/location
   commit_file location
 }
 
@@ -4450,7 +4543,7 @@ function location_environment_assign {
   # assign the environment
   pushd $CONF >/dev/null 2>&1
   touch ${LOC}/$ENV
-  git add ${LOC}/$ENV >/dev/null 2>&1
+#  git add ${LOC}/$ENV >/dev/null 2>&1
   #git commit -m"${USERNAME} added $ENV to $LOC" ${LOC}/$ENV >/dev/null 2>&1 || err "Error committing change to the repository"
   popd >/dev/null 2>&1
 }
@@ -4592,6 +4685,7 @@ function location_update {
     test -d $C && git mv $C $CODE >/dev/null 2>&1
     perl -i -pe "s/^$C,/${CODE},/" network
     popd >/dev/null 2>&1
+    sort_csv_file ${CONF}/location
   fi
   commit_file location
 }
@@ -4674,6 +4768,7 @@ function network_create {
   #   --format: location,zone,alias,network,mask,cidr,gateway_ip,dns_ip,vlan,description,repo_address,repo_fs_path,repo_path_url,build,default-build,ntp_ip,dhcp_ip\n
   # [FORMAT:network]
   printf -- "${LOC},${ZONE},${ALIAS},${NET},${MASK},${BITS},${GW},${HAS_ROUTES},${DNS},${VLAN},${DESC},${REPO_ADDR},${REPO_PATH},${REPO_URL},${BUILD},${DEFAULT_BUILD},${NTP},${DHCP}\n" >>$CONF/network
+  sort_csv_file ${CONF}/network
   test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
   #   --format: zone,alias,network/cidr,build,default-build\n
   # [FORMAT:location/network]
@@ -4688,6 +4783,7 @@ function network_create {
   fi
   # [FORMAT:location/network]
   printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
+  sort_csv_file ${CONF}/${LOC}/network
   commit_file network ${CONF}/${LOC}/network
   if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
 }
@@ -4907,8 +5003,8 @@ function network_ip_assign {
   fi
 
   # commit changes
-  git add ${CONF}/net/${FILENAME}
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME}
+#  commit_file ${CONF}/net/${FILENAME}
   return $RET
 }
 function network_ip_assign_help { cat <<_EOF
@@ -5091,8 +5187,8 @@ function network_ip_scan {
       echo "Found device at $( dec2ip $i )"
     fi
   done
-  git add ${CONF}/net/${FILENAME} >/dev/null 2>&1
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME} >/dev/null 2>&1
+#  commit_file ${CONF}/net/${FILENAME}
 }
 
 # unassign an ip address
@@ -5112,8 +5208,8 @@ function network_ip_unassign {
   IFS="," read -r A B C D E F G H I <<<"$( grep "^$( ip2dec $1 )," ${CONF}/net/${FILENAME} )"
   # [FORMAT:net/network]
   perl -i -pe "s/^$( ip2dec $1 ),.*/$A,$B,n,$D,,,,,/" ${CONF}/net/${FILENAME}
-  git add ${CONF}/net/${FILENAME}
-  commit_file ${CONF}/net/${FILENAME}
+#  git add ${CONF}/net/${FILENAME}
+#  commit_file ${CONF}/net/${FILENAME}
 }
 
 # network ipam component
@@ -5187,9 +5283,10 @@ function network_ipam_add_range {
     if [ $? -eq 0 ]; then echo "Error: entry already exists for $( dec2ip $i ). Skipping..." >&2; continue; fi
     # [FORMAT:net/network]
     printf -- "${i},$( dec2ip $i ),n,n,,,,,\n" >>${CONF}/net/$FILENAME
+    sort_csv_file ${CONF}/net/$FILENAME
   done
-  git add ${CONF}/net/$FILENAME >/dev/null 2>&1
-  commit_file ${CONF}/net/$FILENAME
+#  git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+#  commit_file ${CONF}/net/$FILENAME
 }
 
 # remove a range of IPs and 'forget' the assignments
@@ -5242,8 +5339,8 @@ function network_ipam_remove_range {
     # [FORMAT:net/network]
       perl -i -ne "print unless /^$i,/" ${CONF}/net/$FILENAME 2>/dev/null
     done
-    git add ${CONF}/net/$FILENAME >/dev/null 2>&1
-    commit_file ${CONF}/net/$FILENAME
+#    git add ${CONF}/net/$FILENAME >/dev/null 2>&1
+#    commit_file ${CONF}/net/$FILENAME
   fi
 }
 
@@ -5299,7 +5396,7 @@ function network_ipam_reserve_range {
     # [FORMAT:net/network]
     perl -i -pe "s/^$i,.*/$A,$B,y,$D,$E,$F,reserved,$H,$I/" ${CONF}/net/${FILENAME}
 
-    git add ${CONF}/net/${FILENAME}
+#    git add ${CONF}/net/${FILENAME}
   done
 }
 
@@ -5461,6 +5558,7 @@ function network_update {
     test ! -d ${CONF}/${LOC} && mkdir ${CONF}/${LOC}
     # [FORMAT:location/network]
     printf -- "${ZONE},${ALIAS},${NET}/${BITS},${BUILD},${DEFAULT_BUILD}\n" >>${CONF}/${LOC}/network
+    sort_csv_file ${CONF}/${LOC}/network
     commit_file network ${CONF}/${LOC}/network ${CONF}/${L}/network
   fi
   if [[ "$HAS_ROUTES" == "y" && -f $TMP/${NET}-routes ]]; then cat $TMP/${NET}-routes >${CONF}/net/${NET}-routes; commit_file ${CONF}/net/${NET}-routes; fi
@@ -5599,7 +5697,8 @@ function resource_create {
   grep -qE "^[^,]*,${VAL//,/}," $CONF/resource && err "Error - not a unique resource value."
   # add
   # [FORMAT:resource]
-  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>$CONF/resource
+  printf -- "${TYPE},${VAL//,/},,not assigned,${NAME//,/},${DESC}\n" >>${CONF}/resource
+  sort_csv_file ${CONF}/resource
   commit_file resource
 }
 
@@ -5717,6 +5816,7 @@ function resource_update {
   get_input DESC "Description" --nc --null --default "$DESC"
   # [FORMAT:resource]
   perl -i -pe "s/^[^,]*,$C,.*/${TYPE},${VAL//,/},${ASSIGN_TYPE},${ASSIGN_TO},${NAME//,/},${DESC}/" ${CONF}/resource
+  sort_csv_file ${CONF}/resource
   commit_file resource
 }
 
@@ -5742,6 +5842,7 @@ function hypervisor_add_environment {
   # add mapping
   # [FORMAT:hv-environment]
   printf -- "$ENV,$1\n" >>${CONF}/hv-environment
+  sort_csv_file ${CONF}/hv-environment
   commit_file hv-environment
 }
 
@@ -5767,6 +5868,7 @@ function hypervisor_add_network {
   # add mapping
   # [FORMAT:hv-network]
   printf -- "$C,$1,$IFACE\n" >>${CONF}/hv-network
+  sort_csv_file ${CONF}/hv-network
   commit_file hv-network
 }
 
@@ -5803,7 +5905,8 @@ function hypervisor_create {
   get_yn ENABLED "Enabled (y/n)"
   # add
   # [FORMAT:hypervisor]
-  printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>$CONF/hypervisor
+  printf -- "${NAME},${IP},${LOC},${VMPATH},${MINDISK},${MINMEM},${ENABLED}\n" >>${CONF}/hypervisor
+  sort_csv_file ${CONF}/hypervisor
   commit_file hypervisor
 }
 
@@ -6097,6 +6200,7 @@ function hypervisor_locate_system {
     printf -- ' %s ' "$Cache" |grep -q " $HV "
     if [[ $? -ne 0 ]]; then
       printf -- '%s,%s,n\n' "$NAME" "$HV" >>${CONF}/hv-system
+      sort_csv_file ${CONF}/hv-system
     else
       Cache="$( printf -- '%s' "$Cache" |perl -pe "s/ ?$HV ?//" )"
     fi
@@ -6112,6 +6216,7 @@ function hypervisor_locate_system {
   # update hypervisor-system map to set the preferred master
   # [FORMAT:hv-system]
   if [[ -n "$PREF" ]]; then perl -i -pe "s/^${NAME},${PREF},.*/${NAME},${PREF},y/" ${CONF}/hv-system; fi
+  sort_csv_file ${CONF}/hv-system
   commit_file hv-system
 
   # output results and return status
@@ -6453,6 +6558,7 @@ function hypervisor_update {
     perl -i -pe "s/,$C\$/,$NAME/" ${CONF}/hv-environment
     # [FORMAT:hv-network]
     perl -i -pe "s%^([^,]*),$C,(.*)\$%\1,${NAME},\2%" ${CONF}/hv-network
+    sort_csv_file ${CONF}/hypervisor
   fi
   commit_file hypervisor hv-environment hv-network
 }
@@ -6993,7 +7099,8 @@ function system_create {
   if [[ "$IP" != "dhcp" && ! -z "$( network_ip_locate $IP )" ]]; then network_ip_assign $IP $NAME || printf -- '%s\n' "Error - unable to assign the specified IP" >&2; fi
   # add
   # [FORMAT:system]
-  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>$CONF/system
+  printf -- "${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},n,\n" >>${CONF}/system
+  sort_csv_file ${CONF}/system
   commit_file system
 }
 function system_create_help {
@@ -8759,6 +8866,8 @@ function system_update {
   # save changes
   # [FORMAT:system]
   perl -i -pe "s/^$ORIGNAME,.*/${NAME},${BUILD},${IP},${LOC},${EN},${VIRTUAL},${BASE_IMAGE},${OVERLAY},${SystemLock},${SystemBuildDate}/" ${CONF}/system
+  sort_csv_file ${CONF}/system
+
   # handle IP change
   if [ "$IP" != "$ORIGIP" ]; then
     if [ "$ORIGIP" != "dhcp" ]; then network_ip_unassign $ORIGIP; fi
