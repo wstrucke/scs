@@ -7405,7 +7405,7 @@ OPTIONS
 
 	system <value> --push-build-scripts [/path/to/scripts]
 		Copy the system build scripts to the remote server.  By default they are pulled from the local
-		system at /home/wstrucke/ESG/system-builds.  The path to the scripts can be provided as an
+		system at /home/wstrucke/SCS/system-builds.  The path to the scripts can be provided as an
 		argument if necessary or desired.  This function is called automatically during the system
 		provision process.
 
@@ -7427,7 +7427,7 @@ OPTIONS
 		to shut itself off after running the build.  This function is called during the system provision
 		process.
 
-		The build scripts are called at 'ESG/system-builds/role.sh' on the remote system.
+		The build scripts are called at 'SCS/system-builds/role.sh' on the remote system.
 
 	system <value> --type
 		Outputs the known type of the configured system, one of 'physical', 'backing', 'single', or
@@ -7906,7 +7906,7 @@ function system_provision_phase2 {
         scslog "found DHCP address '$DHCPIP' for system with physical address '$MAC'"
         while [ "$( exit_status check_host_alive $DHCPIP )" -ne 0 ]; do sleep 5; check_abort; done
         while [ "$( exit_status ssh_remote_command -d -n $DHCPIP uptime )" -ne 0 ]; do sleep 5; check_abort; done
-        ssh_remote_command -d -n -q $DHCPIP "ESG/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt"
+        ssh_remote_command -d -n -q $DHCPIP "SCS/system-builds/install.sh configure-system --ip ${BUILDIP}/${DHCPCIDR} --skip-restart >/dev/null 2>&1; halt"
         scslog "successfully moved system to assigned build address"
       fi
     fi
@@ -7988,9 +7988,9 @@ function system_provision_phase2 {
       local CIDR NETNAME=$( network_ip_locate $IP )
       # [FORMAT:network]
       read CIDR <<< "$( grep -E "^${NETNAME//-/,}," ${CONF}/network |awk 'BEGIN{FS=","}{print $6}' )"
-      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
+      ssh_remote_command -d -n -q $BUILDIP "SCS/system-builds/install.sh configure-system --ip ${IP}/${CIDR} --skip-restart >/dev/null 2>&1"
     else
-      ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
+      ssh_remote_command -d -n -q $BUILDIP "SCS/system-builds/install.sh configure-system --ip dhcp --skip-restart >/dev/null 2>&1"
     fi
     sleep 5
     # update ip assignment
@@ -8003,7 +8003,7 @@ function system_provision_phase2 {
 
   if [ "$BASE_IMAGE" == "y" ]; then
     # flush hardware address, ssh host keys, and device mappings to anonymize system
-    ssh_remote_command -d -n -q $BUILDIP "ESG/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt"
+    ssh_remote_command -d -n -q $BUILDIP "SCS/system-builds/install.sh configure-system --flush >/dev/null 2>&1; halt"
   else
     # power down vm
     ssh_remote_command -d -n -q $BUILDIP "halt"
@@ -8080,9 +8080,9 @@ function system_push_build_scripts {
   fi
   cat ~/.ssh/known_hosts >~/.ssh/known_hosts.$$
   perl -i -ne "print unless /$( printf -- "$1" |perl -pe 's/\./\\./g' )/" ~/.ssh/known_hosts
-  ssh_remote_command -d -n $1 mkdir ESG 2>/dev/null
-  echo "running command: scp -i $SCS_KeyFile -o \"StrictHostKeyChecking no\" -p -r \"$SRCDIR\" $SCS_RemoteUser@$1:ESG/" >>$SCS_Background_Log 2>&1
-  scp -i $SCS_KeyFile -o "StrictHostKeyChecking no" -p -r "$SRCDIR" $SCS_RemoteUser@$1:ESG/ >/dev/null 2>&1 || echo "Error transferring files" >&2
+  ssh_remote_command -d -n $1 mkdir SCS 2>/dev/null
+  echo "running command: scp -i $SCS_KeyFile -o \"StrictHostKeyChecking no\" -p -r \"$SRCDIR\" $SCS_RemoteUser@$1:SCS/" >>$SCS_Background_Log 2>&1
+  scp -i $SCS_KeyFile -o "StrictHostKeyChecking no" -p -r "$SRCDIR" $SCS_RemoteUser@$1:SCS/ >/dev/null 2>&1 || echo "Error transferring files" >&2
   cat ~/.ssh/known_hosts.$$ >~/.ssh/known_hosts
   /bin/rm ~/.ssh/known_hosts.$$
   return 0
@@ -8632,11 +8632,11 @@ function system_start_remote_build {
 
   # kick-off install and return
   if [ -z "$3" ]; then
-    scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown >/dev/null 2>&1 </dev/null &"
-    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    scslog "$2 nohup SCS/system-builds/role.sh --name $1 --shutdown >/dev/null 2>&1 </dev/null &"
+    ssh_remote_command -d $2 "nohup SCS/system-builds/role.sh scs-build --name $1 --shutdown >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   else
-    scslog "$2 nohup ESG/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
-    ssh_remote_command -d $2 "nohup ESG/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
+    scslog "$2 nohup SCS/system-builds/role.sh --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &"
+    ssh_remote_command -d $2 "nohup SCS/system-builds/role.sh scs-build --name $1 --shutdown $3 >/dev/null 2>&1 </dev/null &" >>$SCS_Background_Log 2>&1
   fi
 }
 
@@ -8735,7 +8735,7 @@ function system_update {
       NETNAME=$( network_list --match $IP )
       test -z "$NETNAME" && err "No network was found matching this system's IP address"
       # flush hardware address, ssh host keys, and device mappings to anonymize system
-      ssh_remote_command -d -n -q $IP "ESG/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt"
+      ssh_remote_command -d -n -q $IP "SCS/system-builds/install.sh configure-system --ip dhcp --flush --skip-restart >/dev/null 2>&1; halt"
       #ssh -o "StrictHostKeyChecking no" -n $HVIP "while [ \"\$( /usr/bin/virsh dominfo $NAME |grep -i state |grep -i running |wc -l |awk '{print \$1}' )\" -gt 0 ]; do sleep 5; done" >/dev/null 2>&1
       #scslog "successfully stopped $NAME"
       sleep 15
@@ -9024,7 +9024,7 @@ ABORTFILE=/tmp/scs-abort-all
 BACKING_FOLDER=backing_images/
 #
 # path to build scripts
-BUILDSRC=/home/wstrucke/ESG/system-builds
+BUILDSRC=/home/wstrucke/SCS/system-builds
 #
 # local root for scs storage files, settings, and git repository
 CONF=/usr/local/etc/lpad/app-config
@@ -9036,7 +9036,7 @@ DEF_HDD=40
 DEF_MEM=1024
 #
 # site domain name (for hosts)
-DOMAIN_NAME=2checkout.com
+DOMAIN_NAME=example.com
 #
 # use the user's default editor if one is set
 EditProgram=${EDITOR:=vim}
@@ -9046,7 +9046,7 @@ EditProgram=${EDITOR:=vim}
 IP_Check_Ports="80 443 8080 8443"
 #
 # path to kickstart templates (centos6-i386.tpl, etc...)
-KSTEMPLATE=/home/wstrucke/ESG/system-builds/kickstart-files/templates
+KSTEMPLATE=/home/wstrucke/SCS/system-builds/kickstart-files/templates
 #
 # list of architectures for builds -- each arch in the list must be available
 #   for each OS version (below)
